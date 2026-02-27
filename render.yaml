@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: unacob-backend
+    env: python
+    rootDir: webapp/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: unacob-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "480"
+      - key: FRONTEND_URL
+        value: https://akira2018.github.io/unacob
+
+databases:
+  - name: unacob-db

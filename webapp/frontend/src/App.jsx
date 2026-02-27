@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/useAuth';
@@ -26,7 +26,7 @@ function ProtectedLayout() {
   const { user } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  if (!user) return <Navigate to="login" replace />;
+  if (!user) return <Navigate to="/login" replace />;
 
   return (
     <div className="app-layout">
@@ -57,7 +57,6 @@ function ProtectedLayout() {
           <Route path="/etiquetas" element={<Etiquetas />} />
           <Route path="/relatorios" element={<Relatorios />} />
           <Route path="/usuarios" element={<Usuarios />} />
-          <Route path="login" element={<Login />} />
         </Routes>
       </div>
       {sidebarOpen && (
@@ -73,14 +72,14 @@ function ProtectedLayout() {
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
+      <HashRouter basename={import.meta.env.BASE_URL}>
         <Toaster position="top-right" toastOptions={{ duration: 3000 }} />
         <Routes>
-          <Route path="login" element={<LoginGuard />} />
+          <Route path="/login" element={<LoginGuard />} />
           <Route path="/festa-inscricao/:festaId" element={<InscricaoFestaPublica />} />
           <Route path="/*" element={<ProtectedLayout />} />
         </Routes>
-      </BrowserRouter>
+      </HashRouter>
     </AuthProvider>
   );
 }
