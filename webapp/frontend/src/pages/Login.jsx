@@ -18,7 +18,16 @@ export default function Login() {
       await login(email, password);
       navigate('/');
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Credenciais inválidas');
+      const status = err.response?.status;
+      const detail = err.response?.data?.detail;
+
+      if (!err.response || status === 404 || status >= 500) {
+        toast.error('Servidor indisponível. Verifique a API do backend.');
+      } else if (status === 401) {
+        toast.error(detail || 'Credenciais inválidas');
+      } else {
+        toast.error(detail || 'Não foi possível realizar o login.');
+      }
     } finally {
       setLoading(false);
     }
