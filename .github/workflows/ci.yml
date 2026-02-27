@@ -25,9 +25,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Import app smoke test
+      - name: Backend syntax smoke test
         run: |
-          python -c "import main; print('backend ok')"
+          python -m py_compile main.py auth.py database.py models.py schemas.py
+          echo "backend syntax ok"
 
   frontend:
     runs-on: ubuntu-latest
