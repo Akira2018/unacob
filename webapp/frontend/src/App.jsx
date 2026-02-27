@@ -26,7 +26,7 @@ function ProtectedLayout() {
   const { user } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) return <Navigate to="login" replace />;
 
   return (
     <div className="app-layout">
@@ -75,7 +75,7 @@ export default function App() {
       <BrowserRouter>
         <Toaster position="top-right" toastOptions={{ duration: 3000 }} />
         <Routes>
-          <Route path="/login" element={<LoginGuard />} />
+          <Route path="login" element={<LoginGuard />} />
           <Route path="/festa-inscricao/:festaId" element={<InscricaoFestaPublica />} />
           <Route path="/*" element={<ProtectedLayout />} />
         </Routes>
