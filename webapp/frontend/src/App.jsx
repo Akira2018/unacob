@@ -57,6 +57,7 @@ function ProtectedLayout() {
           <Route path="/etiquetas" element={<Etiquetas />} />
           <Route path="/relatorios" element={<Relatorios />} />
           <Route path="/usuarios" element={<Usuarios />} />
+          <Route path="login" element={<Login />} />
         </Routes>
       </div>
       {sidebarOpen && (
