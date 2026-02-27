@@ -7,10 +7,15 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from database import get_db
 import models
+import os
+from pathlib import Path
+from dotenv import load_dotenv
 
-SECRET_KEY = "associacao-aposentados-secret-key-2024"
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-change-secret-key")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 480  # 8 hours
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))  # 8 hours
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer(auto_error=False)
