@@ -73,6 +73,55 @@ PLANO_CONTAS_PADRAO = [
     {"codigo": "2.29", "nome": "Provisão para impostos e taxas (ISS)", "tipo": "saida", "ordem": 490},
 ]
 
+PLANO_CONTAS_PADRAO_POR_CODIGO = {c["codigo"]: c for c in PLANO_CONTAS_PADRAO}
+
+
+def _normalizar_codigo_conta_seed(codigo: Optional[str]) -> str:
+    return (codigo or "").strip().replace(",", ".")
+
+
+def _normalizar_tipo_conta_seed(tipo: Optional[str]) -> str:
+    tipo_norm = unicodedata.normalize("NFKD", (tipo or "")).encode("ascii", "ignore").decode().strip().lower()
+    if tipo_norm in {"entrada", "entradas"}:
+        return "entrada"
+    if tipo_norm in {"saida", "saidas"}:
+        return "saida"
+    return ""
+
+
+def _tipo_conta_por_codigo(codigo: str) -> str:
+    if codigo.startswith("1."):
+        return "entrada"
+    if codigo.startswith("2."):
+        return "saida"
+    return "saida"
+
+
+def _cidade_corrompida(valor: Optional[str]) -> bool:
+    cidade = (valor or "").strip()
+    if not cidade or cidade == "-":
+        return False
+
+    if len(cidade) > 60:
+        return True
+    if "\n" in cidade:
+        return True
+
+    possui_pontuacao_frase = any(ch in cidade for ch in [".", ";", "!", "?"])
+    palavras = [p for p in cidade.split() if p]
+    if possui_pontuacao_frase and len(palavras) >= 6:
+        return True
+
+    cidade_norm = unicodedata.normalize("NFKD", cidade).encode("ascii", "ignore").decode().lower()
+    marcadores = [
+        "as vezes",
+        "isso acontece",
+        "sao apresentados",
+        "sistema de classificacao",
+        "estao sendo construidos",
+    ]
+    return any(marker in cidade_norm for marker in marcadores)
+
 
 def _ensure_financeiro_columns_and_seed_contas():
     inspector = inspect(engine)
@@ -102,11 +151,54 @@ def _ensure_financeiro_columns_and_seed_contas():
     from database import SessionLocal
     db = SessionLocal()
     try:
-        existentes = {
-            c.codigo: c
-            for c in db.query(models.PlanoConta).all()
-            if c.codigo
-        }
+        contas_existentes = db.query(models.PlanoConta).order_by(models.PlanoConta.created_at.asc()).all()
+        existentes = {}
+
+        for conta in contas_existentes:
+            codigo_norm = _normalizar_codigo_conta_seed(conta.codigo)
+            if not codigo_norm:
+                continue
+
+            conta.codigo = codigo_norm
+            tipo_norm = _normalizar_tipo_conta_seed(conta.tipo)
+            conta.tipo = tipo_norm or _tipo_conta_por_codigo(codigo_norm)
+
+            principal = existentes.get(codigo_norm)
+            if not principal:
+                existentes[codigo_norm] = conta
+                continue
+
+            db.query(models.Despesa).filter(models.Despesa.conta_id == conta.id).update(
+                {
+                    models.Despesa.conta_id: principal.id,
+                    models.Despesa.conta_codigo: principal.codigo,
+                    models.Despesa.conta_nome: principal.nome,
+                },
+                synchronize_session=False,
+            )
+            db.query(models.OutraRenda).filter(models.OutraRenda.conta_id == conta.id).update(
+                {
+                    models.OutraRenda.conta_id: principal.id,
+                    models.OutraRenda.conta_codigo: principal.codigo,
+                    models.OutraRenda.conta_nome: principal.nome,
+                },
+                synchronize_session=False,
+            )
+            db.delete(conta)
+
+        for conta in existentes.values():
+            padrao = PLANO_CONTAS_PADRAO_POR_CODIGO.get(conta.codigo)
+            if padrao:
+                conta.nome = padrao["nome"]
+                conta.tipo = padrao["tipo"]
+                conta.ordem = padrao["ordem"]
+            else:
+                conta.tipo = _normalizar_tipo_conta_seed(conta.tipo) or _tipo_conta_por_codigo(conta.codigo)
+
+            if conta.ativo is None:
+                conta.ativo = True
+            conta.updated_at = datetime.utcnow()
+
         for conta in PLANO_CONTAS_PADRAO:
             atual = existentes.get(conta["codigo"])
             if atual:
@@ -127,6 +219,20 @@ def _ensure_financeiro_columns_and_seed_contas():
                     created_at=datetime.utcnow(),
                     updated_at=datetime.utcnow(),
                 ))
+
+        membros = db.query(models.Membro).all()
+        for membro in membros:
+            cidade_atual = (membro.cidade or "").strip()
+            if not cidade_atual:
+                continue
+
+            if _cidade_corrompida(cidade_atual):
+                obs_atual = (membro.observacoes or "").strip()
+                if cidade_atual not in obs_atual:
+                    membro.observacoes = f"{obs_atual}\n{cidade_atual}".strip() if obs_atual else cidade_atual
+                membro.cidade = None
+                membro.updated_at = datetime.utcnow()
+
         db.commit()
     finally:
         db.close()
