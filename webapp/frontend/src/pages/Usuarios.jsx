@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from '../api';
 import toast from 'react-hot-toast';
-import { Plus, Edit, Trash2, UserCog, Shield, User } from 'lucide-react';
+import { Plus, Edit, Trash2, UserCog, Shield, User, Download, Upload } from 'lucide-react';
 import { useAuth } from '../context/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { getApiErrorMessage } from '../utils/apiError';
@@ -36,6 +36,9 @@ export default function Usuarios() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [restoreLoading, setRestoreLoading] = useState(false);
+  const restoreInputRef = useRef(null);
   const { user: currentUser } = useAuth();
   const navigate = useNavigate();
   const isAdmin = currentUser?.role === 'administrador';
@@ -110,12 +113,92 @@ export default function Usuarios() {
   const setF = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const passwordChecks = getPasswordChecks(form.password || '');
 
+  const handleBackup = async () => {
+    if (!isAdmin) return;
+    setBackupLoading(true);
+    try {
+      const response = await api.get('/admin/system/backup', { responseType: 'blob' });
+      const cd = response.headers['content-disposition'] || '';
+      const match = cd.match(/filename="?([^";]+)"?/i);
+      const filename = match?.[1] || `unacob_backup_${Date.now()}.db`;
+
+      const blobUrl = window.URL.createObjectURL(response.data);
+      const anchor = document.createElement('a');
+      anchor.href = blobUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(blobUrl);
+
+      toast.success('Backup gerado com sucesso');
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao gerar backup'));
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  const handleRestoreClick = () => {
+    if (!isAdmin || restoreLoading) return;
+    restoreInputRef.current?.click();
+  };
+
+  const handleRestoreFileChange = async (event) => {
+    const selectedFile = event.target.files?.[0];
+    event.target.value = '';
+
+    if (!selectedFile) return;
+    if (!selectedFile.name.toLowerCase().endsWith('.db')) {
+      toast.error('Selecione um arquivo .db válido');
+      return;
+    }
+
+    const confirmed = confirm(
+      'A restauração substituirá o banco atual. Um backup automático será criado antes. Deseja continuar?'
+    );
+    if (!confirmed) return;
+
+    setRestoreLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      const { data } = await api.post('/admin/system/restore', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+
+      toast.success(data?.detail || 'Backup restaurado com sucesso');
+      setTimeout(() => {
+        window.location.reload();
+      }, 700);
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao restaurar backup'));
+    } finally {
+      setRestoreLoading(false);
+    }
+  };
+
   return (
     <div>
       <div className="topbar">
         <h2>Usuários do Sistema</h2>
         {isAdmin && (
-          <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Novo Usuário</button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn-outline" onClick={handleBackup} disabled={backupLoading || restoreLoading}>
+              <Download size={15} /> {backupLoading ? 'Gerando backup...' : 'Backup'}
+            </button>
+            <button className="btn btn-outline" onClick={handleRestoreClick} disabled={restoreLoading || backupLoading}>
+              <Upload size={15} /> {restoreLoading ? 'Restaurando...' : 'Restaurar'}
+            </button>
+            <input
+              ref={restoreInputRef}
+              type="file"
+              accept=".db"
+              style={{ display: 'none' }}
+              onChange={handleRestoreFileChange}
+            />
+            <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Novo Usuário</button>
+          </div>
         )}
       </div>
 

@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Body, Request
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
 
 import models
@@ -14,6 +15,9 @@ import os
 import io
 import re
 import json
+import shutil
+import sqlite3
+import tempfile
 import unicodedata
 import smtplib
 from pathlib import Path
@@ -369,6 +373,110 @@ seed_admin()
 @app.get("/api/health")
 def health_check():
     return {"status": "ok", "service": "unacob-backend"}
+
+
+def _assert_admin(current_user: models.User):
+    if (current_user.role or "").lower() != "administrador":
+        raise HTTPException(status_code=403, detail="Acesso restrito a administradores")
+
+
+def _sqlite_db_path_or_400() -> Path:
+    db_url = str(engine.url)
+    if not db_url.startswith("sqlite:///"):
+        raise HTTPException(status_code=400, detail="Backup/restauração disponível apenas para SQLite")
+
+    db_file = engine.url.database
+    if not db_file:
+        raise HTTPException(status_code=400, detail="Arquivo do banco SQLite não identificado")
+
+    db_path = Path(db_file)
+    if not db_path.is_absolute():
+        db_path = (Path(__file__).resolve().parent / db_path).resolve()
+    return db_path
+
+
+@app.get("/api/admin/system/backup")
+def backup_database(current_user=Depends(get_current_user)):
+    _assert_admin(current_user)
+
+    db_path = _sqlite_db_path_or_400()
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Banco de dados não encontrado")
+
+    backup_dir = db_path.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    backup_file = backup_dir / f"unacob_backup_{ts}.db"
+
+    with sqlite3.connect(str(db_path)) as source_conn:
+        with sqlite3.connect(str(backup_file)) as dest_conn:
+            source_conn.backup(dest_conn)
+
+    return FileResponse(
+        path=str(backup_file),
+        media_type="application/octet-stream",
+        filename=backup_file.name,
+        background=BackgroundTask(lambda: backup_file.unlink(missing_ok=True)),
+    )
+
+
+@app.post("/api/admin/system/restore")
+async def restore_database(
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user)
+):
+    _assert_admin(current_user)
+
+    db_path = _sqlite_db_path_or_400()
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Banco de dados atual não encontrado")
+
+    nome_arquivo = (file.filename or "").lower()
+    if not nome_arquivo.endswith(".db"):
+        raise HTTPException(status_code=400, detail="Envie um arquivo .db válido")
+
+    temp_upload = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
+            temp_upload = Path(tmp.name)
+            content = await file.read()
+            tmp.write(content)
+
+        with sqlite3.connect(str(temp_upload)) as conn_test:
+            integrity = conn_test.execute("PRAGMA integrity_check;").fetchone()
+            if not integrity or str(integrity[0]).lower() != "ok":
+                raise HTTPException(status_code=400, detail="Arquivo de backup inválido (integridade SQLite falhou)")
+
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        backup_before_restore = db_path.parent / f"{db_path.stem}.before_restore_{ts}{db_path.suffix}"
+        shutil.copy2(str(db_path), str(backup_before_restore))
+
+        try:
+            engine.dispose()
+            shutil.copy2(str(temp_upload), str(db_path))
+
+            with sqlite3.connect(str(db_path)) as conn_new:
+                conn_new.execute("SELECT name FROM sqlite_master LIMIT 1;")
+
+            _ensure_financeiro_columns_and_seed_contas()
+        except Exception as restore_error:
+            shutil.copy2(str(backup_before_restore), str(db_path))
+            engine.dispose()
+            raise HTTPException(status_code=500, detail=f"Falha ao restaurar backup: {str(restore_error)}")
+
+        return {
+            "ok": True,
+            "detail": "Backup restaurado com sucesso",
+            "backup_anterior": backup_before_restore.name,
+        }
+    finally:
+        try:
+            if temp_upload and temp_upload.exists():
+                temp_upload.unlink(missing_ok=True)
+        except Exception:
+            pass
+        await file.close()
 
 # ════════════════════════════════════════════════════════════════════════════════
 # AUTH
