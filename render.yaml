@@ -17,7 +17,7 @@ services:
       - key: ACCESS_TOKEN_EXPIRE_MINUTES
         value: "480"
       - key: FRONTEND_URL
-        value: https://akira2018.github.io/unacob
+        value: https://unacobadmin.com.br
 
 databases:
   - name: unacob-db

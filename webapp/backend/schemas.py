@@ -34,6 +34,12 @@ class UserUpdate(BaseModel):
     password: Optional[str] = None
     ativo: Optional[bool] = None
 
+
+class UserSelfUpdate(BaseModel):
+    nome_completo: Optional[str] = None
+    current_password: Optional[str] = None
+    password: Optional[str] = None
+
 class UserResponse(BaseModel):
     id: str
     email: Optional[str]
@@ -138,10 +144,75 @@ class PagamentoResponse(BaseModel):
         from_attributes = True
 
 
+class PlanoContaCreate(BaseModel):
+    codigo: str
+    nome: str
+    tipo: str  # entrada, saida
+    ordem: Optional[int] = 0
+    ativo: Optional[bool] = True
+
+
+class PlanoContaUpdate(BaseModel):
+    codigo: Optional[str] = None
+    nome: Optional[str] = None
+    tipo: Optional[str] = None
+    ordem: Optional[int] = None
+    ativo: Optional[bool] = None
+
+
+class PlanoContaResponse(BaseModel):
+    id: str
+    codigo: Optional[str]
+    nome: Optional[str]
+    tipo: Optional[str]
+    ordem: Optional[int]
+    ativo: Optional[bool]
+
+    class Config:
+        from_attributes = True
+
+
+class PrevisaoOrcamentariaCreate(BaseModel):
+    conta_id: str
+    ano: int
+    mes: int
+    valor_previsto: float
+    observacoes: Optional[str] = None
+
+
+class PrevisaoOrcamentariaUpdate(BaseModel):
+    valor_previsto: Optional[float] = None
+    observacoes: Optional[str] = None
+
+
+class PrevisaoOrcamentariaResponse(BaseModel):
+    id: str
+    conta_id: str
+    conta_codigo: Optional[str] = None
+    conta_nome: Optional[str] = None
+    ano: int
+    mes: int
+    valor_previsto: float
+    observacoes: Optional[str] = None
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class PrevisaoOrcamentariaUpsertItem(BaseModel):
+    conta_id: str
+    ano: int
+    mes: int
+    valor_previsto: float
+    observacoes: Optional[str] = None
+
+
 # Despesa schemas
 class DespesaCreate(BaseModel):
     descricao: str
-    categoria: str
+    categoria: Optional[str] = None
+    conta_id: str
     valor: float
     data_despesa: date
     mes_referencia: Optional[str] = None
@@ -153,6 +224,7 @@ class DespesaCreate(BaseModel):
 class DespesaUpdate(BaseModel):
     descricao: Optional[str] = None
     categoria: Optional[str] = None
+    conta_id: Optional[str] = None
     valor: Optional[float] = None
     data_despesa: Optional[date] = None
     mes_referencia: Optional[str] = None
@@ -172,6 +244,9 @@ class DespesaResponse(BaseModel):
     fornecedor: Optional[str]
     nota_fiscal: Optional[str]
     observacoes: Optional[str]
+    conta_id: Optional[str]
+    conta_codigo: Optional[str]
+    conta_nome: Optional[str]
     created_at: Optional[datetime]
     class Config:
         from_attributes = True
@@ -180,7 +255,8 @@ class DespesaResponse(BaseModel):
 # OutraRenda schemas
 class OutraRendaCreate(BaseModel):
     descricao: str
-    categoria: str
+    categoria: Optional[str] = None
+    conta_id: str
     valor: float
     data_recebimento: date
     mes_referencia: Optional[str] = None
@@ -190,6 +266,7 @@ class OutraRendaCreate(BaseModel):
 class OutraRendaUpdate(BaseModel):
     descricao: Optional[str] = None
     categoria: Optional[str] = None
+    conta_id: Optional[str] = None
     valor: Optional[float] = None
     data_recebimento: Optional[date] = None
     mes_referencia: Optional[str] = None
@@ -205,6 +282,9 @@ class OutraRendaResponse(BaseModel):
     mes_referencia: Optional[str]
     fonte: Optional[str]
     observacoes: Optional[str]
+    conta_id: Optional[str]
+    conta_codigo: Optional[str]
+    conta_nome: Optional[str]
     created_at: Optional[datetime]
     class Config:
         from_attributes = True
@@ -214,6 +294,7 @@ class OutraRendaResponse(BaseModel):
 class AplicacaoFinanceiraCreate(BaseModel):
     instituicao: str
     produto: str
+    data_aplicacao: Optional[date] = None
     saldo_anterior: Optional[float] = 0
     aplicacoes: Optional[float] = 0
     rendimento_bruto: Optional[float] = 0
@@ -226,6 +307,7 @@ class AplicacaoFinanceiraCreate(BaseModel):
 class AplicacaoFinanceiraUpdate(BaseModel):
     instituicao: Optional[str] = None
     produto: Optional[str] = None
+    data_aplicacao: Optional[date] = None
     saldo_anterior: Optional[float] = None
     aplicacoes: Optional[float] = None
     rendimento_bruto: Optional[float] = None
@@ -239,6 +321,7 @@ class AplicacaoFinanceiraResponse(BaseModel):
     id: str
     instituicao: Optional[str]
     produto: Optional[str]
+    data_aplicacao: Optional[date]
     saldo_anterior: Optional[float]
     aplicacoes: Optional[float]
     rendimento_bruto: Optional[float]

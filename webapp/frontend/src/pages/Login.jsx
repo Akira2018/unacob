@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import toast from 'react-hot-toast';
 import { Building2, Lock, Mail } from 'lucide-react';
+import { getApiErrorMessage } from '../utils/apiError';
 
 export default function Login() {
   const [email, setEmail] = useState('admin@associacao.com');
@@ -19,14 +20,13 @@ export default function Login() {
       navigate('/');
     } catch (err) {
       const status = err.response?.status;
-      const detail = err.response?.data?.detail;
 
       if (!err.response || status === 404 || status >= 500) {
         toast.error('Servidor indisponível. Verifique a API do backend.');
       } else if (status === 401) {
-        toast.error(detail || 'Credenciais inválidas');
+        toast.error(getApiErrorMessage(err, 'Credenciais inválidas'));
       } else {
-        toast.error(detail || 'Não foi possível realizar o login.');
+        toast.error(getApiErrorMessage(err, 'Não foi possível realizar o login.'));
       }
     } finally {
       setLoading(false);

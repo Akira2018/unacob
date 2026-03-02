@@ -3,10 +3,31 @@ import api from '../api';
 import toast from 'react-hot-toast';
 import { Plus, Edit, Trash2, UserCog, Shield, User } from 'lucide-react';
 import { useAuth } from '../context/useAuth';
+import { useNavigate } from 'react-router-dom';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const emptyForm = { email: '', nome_completo: '', role: 'assistente', password: '' };
 const ROLE_LABELS = { administrador: 'Administrador', gerente: 'Gerente', assistente: 'Assistente' };
 const ROLE_COLORS = { administrador: 'badge-danger', gerente: 'badge-warning', assistente: 'badge-info' };
+
+function isStrongPassword(password) {
+  if (password.length < 8) return false;
+  if (!/[A-Z]/.test(password)) return false;
+  if (!/[a-z]/.test(password)) return false;
+  if (!/\d/.test(password)) return false;
+  if (!/[^A-Za-z0-9]/.test(password)) return false;
+  return true;
+}
+
+function getPasswordChecks(password) {
+  return [
+    { label: 'Mínimo de 8 caracteres', ok: password.length >= 8 },
+    { label: 'Pelo menos 1 letra maiúscula', ok: /[A-Z]/.test(password) },
+    { label: 'Pelo menos 1 letra minúscula', ok: /[a-z]/.test(password) },
+    { label: 'Pelo menos 1 número', ok: /\d/.test(password) },
+    { label: 'Pelo menos 1 caractere especial', ok: /[^A-Za-z0-9]/.test(password) },
+  ];
+}
 
 export default function Usuarios() {
   const [users, setUsers] = useState([]);
@@ -16,10 +37,12 @@ export default function Usuarios() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const { user: currentUser } = useAuth();
+  const navigate = useNavigate();
+  const isAdmin = currentUser?.role === 'administrador';
 
   const load = () => {
     setLoading(true);
-    api.get('/users').then(r => setUsers(r.data)).catch(() => toast.error('Erro')).finally(() => setLoading(false));
+    api.get('/users').then(r => setUsers(r.data)).catch(err => toast.error(getApiErrorMessage(err, 'Erro'))).finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);
@@ -36,18 +59,42 @@ export default function Usuarios() {
     try {
       const payload = { ...form };
       if (!payload.password) delete payload.password;
+
+      if (editing) {
+        if (!isAdmin) {
+          toast('Use "Meu Cadastro" para alterar seus dados e senha');
+          setSaving(false);
+          return;
+        }
+        if (payload.password && !isStrongPassword(payload.password)) {
+          toast.error('Use no mínimo 8 caracteres com maiúscula, minúscula, número e símbolo');
+          setSaving(false);
+          return;
+        }
+      } else {
+        if (!form.password) {
+          toast.error('Senha obrigatória para novo usuário');
+          setSaving(false);
+          return;
+        }
+        if (!isStrongPassword(form.password)) {
+          toast.error('Use no mínimo 8 caracteres com maiúscula, minúscula, número e símbolo');
+          setSaving(false);
+          return;
+        }
+      }
+
       if (editing) {
         await api.put(`/users/${editing.id}`, payload);
         toast.success('Usuário atualizado!');
       } else {
-        if (!form.password) { toast.error('Senha obrigatória para novo usuário'); setSaving(false); return; }
         await api.post('/users', payload);
         toast.success('Usuário criado!');
       }
       setModal(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao salvar');
+      toast.error(getApiErrorMessage(err, 'Erro ao salvar'));
     } finally {
       setSaving(false);
     }
@@ -57,19 +104,29 @@ export default function Usuarios() {
     if (id === currentUser?.id) { toast.error('Você não pode remover seu próprio usuário'); return; }
     if (!confirm(`Remover ${nome}?`)) return;
     try { await api.delete(`/users/${id}`); toast.success('Usuário removido'); load(); }
-    catch { toast.error('Erro ao remover'); }
+    catch (err) { toast.error(getApiErrorMessage(err, 'Erro ao remover')); }
   };
 
   const setF = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const passwordChecks = getPasswordChecks(form.password || '');
 
   return (
     <div>
       <div className="topbar">
         <h2>Usuários do Sistema</h2>
-        {currentUser?.role === 'administrador' && (
+        {isAdmin && (
           <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Novo Usuário</button>
         )}
       </div>
+
+      {!isAdmin && (
+        <div className="card" style={{ marginBottom: 20, borderLeft: '4px solid #1e3a5f' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+            <div style={{ color: '#4a5568' }}>Você está visualizando apenas o seu usuário.</div>
+            <button className="btn btn-outline btn-sm" onClick={() => navigate('/meu-cadastro')}>Trocar Senha</button>
+          </div>
+        </div>
+      )}
 
       {/* Permissions guide */}
       <div className="card" style={{ marginBottom: 20 }}>
@@ -115,8 +172,8 @@ export default function Usuarios() {
                     <td><span className={`badge ${u.ativo ? 'badge-success' : 'badge-danger'}`}>{u.ativo ? 'Ativo' : 'Inativo'}</span></td>
                     <td>
                       <div style={{ display: 'flex', gap: 4 }}>
-                        <button className="btn btn-outline btn-icon btn-sm" onClick={() => openModal(u)}><Edit size={13} /></button>
-                        {currentUser?.role === 'administrador' && u.id !== currentUser?.id && (
+                        {isAdmin && <button className="btn btn-outline btn-icon btn-sm" onClick={() => openModal(u)}><Edit size={13} /></button>}
+                        {isAdmin && u.id !== currentUser?.id && (
                           <button className="btn btn-danger btn-icon btn-sm" onClick={() => handleDelete(u.id, u.nome_completo)}><Trash2 size={13} /></button>
                         )}
                       </div>
@@ -156,7 +213,14 @@ export default function Usuarios() {
                 </div>
                 <div className="form-group">
                   <label>Senha {editing ? '(deixe em branco para não alterar)' : '*'}</label>
-                  <input type="password" value={form.password} onChange={e => setF('password', e.target.value)} placeholder={editing ? 'Nova senha (opcional)' : 'Mínimo 6 caracteres'} required={!editing} minLength={6} />
+                  <input type="password" value={form.password} onChange={e => setF('password', e.target.value)} placeholder={editing ? 'Nova senha (opcional): 8+ com maiúscula, minúscula, número e símbolo' : '8+ com maiúscula, minúscula, número e símbolo'} required={!editing} minLength={8} />
+                  <div style={{ marginTop: 8, fontSize: 12 }}>
+                    {passwordChecks.map((item) => (
+                      <div key={item.label} style={{ color: item.ok ? '#2f855a' : '#e53e3e' }}>
+                        {item.ok ? '✓' : '✗'} {item.label}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
               <div className="modal-footer">

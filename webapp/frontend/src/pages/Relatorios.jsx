@@ -1,14 +1,23 @@
 import { useState } from 'react';
 import api from '../api';
 import toast from 'react-hot-toast';
-import { Download, FileSpreadsheet, Users, CreditCard, Cake, BarChart3, PartyPopper, GitMerge, PiggyBank } from 'lucide-react';
+import { Download, FileSpreadsheet, Users, CreditCard, Cake, BarChart3, PartyPopper, GitMerge, PiggyBank, BookText } from 'lucide-react';
 import { format, subMonths } from 'date-fns';
 import { useEffect } from 'react';
+import { useAuth } from '../context/useAuth';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const getMeses = () => { const r = []; for (let i = 0; i < 13; i++) r.push(format(subMonths(new Date(), i), 'yyyy-MM')); return r; };
+const getAnos = () => {
+  const anoAtual = new Date().getFullYear();
+  return [anoAtual - 2, anoAtual - 1, anoAtual, anoAtual + 1];
+};
 const MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 
 export default function Relatorios() {
+  const { user } = useAuth();
+  const role = user?.role;
+  const isAssistant = role === 'assistente';
   const [busca, setBusca] = useState('');
   const [mes, setMes] = useState(format(new Date(), 'yyyy-MM'));
   const [mesAniv, setMesAniv] = useState(new Date().getMonth() + 1);
@@ -16,9 +25,12 @@ export default function Relatorios() {
   const [festas, setFestas] = useState([]);
   const [festaId, setFestaId] = useState('');
   const [loading, setLoading] = useState({});
+  const [anoConsolidado, setAnoConsolidado] = useState(new Date().getFullYear());
 
   useEffect(() => {
-    api.get('/festas').then(r => setFestas(r.data));
+    api.get('/festas')
+      .then(r => setFestas(r.data))
+      .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar festas')));
   }, []);
 
   const download = async (key, url, filename, params = {}) => {
@@ -28,7 +40,7 @@ export default function Relatorios() {
       const blobUrl = URL.createObjectURL(r.data);
       const a = document.createElement('a'); a.href = blobUrl; a.download = filename; a.click();
       toast.success('Relatório gerado!');
-    } catch { toast.error('Erro ao gerar relatório'); }
+    } catch (err) { toast.error(getApiErrorMessage(err, 'Erro ao gerar relatório')); }
     finally { setLoading(prev => ({ ...prev, [key]: false })); }
   };
 
@@ -39,6 +51,7 @@ export default function Relatorios() {
       title: 'Relatório de Membros',
       desc: 'Lista completa com todos os dados cadastrais dos membros',
       color: '#1e3a5f',
+      isFinance: false,
       action: () => download('membros', '/relatorios/membros', `membros${statusMembro ? '_' + statusMembro : ''}.xlsx`, statusMembro ? { status: statusMembro } : {}),
       extra: (
         <select className="search-input" value={statusMembro} onChange={e => setStatusMembro(e.target.value)} style={{ width: '100%' }}>
@@ -54,6 +67,7 @@ export default function Relatorios() {
       title: 'Relatório de Pagamentos',
       desc: 'Situação de pagamentos dos membros com destaque para inadimplentes',
       color: '#38a169',
+      isFinance: true,
       action: () => download('pagamentos', '/relatorios/pagamentos', `pagamentos_${mes}.xlsx`, { mes_referencia: mes }),
       extra: (
         <select className="search-input" value={mes} onChange={e => setMes(e.target.value)} style={{ width: '100%' }}>
@@ -67,6 +81,7 @@ export default function Relatorios() {
       title: 'Relatório de Aniversariantes',
       desc: 'Lista de aniversariantes do mês selecionado',
       color: '#c8a84b',
+      isFinance: false,
       action: () => download('aniversariantes', '/relatorios/aniversariantes', `aniversariantes_mes_${mesAniv}.xlsx`, { mes: mesAniv }),
       extra: (
         <select className="search-input" value={mesAniv} onChange={e => setMesAniv(parseInt(e.target.value))} style={{ width: '100%' }}>
@@ -80,7 +95,22 @@ export default function Relatorios() {
       title: 'Balancete Mensal',
       desc: 'Resumo financeiro completo: saldo anterior, entradas, saídas e saldo final',
       color: '#805ad5',
+      isFinance: true,
       action: () => download('balancete', '/relatorios/balancete', `balancete_${mes}.xlsx`, { mes_referencia: mes }),
+      extra: (
+        <select className="search-input" value={mes} onChange={e => setMes(e.target.value)} style={{ width: '100%' }}>
+          {getMeses().map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+      )
+    },
+    {
+      key: 'livro_diario',
+      icon: <BookText size={24} />,
+      title: 'Livro Diário Mensal',
+      desc: 'Lançamentos cronológicos com conta, histórico, entradas, saídas e saldo acumulado',
+      color: '#6b46c1',
+      isFinance: true,
+      action: () => download('livro_diario', '/relatorios/livro-diario', `livro_diario_${mes}.xlsx`, { mes_referencia: mes }),
       extra: (
         <select className="search-input" value={mes} onChange={e => setMes(e.target.value)} style={{ width: '100%' }}>
           {getMeses().map(m => <option key={m} value={m}>{m}</option>)}
@@ -93,6 +123,7 @@ export default function Relatorios() {
       title: 'Relatório de Conciliação',
       desc: 'Detalhamento de lançamentos bancários com saldo anterior e saldo final',
       color: '#0891b2',
+      isFinance: true,
       action: () => download('conciliacao', '/relatorios/conciliacao', `conciliacao_${mes}.xlsx`, { mes_referencia: mes }),
       extra: (
         <select className="search-input" value={mes} onChange={e => setMes(e.target.value)} style={{ width: '100%' }}>
@@ -106,10 +137,25 @@ export default function Relatorios() {
       title: 'Relatório de Aplicações Financeiras',
       desc: 'Extrato consolidado por instituição/produto com totais e saldo atual',
       color: '#2f855a',
+      isFinance: true,
       action: () => download('aplicacoes_financeiras', '/relatorios/aplicacoes-financeiras', `aplicacoes_financeiras_${mes}.xlsx`, { mes_referencia: mes }),
       extra: (
         <select className="search-input" value={mes} onChange={e => setMes(e.target.value)} style={{ width: '100%' }}>
           {getMeses().map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+      )
+    },
+    {
+      key: 'consolidado_financeiro',
+      icon: <BarChart3 size={24} />,
+      title: 'Consolidado Entradas/Saídas/Aplicações',
+      desc: 'Relatório anual mês a mês com totais de entradas, saídas, aplicações e saldo líquido',
+      color: '#2b6cb0',
+      isFinance: true,
+      action: () => download('consolidado_financeiro', '/relatorios/consolidado-financeiro', `consolidado_financeiro_${anoConsolidado}.xlsx`, { ano: anoConsolidado }),
+      extra: (
+        <select className="search-input" value={anoConsolidado} onChange={e => setAnoConsolidado(parseInt(e.target.value, 10))} style={{ width: '100%' }}>
+          {getAnos().map(ano => <option key={ano} value={ano}>{ano}</option>)}
         </select>
       )
     },
@@ -122,6 +168,7 @@ export default function Relatorios() {
       title: 'Lista de Participantes de Festa',
       desc: 'Relação de participantes e dependentes de uma festa',
       color: '#dd6b20',
+      isFinance: false,
       action: () => {
         if (!festaId) { toast.error('Selecione uma festa'); return; }
         const festa = festas.find(f => f.id === festaId);
@@ -136,10 +183,12 @@ export default function Relatorios() {
     });
   }
 
+  const reportsByRole = isAssistant ? reports.filter(r => !r.isFinance) : reports;
+
   const termoBusca = busca.trim().toLowerCase();
   const reportsFiltrados = termoBusca
-    ? reports.filter(r => [r.title, r.desc].some(campo => String(campo).toLowerCase().includes(termoBusca)))
-    : reports;
+    ? reportsByRole.filter(r => [r.title, r.desc].some(campo => String(campo).toLowerCase().includes(termoBusca)))
+    : reportsByRole;
   const labelRelatorio = (qtd) => `${qtd} ${qtd === 1 ? 'relatório' : 'relatórios'}`;
 
   return (
@@ -161,8 +210,8 @@ export default function Relatorios() {
         </div>
         <div style={{ fontSize: 13, color: '#4a5568', alignSelf: 'flex-end', paddingBottom: 8 }}>
           {termoBusca
-            ? `${labelRelatorio(reportsFiltrados.length)} de ${labelRelatorio(reports.length)}`
-            : labelRelatorio(reports.length)}
+            ? `${labelRelatorio(reportsFiltrados.length)} de ${labelRelatorio(reportsByRole.length)}`
+            : labelRelatorio(reportsByRole.length)}
         </div>
       </div>
 

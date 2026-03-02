@@ -3,6 +3,7 @@ import api from '../api';
 import toast from 'react-hot-toast';
 import { Download, CreditCard, CheckCircle, XCircle, Clock } from 'lucide-react';
 import { format, subMonths } from 'date-fns';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
 
@@ -34,7 +35,7 @@ export default function Pagamentos() {
     setLoading(true);
     api.get('/pagamentos/painel', { params: { mes_referencia: mes, search } })
       .then(r => setPainel(r.data))
-      .catch(() => toast.error('Erro ao carregar painel'))
+      .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar painel')))
       .finally(() => setLoading(false));
   }, [mes, search]);
 
@@ -75,7 +76,7 @@ export default function Pagamentos() {
       setModal(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao salvar pagamento');
+      toast.error(getApiErrorMessage(err, 'Erro ao salvar pagamento'));
     } finally {
       setSaving(false);
     }
@@ -110,7 +111,7 @@ export default function Pagamentos() {
       load();
       loadPendenciasConcil();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao verificar pagamentos no banco');
+      toast.error(getApiErrorMessage(err, 'Erro ao verificar pagamentos no banco'));
     } finally {
       setVerificandoBanco(false);
     }
@@ -130,7 +131,7 @@ export default function Pagamentos() {
       load();
       loadPendenciasConcil();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao confirmar baixa manual');
+      toast.error(getApiErrorMessage(err, 'Erro ao confirmar baixa manual'));
     } finally {
       setConfirmandoPendencia('');
     }

@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { format, subMonths } from 'date-fns';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Download } from 'lucide-react';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
 const getMeses = () => { const r = []; for (let i = 0; i < 13; i++) r.push(format(subMonths(new Date(), i), 'yyyy-MM')); return r; };
@@ -22,7 +23,7 @@ export default function Financeiro() {
     setLoading(true);
     api.get('/financeiro/balancete', { params: { mes_referencia: mes } })
       .then(r => setData(r.data))
-      .catch(() => toast.error('Erro ao carregar balancete'))
+      .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar balancete')))
       .finally(() => setLoading(false));
   }, [mes]);
 
@@ -68,7 +69,7 @@ export default function Financeiro() {
       setSaldoModal(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao salvar saldo inicial');
+      toast.error(getApiErrorMessage(err, 'Erro ao salvar saldo inicial'));
     } finally {
       setSavingSaldo(false);
     }
@@ -85,7 +86,7 @@ export default function Financeiro() {
       setSaldoModal(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao remover saldo manual');
+      toast.error(getApiErrorMessage(err, 'Erro ao remover saldo manual'));
     } finally {
       setSavingSaldo(false);
     }
@@ -93,6 +94,12 @@ export default function Financeiro() {
 
   const desspCatData = data ? Object.entries(data.despesas_por_categoria).map(([name, value]) => ({ name, value })) : [];
   const rendaCatData = data ? Object.entries(data.rendas_por_categoria).map(([name, value]) => ({ name, value })) : [];
+  const entradasContaData = data?.entradas_por_conta?.length
+    ? data.entradas_por_conta
+    : rendaCatData.map(item => ({ codigo: '-', nome: item.name, valor: item.value }));
+  const saidasContaData = data?.saidas_por_conta?.length
+    ? data.saidas_por_conta
+    : desspCatData.map(item => ({ codigo: '-', nome: item.name, valor: item.value }));
 
   return (
     <div>
@@ -132,7 +139,7 @@ export default function Financeiro() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
                 <tbody>
                   <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
-                    <td style={{ padding: '8px 4px' }}>Saldo Anterior ({data?.mes_referencia_anterior || '-'})</td>
+                    <td style={{ padding: '8px 4px' }}><strong>Saldo Anterior ({data?.mes_referencia_anterior || '-'})</strong></td>
                     <td style={{ textAlign: 'right', fontWeight: 600, color: '#1e3a5f' }}>
                       {fmt(data?.saldo_anterior)}
                       {data?.origem_saldo_anterior === 'manual' && (
@@ -140,14 +147,10 @@ export default function Financeiro() {
                       )}
                     </td>
                   </tr>
-                  <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
-                    <td style={{ padding: '8px 4px' }}>Mensalidades ({data?.qtd_pagantes} pagantes)</td>
-                    <td style={{ textAlign: 'right', fontWeight: 600, color: '#38a169' }}>{fmt(data?.total_mensalidades)}</td>
-                  </tr>
-                  {rendaCatData.map(r => (
-                    <tr key={r.name} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                      <td style={{ padding: '8px 4px', paddingLeft: 16 }}>{r.name}</td>
-                      <td style={{ textAlign: 'right', color: '#38a169' }}>{fmt(r.value)}</td>
+                  {entradasContaData.map(r => (
+                    <tr key={`${r.codigo}-${r.nome}`} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                      <td style={{ padding: '8px 4px', paddingLeft: 10 }}>{r.codigo} - {r.nome}</td>
+                      <td style={{ textAlign: 'right', color: '#38a169' }}>{fmt(r.valor)}</td>
                     </tr>
                   ))}
                   <tr style={{ background: '#f0fff4', fontWeight: 700 }}>
@@ -162,10 +165,10 @@ export default function Financeiro() {
               <div className="card-title" style={{ color: '#e53e3e' }}>📤 SAÍDAS</div>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
                 <tbody>
-                  {desspCatData.map(d => (
-                    <tr key={d.name} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                      <td style={{ padding: '8px 4px' }}>{d.name}</td>
-                      <td style={{ textAlign: 'right', color: '#e53e3e' }}>{fmt(d.value)}</td>
+                  {saidasContaData.map(d => (
+                    <tr key={`${d.codigo}-${d.nome}`} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                      <td style={{ padding: '8px 4px' }}>{d.codigo} - {d.nome}</td>
+                      <td style={{ textAlign: 'right', color: '#e53e3e' }}>{fmt(d.valor)}</td>
                     </tr>
                   ))}
                   <tr style={{ background: '#fff5f5', fontWeight: 700 }}>

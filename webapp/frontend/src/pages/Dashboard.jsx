@@ -6,6 +6,7 @@ import {
 } from 'recharts';
 import { Users, CreditCard, TrendingDown, TrendingUp, Cake, AlertCircle, CheckCircle, DollarSign } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const COLORS = ['#1e3a5f', '#c8a84b', '#38a169', '#e53e3e', '#805ad5', '#dd6b20'];
 const COMPACT_CURRENCY_THRESHOLD = 100000;
@@ -27,7 +28,14 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.get('/dashboard').then(r => setData(r.data)).catch(() => toast.error('Erro ao carregar dashboard')).finally(() => setLoading(false));
+    api.get('/dashboard')
+      .then(r => setData(r.data))
+      .catch((err) => {
+        if (err.response?.status !== 401) {
+          toast.error(getApiErrorMessage(err, 'Erro ao carregar dashboard'));
+        }
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   if (loading) return <div className="page-loading"><div className="spinner" /></div>;

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
+import { getPublicApiErrorMessage } from '../utils/apiError';
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
 const fmtDataBR = (valor) => {
@@ -104,11 +105,11 @@ export default function InscricaoFestaPublica() {
       try {
         const r = await fetch(`/api/public/festas/${festaId}`);
         const data = await r.json();
-        if (!r.ok) throw new Error(data?.detail || 'Link inválido ou festa não encontrada');
+        if (!r.ok) throw new Error(getPublicApiErrorMessage(data, 'Link inválido ou festa não encontrada'));
         if (!active) return;
         setFesta(data?.festa || null);
       } catch (e) {
-        toast.error(e.message || 'Não foi possível abrir o convite');
+        toast.error(e?.message ? e.message : 'Não foi possível abrir o convite');
       } finally {
         if (active) setLoading(false);
       }
@@ -147,11 +148,11 @@ export default function InscricaoFestaPublica() {
         body: JSON.stringify(credenciais),
       });
       const data = await r.json();
-      if (!r.ok) throw new Error(data?.detail || 'Dados inválidos');
+      if (!r.ok) throw new Error(getPublicApiErrorMessage(data, 'Dados inválidos'));
       preencherFormulario(data);
       toast.success('Membro identificado com sucesso');
     } catch (e) {
-      toast.error(e.message || 'Não foi possível identificar o membro');
+      toast.error(e?.message ? e.message : 'Não foi possível identificar o membro');
     } finally {
       setIdentificando(false);
     }
@@ -200,11 +201,11 @@ export default function InscricaoFestaPublica() {
         }),
       });
       const data = await r.json();
-      if (!r.ok) throw new Error(data?.detail || 'Erro ao confirmar participação');
+      if (!r.ok) throw new Error(getPublicApiErrorMessage(data, 'Erro ao confirmar participação'));
       toast.success('Participação confirmada com sucesso!');
       await identificarMembro();
     } catch (e) {
-      toast.error(e.message || 'Erro ao confirmar participação');
+      toast.error(e?.message ? e.message : 'Erro ao confirmar participação');
     } finally {
       setSaving(false);
     }

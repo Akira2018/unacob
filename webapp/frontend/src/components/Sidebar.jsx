@@ -3,7 +3,7 @@ import { useAuth } from '../context/useAuth';
 import {
   LayoutDashboard, Users, CreditCard, Receipt, TrendingUp,
   PartyPopper, FileSpreadsheet, GitMerge, Tag, Cake,
-  UserCog, BarChart3, DollarSign, LogOut, Building2, Landmark
+  UserCog, BarChart3, DollarSign, LogOut, Building2, Landmark, User
 } from 'lucide-react';
 
 const sections = [
@@ -26,6 +26,8 @@ const sections = [
       { to: '/despesas', icon: <Receipt size={16} />, label: 'Despesas' },
       { to: '/outras-rendas', icon: <DollarSign size={16} />, label: 'Outras Rendas' },
       { to: '/aplicacoes-financeiras', icon: <Landmark size={16} />, label: 'Aplicações Financeiras' },
+      { to: '/plano-contas', icon: <FileSpreadsheet size={16} />, label: 'Código de Contas' },
+      { to: '/previsao-orcamentaria', icon: <BarChart3 size={16} />, label: 'Previsão Orçamentária' },
       { to: '/fluxo-caixa', icon: <TrendingUp size={16} />, label: 'Fluxo de Caixa' },
       { to: '/financeiro', icon: <BarChart3 size={16} />, label: 'Balancete' },
       { to: '/conciliacao', icon: <GitMerge size={16} />, label: 'Conciliação' },
@@ -43,14 +45,18 @@ const sections = [
       { to: '/aniversariantes', icon: <Cake size={16} />, label: 'Aniversariantes' },
       { to: '/etiquetas', icon: <Tag size={16} />, label: 'Etiquetas' },
       { to: '/relatorios', icon: <FileSpreadsheet size={16} />, label: 'Relatórios' },
+      { to: '/meu-cadastro', icon: <User size={16} />, label: 'Meu Cadastro' },
       { to: '/usuarios', icon: <UserCog size={16} />, label: 'Usuários' },
     ]
   },
 ];
 
-export default function Sidebar({ open }) {
+export default function Sidebar({ open, onNavigate }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+
+  const role = user?.role;
+  const isAssistant = role === 'assistente';
 
   const handleLogout = () => {
     logout();
@@ -70,22 +76,34 @@ export default function Sidebar({ open }) {
       </div>
 
       <nav className="sidebar-nav">
-        {sections.map(sec => (
-          <div key={sec.label}>
+        {sections.map(sec => {
+          const visibleItems = sec.items.filter((item) => {
+            const financePaths = new Set([
+              '/pagamentos', '/despesas', '/outras-rendas', '/aplicacoes-financeiras',
+              '/plano-contas', '/previsao-orcamentaria', '/fluxo-caixa', '/financeiro', '/conciliacao'
+            ]);
+            if (financePaths.has(item.to) && isAssistant) return false;
+            return true;
+          });
+
+          if (visibleItems.length === 0) return null;
+
+          return <div key={sec.label}>
             <div className="nav-section">{sec.label}</div>
-            {sec.items.map(item => (
+            {visibleItems.map(item => (
               <NavLink
                 key={item.to}
                 to={item.to}
                 end={item.to === '/'}
                 className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+                onClick={onNavigate}
               >
                 {item.icon}
                 {item.label}
               </NavLink>
             ))}
-          </div>
-        ))}
+          </div>;
+        })}
       </nav>
 
       <div style={{ padding: '12px 20px', borderTop: '1px solid rgba(255,255,255,.1)' }}>

@@ -1,0 +1,27 @@
+services:
+  backend:
+    build:
+      context: ./webapp/backend
+    restart: unless-stopped
+    env_file:
+      - ./webapp/backend/.env
+    volumes:
+      - backend_data:/data
+
+  frontend:
+    build:
+      context: ./webapp/frontend
+      args:
+        VITE_BASE_PATH: /
+        VITE_API_BASE_URL: /api
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+
+volumes:
+  backend_data:

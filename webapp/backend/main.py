@@ -1,13 +1,14 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Body
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Body, Request
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 import models
 import schemas
 
-from database import engine, get_db, Base
-from auth import get_current_user, verify_password, get_password_hash, create_access_token
+from database import engine, get_db, Base, SessionLocal
+from auth import get_current_user, verify_password, get_password_hash, create_access_token, SECRET_KEY, ALGORITHM
+from jose import jwt, JWTError
 from typing import Optional, List
 import os
 import io
@@ -19,17 +20,119 @@ from pathlib import Path
 from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from dotenv import load_dotenv
-from sqlalchemy import or_, cast, String
+from sqlalchemy import or_, cast, String, inspect, text
 from sqlalchemy import func as sql_func
 from collections import defaultdict
 import calendar
 import uuid
 import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # Create tables
 Base.metadata.create_all(bind=engine)
+
+
+PLANO_CONTAS_PADRAO = [
+    {"codigo": "1.1", "nome": "Mensalidades", "tipo": "entrada", "ordem": 110},
+    {"codigo": "1.2", "nome": "Fundo social", "tipo": "entrada", "ordem": 120},
+    {"codigo": "1.3", "nome": "Fundo para ações jurídicas", "tipo": "entrada", "ordem": 130},
+    {"codigo": "1.4", "nome": "Resgate da conta de investimentos", "tipo": "entrada", "ordem": 140},
+    {"codigo": "1.5", "nome": "Outras arrecadações", "tipo": "entrada", "ordem": 150},
+    {"codigo": "1.6", "nome": "Estorno de tarifa bancária", "tipo": "entrada", "ordem": 160},
+    {"codigo": "2.1", "nome": "Auxílio funeral emergencial", "tipo": "saida", "ordem": 210},
+    {"codigo": "2.2", "nome": "Diárias/Alimentação", "tipo": "saida", "ordem": 220},
+    {"codigo": "2.3", "nome": "Hospedagens", "tipo": "saida", "ordem": 230},
+    {"codigo": "2.4", "nome": "Passagens aéreas e terrestres", "tipo": "saida", "ordem": 240},
+    {"codigo": "2.5", "nome": "Combustível, pedágio, taxi, uber", "tipo": "saida", "ordem": 250},
+    {"codigo": "2.6", "nome": "Ajuda de custo - Estacionamento/área azul", "tipo": "saida", "ordem": 260},
+    {"codigo": "2.7", "nome": "Contribuição Assoc. de Classe (FAACO)", "tipo": "saida", "ordem": 270},
+    {"codigo": "2.8", "nome": "Xerox/serviços gráficos", "tipo": "saida", "ordem": 280},
+    {"codigo": "2.9", "nome": "Impostos e Taxas (IPTU, ISS, Cartórios)", "tipo": "saida", "ordem": 290},
+    {"codigo": "2.10", "nome": "Comemorações e eventos", "tipo": "saida", "ordem": 300},
+    {"codigo": "2.11", "nome": "Conservação, manutenção e limpeza", "tipo": "saida", "ordem": 310},
+    {"codigo": "2.12", "nome": "Obras e reparos", "tipo": "saida", "ordem": 320},
+    {"codigo": "2.13", "nome": "Despesas postais", "tipo": "saida", "ordem": 330},
+    {"codigo": "2.14", "nome": "Custas processuais/consig.a terceiros - JANOT", "tipo": "saida", "ordem": 340},
+    {"codigo": "2.15", "nome": "Honorários Contábeis", "tipo": "saida", "ordem": 350},
+    {"codigo": "2.16", "nome": "Seguros", "tipo": "saida", "ordem": 360},
+    {"codigo": "2.17", "nome": "Máquinas, Aparelhos e Equipamentos", "tipo": "saida", "ordem": 370},
+    {"codigo": "2.18", "nome": "Materiais para Escritório", "tipo": "saida", "ordem": 380},
+    {"codigo": "2.19", "nome": "Copa e cozinha - insumos", "tipo": "saida", "ordem": 390},
+    {"codigo": "2.20", "nome": "Móveis e Utensílios", "tipo": "saida", "ordem": 400},
+    {"codigo": "2.21", "nome": "Energia elétrica - CPFL", "tipo": "saida", "ordem": 410},
+    {"codigo": "2.22", "nome": "Consumo de água - DAE", "tipo": "saida", "ordem": 420},
+    {"codigo": "2.23", "nome": "Despesas bancárias", "tipo": "saida", "ordem": 430},
+    {"codigo": "2.24", "nome": "Telefone e Internet", "tipo": "saida", "ordem": 440},
+    {"codigo": "2.25", "nome": "Repasse fundo ações judiciais", "tipo": "saida", "ordem": 450},
+    {"codigo": "2.26", "nome": "Repasse fundo ações sociais", "tipo": "saida", "ordem": 460},
+    {"codigo": "2.27", "nome": "Sorteios e brindes", "tipo": "saida", "ordem": 470},
+    {"codigo": "2.28", "nome": "Perda de associados", "tipo": "saida", "ordem": 480},
+    {"codigo": "2.29", "nome": "Provisão para impostos e taxas (ISS)", "tipo": "saida", "ordem": 490},
+]
+
+
+def _ensure_financeiro_columns_and_seed_contas():
+    inspector = inspect(engine)
+
+    def _has_column(table_name: str, column_name: str) -> bool:
+        try:
+            cols = inspector.get_columns(table_name)
+        except Exception:
+            return False
+        return any(c.get("name") == column_name for c in cols)
+
+    with engine.begin() as conn:
+        if _has_column("despesas", "conta_id") is False:
+            conn.execute(text("ALTER TABLE despesas ADD COLUMN conta_id VARCHAR(36)"))
+        if _has_column("despesas", "conta_codigo") is False:
+            conn.execute(text("ALTER TABLE despesas ADD COLUMN conta_codigo VARCHAR(20)"))
+        if _has_column("despesas", "conta_nome") is False:
+            conn.execute(text("ALTER TABLE despesas ADD COLUMN conta_nome VARCHAR(255)"))
+
+        if _has_column("outras_rendas", "conta_id") is False:
+            conn.execute(text("ALTER TABLE outras_rendas ADD COLUMN conta_id VARCHAR(36)"))
+        if _has_column("outras_rendas", "conta_codigo") is False:
+            conn.execute(text("ALTER TABLE outras_rendas ADD COLUMN conta_codigo VARCHAR(20)"))
+        if _has_column("outras_rendas", "conta_nome") is False:
+            conn.execute(text("ALTER TABLE outras_rendas ADD COLUMN conta_nome VARCHAR(255)"))
+
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        existentes = {
+            c.codigo: c
+            for c in db.query(models.PlanoConta).all()
+            if c.codigo
+        }
+        for conta in PLANO_CONTAS_PADRAO:
+            atual = existentes.get(conta["codigo"])
+            if atual:
+                atual.nome = conta["nome"]
+                atual.tipo = conta["tipo"]
+                atual.ordem = conta["ordem"]
+                if atual.ativo is None:
+                    atual.ativo = True
+                atual.updated_at = datetime.utcnow()
+            else:
+                db.add(models.PlanoConta(
+                    id=str(uuid.uuid4()),
+                    codigo=conta["codigo"],
+                    nome=conta["nome"],
+                    tipo=conta["tipo"],
+                    ordem=conta["ordem"],
+                    ativo=True,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                ))
+        db.commit()
+    finally:
+        db.close()
+
+
+_ensure_financeiro_columns_and_seed_contas()
 
 app = FastAPI(title="UNACOB - União dos aposentados dos correios em Bauru - SP API", version="1.0.0")
 
@@ -40,6 +143,98 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+FINANCE_API_PREFIXES = (
+    "/api/pagamentos",
+    "/api/contas",
+    "/api/previsoes-orcamentarias",
+    "/api/despesas",
+    "/api/outras-rendas",
+    "/api/aplicacoes-financeiras",
+    "/api/transacoes",
+    "/api/saldo-inicial",
+    "/api/fluxo-caixa",
+    "/api/financeiro",
+    "/api/conciliacao",
+)
+
+FINANCE_REPORT_PREFIXES = (
+    "/api/relatorios/pagamentos",
+    "/api/relatorios/balancete",
+    "/api/relatorios/livro-diario",
+    "/api/relatorios/conciliacao",
+    "/api/relatorios/aplicacoes-financeiras",
+    "/api/relatorios/consolidado-financeiro",
+)
+
+
+def _is_finance_path(path: str) -> bool:
+    if any(path.startswith(prefix) for prefix in FINANCE_API_PREFIXES):
+        return True
+    if any(path.startswith(prefix) for prefix in FINANCE_REPORT_PREFIXES):
+        return True
+    return False
+
+
+def _validate_password_strength(password: str):
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="A senha deve ter no mínimo 8 caracteres")
+    if not re.search(r"[A-Z]", password):
+        raise HTTPException(status_code=400, detail="A senha deve conter pelo menos 1 letra maiúscula")
+    if not re.search(r"[a-z]", password):
+        raise HTTPException(status_code=400, detail="A senha deve conter pelo menos 1 letra minúscula")
+    if not re.search(r"\d", password):
+        raise HTTPException(status_code=400, detail="A senha deve conter pelo menos 1 número")
+    if not re.search(r"[^A-Za-z0-9]", password):
+        raise HTTPException(status_code=400, detail="A senha deve conter pelo menos 1 caractere especial")
+
+
+@app.middleware("http")
+async def role_access_middleware(request: Request, call_next):
+    path = request.url.path or ""
+
+    if path.startswith("/api/auth") or path == "/api/health":
+        return await call_next(request)
+
+    users_path = path.startswith("/api/users")
+    users_self_path = path == "/api/users/me"
+    users_list_path = path == "/api/users"
+    finance_path = _is_finance_path(path)
+    if not users_path and not finance_path:
+        return await call_next(request)
+
+    auth_header = request.headers.get("authorization") or ""
+    if not auth_header.lower().startswith("bearer "):
+        return await call_next(request)
+
+    token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        return await call_next(request)
+
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+    except JWTError:
+        return await call_next(request)
+
+    if not user_id:
+        return await call_next(request)
+
+    db = SessionLocal()
+    try:
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+        role = (user.role or "").lower() if user else ""
+
+        if users_path and not users_self_path and not users_list_path and role != "administrador":
+            return JSONResponse(status_code=403, content={"detail": "Acesso restrito a administradores"})
+
+        if finance_path and role == "assistente":
+            return JSONResponse(status_code=403, content={"detail": "Perfil assistente sem acesso ao módulo financeiro"})
+    finally:
+        db.close()
+
+    return await call_next(request)
 
 # ─── Seed initial admin user ───────────────────────────────────────────────────
 def seed_admin():
@@ -90,12 +285,48 @@ def me(current_user: models.User = Depends(get_current_user)):
             "nome_completo": current_user.nome_completo, "role": current_user.role}
 
 
+@app.get("/api/users/me", response_model=schemas.UserResponse)
+def get_own_user(current_user=Depends(get_current_user)):
+    return current_user
+
+
+@app.put("/api/users/me", response_model=schemas.UserResponse)
+def update_own_user(req: schemas.UserSelfUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    payload = req.dict(exclude_none=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="Nenhum campo informado para atualização")
+
+    if "nome_completo" in payload:
+        nome = (payload.get("nome_completo") or "").strip()
+        if not nome:
+            raise HTTPException(status_code=400, detail="Nome completo é obrigatório")
+        current_user.nome_completo = nome
+
+    if "password" in payload:
+        password = payload.get("password") or ""
+        current_password = payload.get("current_password") or ""
+        if not current_password:
+            raise HTTPException(status_code=400, detail="Informe a senha atual para alterar a senha")
+        if not verify_password(current_password, current_user.password):
+            raise HTTPException(status_code=400, detail="Senha atual inválida")
+        _validate_password_strength(password)
+        if verify_password(password, current_user.password):
+            raise HTTPException(status_code=400, detail="A nova senha deve ser diferente da senha atual")
+        current_user.password = get_password_hash(password)
+
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # USERS
 # ════════════════════════════════════════════════════════════════════════════════
 @app.get("/api/users", response_model=List[schemas.UserResponse])
 def list_users(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    return db.query(models.User).all()
+    if current_user.role == "administrador":
+        return db.query(models.User).all()
+    return [current_user]
 
 @app.post("/api/users", response_model=schemas.UserResponse)
 def create_user(req: schemas.UserCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
@@ -104,6 +335,7 @@ def create_user(req: schemas.UserCreate, db: Session = Depends(get_db), current_
     existing = db.query(models.User).filter(models.User.email == req.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email já cadastrado")
+    _validate_password_strength(req.password)
     user = models.User(
         id=str(uuid.uuid4()),
         email=req.email,
@@ -120,11 +352,14 @@ def create_user(req: schemas.UserCreate, db: Session = Depends(get_db), current_
 
 @app.put("/api/users/{user_id}", response_model=schemas.UserResponse)
 def update_user(user_id: str, req: schemas.UserUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    if current_user.role != "administrador":
+        raise HTTPException(status_code=403, detail="Acesso restrito a administradores")
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
     for k, v in req.dict(exclude_none=True).items():
         if k == "password":
+            _validate_password_strength(v)
             setattr(user, k, get_password_hash(v))
         else:
             setattr(user, k, v)
@@ -134,6 +369,10 @@ def update_user(user_id: str, req: schemas.UserUpdate, db: Session = Depends(get
 
 @app.delete("/api/users/{user_id}")
 def delete_user(user_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    if current_user.role != "administrador":
+        raise HTTPException(status_code=403, detail="Acesso restrito a administradores")
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Você não pode remover seu próprio usuário")
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
@@ -921,6 +1160,340 @@ def delete_pagamento(pagamento_id: str, db: Session = Depends(get_db), current_u
     return {"ok": True}
 
 
+def _get_conta_or_400(db: Session, conta_id: Optional[str], tipo: str) -> models.PlanoConta:
+    if not conta_id:
+        raise HTTPException(status_code=400, detail="Selecione uma conta")
+
+    conta = db.query(models.PlanoConta).filter(models.PlanoConta.id == conta_id).first()
+    if not conta:
+        raise HTTPException(status_code=400, detail="Conta não encontrada")
+
+    if (conta.tipo or "").lower() != (tipo or "").lower():
+        raise HTTPException(status_code=400, detail=f"Conta inválida para {tipo}")
+
+    if conta.ativo is False:
+        raise HTTPException(status_code=400, detail="Conta inativa")
+
+    return conta
+
+
+@app.get("/api/contas", response_model=List[schemas.PlanoContaResponse])
+def list_contas(
+    tipo: Optional[str] = None,
+    apenas_ativas: bool = True,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    q = db.query(models.PlanoConta)
+    if tipo:
+        q = q.filter(models.PlanoConta.tipo == tipo)
+    if apenas_ativas:
+        q = q.filter(models.PlanoConta.ativo == True)
+    return q.order_by(models.PlanoConta.ordem.asc(), models.PlanoConta.codigo.asc()).all()
+
+
+def _validar_tipo_conta(tipo: Optional[str]) -> str:
+    tipo_norm = unicodedata.normalize("NFKD", (tipo or "")).encode("ascii", "ignore").decode().strip().lower()
+    if tipo_norm in {"entrada", "entradas"}:
+        return "entrada"
+    if tipo_norm in {"saida", "saidas"}:
+        return "saida"
+    if tipo_norm not in {"entrada", "saida"}:
+        raise HTTPException(status_code=400, detail="Tipo da conta deve ser 'entrada' ou 'saida'")
+    return tipo_norm
+
+
+def _ordenar_codigo_conta(codigo: Optional[str]):
+    valor = (codigo or "").strip()
+    if not valor:
+        return (9999,)
+
+    out = []
+    for parte in valor.split("."):
+        try:
+            out.append(int(parte))
+        except Exception:
+            out.append(9999)
+    return tuple(out)
+
+
+@app.post("/api/contas", response_model=schemas.PlanoContaResponse)
+def create_conta(req: schemas.PlanoContaCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    codigo = (req.codigo or "").strip()
+    if not codigo:
+        raise HTTPException(status_code=400, detail="Código é obrigatório")
+
+    nome = (req.nome or "").strip()
+    if not nome:
+        raise HTTPException(status_code=400, detail="Nome é obrigatório")
+
+    tipo = _validar_tipo_conta(req.tipo)
+    existe_codigo = db.query(models.PlanoConta).filter(models.PlanoConta.codigo == codigo).first()
+    if existe_codigo:
+        raise HTTPException(status_code=400, detail="Já existe uma conta com este código")
+
+    conta = models.PlanoConta(
+        id=str(uuid.uuid4()),
+        codigo=codigo,
+        nome=nome,
+        tipo=tipo,
+        ordem=req.ordem or 0,
+        ativo=True if req.ativo is None else bool(req.ativo),
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(conta)
+    db.commit()
+    db.refresh(conta)
+    return conta
+
+
+@app.put("/api/contas/{conta_id}", response_model=schemas.PlanoContaResponse)
+def update_conta(conta_id: str, req: schemas.PlanoContaUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    conta = db.query(models.PlanoConta).filter(models.PlanoConta.id == conta_id).first()
+    if not conta:
+        raise HTTPException(status_code=404, detail="Conta não encontrada")
+
+    if req.codigo is not None:
+        novo_codigo = req.codigo.strip()
+        if not novo_codigo:
+            raise HTTPException(status_code=400, detail="Código é obrigatório")
+        existe_codigo = db.query(models.PlanoConta).filter(
+            models.PlanoConta.codigo == novo_codigo,
+            models.PlanoConta.id != conta_id
+        ).first()
+        if existe_codigo:
+            raise HTTPException(status_code=400, detail="Já existe uma conta com este código")
+        conta.codigo = novo_codigo
+
+    if req.nome is not None:
+        novo_nome = req.nome.strip()
+        if not novo_nome:
+            raise HTTPException(status_code=400, detail="Nome é obrigatório")
+        conta.nome = novo_nome
+
+    if req.tipo is not None:
+        conta.tipo = _validar_tipo_conta(req.tipo)
+
+    if req.ordem is not None:
+        conta.ordem = req.ordem
+
+    if req.ativo is not None:
+        conta.ativo = bool(req.ativo)
+
+    conta.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(conta)
+    return conta
+
+
+@app.delete("/api/contas/{conta_id}")
+def delete_conta(conta_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    conta = db.query(models.PlanoConta).filter(models.PlanoConta.id == conta_id).first()
+    if not conta:
+        raise HTTPException(status_code=404, detail="Conta não encontrada")
+
+    despesas_vinculadas = db.query(models.Despesa).filter(models.Despesa.conta_id == conta_id).count()
+    rendas_vinculadas = db.query(models.OutraRenda).filter(models.OutraRenda.conta_id == conta_id).count()
+    if despesas_vinculadas > 0 or rendas_vinculadas > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Conta já possui lançamentos vinculados. Inative a conta em vez de excluir."
+        )
+
+    db.delete(conta)
+    db.commit()
+    return {"ok": True}
+
+
+def _validar_ano_mes_previsao(ano: int, mes: int):
+    if ano < 2000 or ano > 2100:
+        raise HTTPException(status_code=400, detail="Ano inválido")
+    if mes < 1 or mes > 12:
+        raise HTTPException(status_code=400, detail="Mês inválido")
+
+
+@app.get("/api/previsoes-orcamentarias", response_model=List[schemas.PrevisaoOrcamentariaResponse])
+def list_previsoes_orcamentarias(
+    ano: int,
+    mes: Optional[int] = None,
+    tipo: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    if mes is not None:
+        _validar_ano_mes_previsao(ano, mes)
+    else:
+        _validar_ano_mes_previsao(ano, 1)
+
+    q = db.query(models.PrevisaoOrcamentaria)
+    q = q.filter(models.PrevisaoOrcamentaria.ano == ano)
+    if mes is not None:
+        q = q.filter(models.PrevisaoOrcamentaria.mes == mes)
+
+    previsoes = q.order_by(models.PrevisaoOrcamentaria.mes.asc()).all()
+    conta_ids = [p.conta_id for p in previsoes]
+    contas = {
+        c.id: c for c in db.query(models.PlanoConta).filter(models.PlanoConta.id.in_(conta_ids)).all()
+    } if conta_ids else {}
+
+    result = []
+    for p in previsoes:
+        conta = contas.get(p.conta_id)
+        if tipo and conta and (conta.tipo or "").lower() != tipo.lower():
+            continue
+        result.append({
+            "id": p.id,
+            "conta_id": p.conta_id,
+            "conta_codigo": conta.codigo if conta else None,
+            "conta_nome": conta.nome if conta else None,
+            "ano": p.ano,
+            "mes": p.mes,
+            "valor_previsto": float(p.valor_previsto or 0),
+            "observacoes": p.observacoes,
+            "created_at": p.created_at,
+        })
+    return result
+
+
+@app.post("/api/previsoes-orcamentarias", response_model=schemas.PrevisaoOrcamentariaResponse)
+def create_previsao_orcamentaria(
+    req: schemas.PrevisaoOrcamentariaCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    _validar_ano_mes_previsao(req.ano, req.mes)
+    conta = db.query(models.PlanoConta).filter(models.PlanoConta.id == req.conta_id).first()
+    if not conta:
+        raise HTTPException(status_code=400, detail="Conta não encontrada")
+
+    existente = db.query(models.PrevisaoOrcamentaria).filter(
+        models.PrevisaoOrcamentaria.conta_id == req.conta_id,
+        models.PrevisaoOrcamentaria.ano == req.ano,
+        models.PrevisaoOrcamentaria.mes == req.mes,
+    ).first()
+    if existente:
+        raise HTTPException(status_code=400, detail="Já existe previsão para esta conta no período")
+
+    previsao = models.PrevisaoOrcamentaria(
+        id=str(uuid.uuid4()),
+        user_id=current_user.id,
+        conta_id=req.conta_id,
+        ano=req.ano,
+        mes=req.mes,
+        valor_previsto=float(req.valor_previsto or 0),
+        observacoes=req.observacoes,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(previsao)
+    db.commit()
+    db.refresh(previsao)
+    return {
+        "id": previsao.id,
+        "conta_id": previsao.conta_id,
+        "conta_codigo": conta.codigo,
+        "conta_nome": conta.nome,
+        "ano": previsao.ano,
+        "mes": previsao.mes,
+        "valor_previsto": float(previsao.valor_previsto or 0),
+        "observacoes": previsao.observacoes,
+        "created_at": previsao.created_at,
+    }
+
+
+@app.put("/api/previsoes-orcamentarias/{previsao_id}", response_model=schemas.PrevisaoOrcamentariaResponse)
+def update_previsao_orcamentaria(
+    previsao_id: str,
+    req: schemas.PrevisaoOrcamentariaUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    previsao = db.query(models.PrevisaoOrcamentaria).filter(models.PrevisaoOrcamentaria.id == previsao_id).first()
+    if not previsao:
+        raise HTTPException(status_code=404, detail="Previsão não encontrada")
+
+    if req.valor_previsto is not None:
+        previsao.valor_previsto = float(req.valor_previsto)
+    if req.observacoes is not None:
+        previsao.observacoes = req.observacoes
+    previsao.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(previsao)
+
+    conta = db.query(models.PlanoConta).filter(models.PlanoConta.id == previsao.conta_id).first()
+    return {
+        "id": previsao.id,
+        "conta_id": previsao.conta_id,
+        "conta_codigo": conta.codigo if conta else None,
+        "conta_nome": conta.nome if conta else None,
+        "ano": previsao.ano,
+        "mes": previsao.mes,
+        "valor_previsto": float(previsao.valor_previsto or 0),
+        "observacoes": previsao.observacoes,
+        "created_at": previsao.created_at,
+    }
+
+
+@app.delete("/api/previsoes-orcamentarias/{previsao_id}")
+def delete_previsao_orcamentaria(
+    previsao_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    previsao = db.query(models.PrevisaoOrcamentaria).filter(models.PrevisaoOrcamentaria.id == previsao_id).first()
+    if not previsao:
+        raise HTTPException(status_code=404, detail="Previsão não encontrada")
+    db.delete(previsao)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/previsoes-orcamentarias/upsert-lote")
+def upsert_previsao_orcamentaria_lote(
+    itens: List[schemas.PrevisaoOrcamentariaUpsertItem],
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    atualizados = 0
+    criados = 0
+
+    for item in itens:
+        _validar_ano_mes_previsao(item.ano, item.mes)
+        conta = db.query(models.PlanoConta).filter(models.PlanoConta.id == item.conta_id).first()
+        if not conta:
+            continue
+
+        previsao = db.query(models.PrevisaoOrcamentaria).filter(
+            models.PrevisaoOrcamentaria.conta_id == item.conta_id,
+            models.PrevisaoOrcamentaria.ano == item.ano,
+            models.PrevisaoOrcamentaria.mes == item.mes,
+        ).first()
+
+        if previsao:
+            previsao.valor_previsto = float(item.valor_previsto or 0)
+            previsao.observacoes = item.observacoes
+            previsao.updated_at = datetime.utcnow()
+            atualizados += 1
+        else:
+            db.add(models.PrevisaoOrcamentaria(
+                id=str(uuid.uuid4()),
+                user_id=current_user.id,
+                conta_id=item.conta_id,
+                ano=item.ano,
+                mes=item.mes,
+                valor_previsto=float(item.valor_previsto or 0),
+                observacoes=item.observacoes,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            ))
+            criados += 1
+
+    db.commit()
+    return {"ok": True, "criados": criados, "atualizados": atualizados}
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # DESPESAS
 # ════════════════════════════════════════════════════════════════════════════════
@@ -942,8 +1515,12 @@ def list_despesas(
 def create_despesa(req: schemas.DespesaCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     mes_ref = req.mes_referencia or req.data_despesa.strftime("%Y-%m")
     descricao = (req.descricao or "").strip()
+    conta = _get_conta_or_400(db, req.conta_id, "saida")
+    categoria = (req.categoria or conta.nome or "Outros").strip()
     d = models.Despesa(id=str(uuid.uuid4()), user_id=current_user.id, mes_referencia=mes_ref,
-                        created_at=datetime.utcnow(), **req.dict(exclude={"mes_referencia", "descricao"}), descricao=descricao)
+                        created_at=datetime.utcnow(), **req.dict(exclude={"mes_referencia", "descricao", "categoria", "conta_id"}),
+                        descricao=descricao, categoria=categoria,
+                        conta_id=conta.id, conta_codigo=conta.codigo, conta_nome=conta.nome)
     d.mes_referencia = mes_ref
     db.add(d)
     _sync_transacao_despesa(db, d, current_user.id)
@@ -963,9 +1540,26 @@ def update_despesa(despesa_id: str, req: schemas.DespesaUpdate, db: Session = De
         "valor": d.valor,
     }
     for k, v in req.dict(exclude_none=True).items():
+        if k == "conta_id":
+            continue
         if k == "descricao" and isinstance(v, str):
             v = v.strip()
         setattr(d, k, v)
+
+    if req.conta_id is not None:
+        conta = _get_conta_or_400(db, req.conta_id, "saida")
+        d.conta_id = conta.id
+        d.conta_codigo = conta.codigo
+        d.conta_nome = conta.nome
+        if not d.categoria:
+            d.categoria = conta.nome
+
+    if d.conta_id is None:
+        raise HTTPException(status_code=400, detail="Selecione uma conta")
+
+    if not d.categoria:
+        d.categoria = d.conta_nome or "Outros"
+
     _delete_transacoes_despesa_por_payload(db, payload_antigo)
     _sync_transacao_despesa(db, d, current_user.id)
     db.commit()
@@ -1005,8 +1599,12 @@ def list_outras_rendas(
 @app.post("/api/outras-rendas", response_model=schemas.OutraRendaResponse)
 def create_outra_renda(req: schemas.OutraRendaCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     mes_ref = req.mes_referencia or req.data_recebimento.strftime("%Y-%m")
+    conta = _get_conta_or_400(db, req.conta_id, "entrada")
+    categoria = (req.categoria or conta.nome or "Outros").strip()
     r = models.OutraRenda(id=str(uuid.uuid4()), user_id=current_user.id, mes_referencia=mes_ref,
-                           created_at=datetime.utcnow(), **req.dict(exclude={"mes_referencia"}))
+                           created_at=datetime.utcnow(), **req.dict(exclude={"mes_referencia", "categoria", "conta_id"}),
+                           categoria=categoria,
+                           conta_id=conta.id, conta_codigo=conta.codigo, conta_nome=conta.nome)
     r.mes_referencia = mes_ref
     db.add(r)
     _sync_transacao_outra_renda(db, r, current_user.id)
@@ -1026,7 +1624,24 @@ def update_outra_renda(renda_id: str, req: schemas.OutraRendaUpdate, db: Session
         "valor": r.valor,
     }
     for k, v in req.dict(exclude_none=True).items():
+        if k == "conta_id":
+            continue
         setattr(r, k, v)
+
+    if req.conta_id is not None:
+        conta = _get_conta_or_400(db, req.conta_id, "entrada")
+        r.conta_id = conta.id
+        r.conta_codigo = conta.codigo
+        r.conta_nome = conta.nome
+        if not r.categoria:
+            r.categoria = conta.nome
+
+    if r.conta_id is None:
+        raise HTTPException(status_code=400, detail="Selecione uma conta")
+
+    if not r.categoria:
+        r.categoria = r.conta_nome or "Outros"
+
     _delete_transacoes_outra_renda_por_payload(db, payload_antigo)
     _sync_transacao_outra_renda(db, r, current_user.id)
     db.commit()
@@ -1506,15 +2121,38 @@ def dashboard(db: Session = Depends(get_db), current_user=Depends(get_current_us
 # FESTAS
 # ════════════════════════════════════════════════════════════════════════════════
 def _get_frontend_base_url() -> str:
-    return os.getenv("FRONTEND_BASE_URL", "http://localhost:5173").rstrip("/")
+    return (
+        os.getenv("FRONTEND_BASE_URL")
+        or os.getenv("FRONTEND_URL")
+        or "http://localhost:5173"
+    ).rstrip("/")
 
 
 def _get_festa_link_template() -> str:
-    return f"{_get_frontend_base_url()}/festa-inscricao/{{festa_id}}"
+    return f"{_get_frontend_base_url()}/#/festa-inscricao/{{festa_id}}"
 
 
 def _build_festa_public_link(festa_id: str) -> str:
-    return f"{_get_frontend_base_url()}/festa-inscricao/{festa_id}"
+    return f"{_get_frontend_base_url()}/#/festa-inscricao/{festa_id}"
+
+
+def _resolve_festa_public_link(festa: models.Festa) -> str:
+    festa_id = str(festa.id)
+    fallback = _build_festa_public_link(festa_id)
+    template = (getattr(festa, "link_inscricao", None) or "").strip()
+
+    if not template:
+        return fallback
+
+    link = template.replace("{festa_id}", festa_id).replace("{token}", festa_id)
+
+    if "festa-inscricao" not in link:
+        return fallback
+
+    if "/festa-inscricao/" in link and "/#/festa-inscricao/" not in link:
+        link = link.replace("/festa-inscricao/", "/#/festa-inscricao/")
+
+    return link
 
 
 def _somente_numeros(valor: Optional[str]) -> str:
@@ -1829,29 +2467,105 @@ def enviar_convites_festa(
     enviados = 0
     falhas = []
 
-    convite_link = _build_festa_public_link(festa.id)
+    convite_link = _resolve_festa_public_link(festa)
+    data_festa_txt = festa.data_festa.strftime("%d/%m/%Y") if festa.data_festa else "-"
+    valor_convite = float(festa.valor_convite or 0)
+    valor_convite_txt = f"R$ {valor_convite:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    valor_dependente = float(festa.valor_convite_dependente or 0)
+    valor_dependente_txt = f"R$ {valor_dependente:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    logo_url = (os.getenv("EMAIL_LOGO_URL") or "").strip()
+    festa_image_url = (os.getenv("EMAIL_FESTA_IMAGE_URL") or "").strip()
+
+    logo_block = ""
+    if logo_url:
+        logo_block = f"""
+        <div style="margin:0 0 16px;text-align:center;">
+            <img src="{logo_url}" alt="UNACOB" style="max-width:190px;width:100%;height:auto;display:inline-block;" />
+        </div>
+        """
+
+    festa_image_block = """
+    <div style="font-size:46px;line-height:1;margin-bottom:8px;">🎉</div>
+    """
+    if festa_image_url:
+        festa_image_block = f"""
+        <div style="margin:0 0 10px;text-align:center;">
+            <img src="{festa_image_url}" alt="Celebração" style="max-width:170px;width:100%;height:auto;display:inline-block;border-radius:10px;" />
+        </div>
+        """
 
     for membro in membros:
         assunto = req.assunto or f"Convite: {festa.nome_festa}"
 
         mensagem_extra = ""
         if req.mensagem:
-            mensagem_extra = f"<p style='margin:16px 0;color:#334155'>{req.mensagem}</p>"
+            mensagem_extra = f"""
+            <div class="message-box">{req.mensagem}</div>
+            """
 
         html = f"""
         <html>
-            <body style=\"font-family:Arial,sans-serif;background:#f5f7fb;padding:24px;\">
-                <div style=\"max-width:640px;margin:0 auto;background:#fff;border-radius:12px;padding:24px;border:1px solid #e5e7eb;\">
-                    <h2 style=\"margin:0 0 8px;color:#1e3a5f\">{festa.nome_festa}</h2>
-                    <p style=\"margin:0 0 4px;color:#475569\"><strong>Data:</strong> {festa.data_festa}</p>
-                    <p style=\"margin:0 0 4px;color:#475569\"><strong>Local:</strong> {festa.local_festa or '-'} </p>
-                    <p style=\"margin:0 0 16px;color:#475569\"><strong>Convite:</strong> R$ {float(festa.valor_convite or 0):.2f}</p>
-                    {mensagem_extra}
-                    <p style=\"margin:0 0 18px;color:#0f172a\">Olá, {membro.nome_completo}. Clique no botão abaixo para confirmar sua participação:</p>
-                    <p>
-                        <a href=\"{convite_link}\" style=\"display:inline-block;background:#1e3a5f;color:#fff;text-decoration:none;padding:10px 16px;border-radius:8px;font-weight:600\">Confirmar participação</a>
-                    </p>
-                    <p style=\"margin-top:18px;color:#64748b;font-size:12px\">Se o botão não abrir, use este link:<br>{convite_link}</p>
+            <head>
+                <meta charset="UTF-8">
+                <style>
+                    body {{ font-family: Arial, sans-serif; background-color: #f5f5f5; margin: 0; padding: 0; }}
+                    .container {{ max-width: 600px; margin: 20px auto; background-color: #fef8f3; border-radius: 10px; padding: 34px; box-shadow: 0 2px 8px rgba(0,0,0,0.10); }}
+                    .header {{ text-align: center; color: #d4844a; margin-bottom: 24px; }}
+                    .title {{ font-size: 34px; font-weight: bold; margin: 8px 0; color: #cc7a3a; line-height: 1.2; }}
+                    .subtitle {{ font-size: 14px; color: #888; margin-top: 4px; }}
+                    .content {{ color: #333; line-height: 1.75; font-size: 15px; }}
+                    .paragraph {{ margin-bottom: 14px; }}
+                    .highlight {{ font-weight: bold; color: #cc7a3a; }}
+                    .info-table {{ width: 100%; border-collapse: collapse; margin: 0 0 18px; border: 1px solid #eadfce; border-radius: 10px; overflow: hidden; background: #fff; }}
+                    .info-table td {{ padding: 12px 14px; border-bottom: 1px solid #f0e8db; font-size: 15px; }}
+                    .info-table tr:last-child td {{ border-bottom: 0; }}
+                    .message-box {{ margin: 0 0 16px; padding: 12px 14px; border-radius: 10px; background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; font-size: 14px; line-height: 1.5; }}
+                    .cta-wrap {{ margin: 16px 0 18px; text-align: center; }}
+                    .cta-btn {{ display: inline-block; background: #1e3a5f; color: #fff !important; text-decoration: none; padding: 12px 20px; border-radius: 8px; font-weight: 700; font-size: 15px; }}
+                    .link-box {{ padding: 10px 12px; border: 1px dashed #d8cbb8; border-radius: 10px; background: #fffaf4; margin-bottom: 12px; }}
+                    .link-help {{ margin: 0 0 6px; font-size: 12px; color: #7d7468; }}
+                    .link-url {{ margin: 0; font-size: 12px; word-break: break-all; color: #1e3a5f; }}
+                    .signature {{ margin-top: 18px; text-align: center; color: #cc7a3a; font-style: italic; font-weight: bold; }}
+                    .footer {{ text-align: center; margin-top: 18px; font-size: 12px; color: #999; border-top: 1px solid #e0d5c7; padding-top: 12px; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        {logo_block}
+                        {festa_image_block}
+                        <div class="title">Convite para Festa</div>
+                        <div class="subtitle">Prepare-se para um momento especial com a UNACOB</div>
+                    </div>
+
+                    <div class="content">
+                        <div class="paragraph">Olá, <strong>{membro.nome_completo}</strong>! Você está convidado(a) para a nossa confraternização.</div>
+                        <div class="paragraph"><span class="highlight">{festa.nome_festa}</span></div>
+
+                        <table class="info-table" role="presentation" cellspacing="0" cellpadding="0">
+                            <tr><td><strong>Data:</strong> {data_festa_txt}</td></tr>
+                            <tr><td><strong>Local:</strong> {festa.local_festa or '-'}</td></tr>
+                            <tr><td><strong>Convite titular:</strong> {valor_convite_txt}</td></tr>
+                            <tr><td><strong>Convite dependente:</strong> {valor_dependente_txt}</td></tr>
+                        </table>
+
+                        {mensagem_extra}
+
+                        <div class="paragraph">Clique no botão abaixo para confirmar sua presença:</div>
+                        <div class="cta-wrap">
+                            <a href="{convite_link}" class="cta-btn">Confirmar participação</a>
+                        </div>
+
+                        <div class="link-box">
+                            <p class="link-help">Se o botão não funcionar, copie e cole este link no navegador:</p>
+                            <p class="link-url">{convite_link}</p>
+                        </div>
+
+                        <div class="signature">Com carinho e alegria,<br><strong>Diretoria da UNACOB</strong></div>
+                    </div>
+
+                    <div class="footer">© UNACOB - União dos aposentados dos correios em Bauru - SP | Festas e eventos</div>
                 </div>
             </body>
         </html>
@@ -1859,8 +2573,10 @@ def enviar_convites_festa(
 
         plain = (
             f"{festa.nome_festa}\n"
-            f"Data: {festa.data_festa}\n"
-            f"Local: {festa.local_festa or '-'}\n\n"
+            f"Data: {data_festa_txt}\n"
+            f"Local: {festa.local_festa or '-'}\n"
+            f"Convite titular: {valor_convite_txt}\n"
+            f"Convite dependente: {valor_dependente_txt}\n\n"
             f"Olá, {membro.nome_completo}.\n"
             "Use o link para confirmar sua participação:\n"
             f"{convite_link}\n"
@@ -1903,7 +2619,7 @@ def get_convite_link_individual(
         "ok": True,
         "festa_id": festa_id,
         "membro_id": membro_id,
-        "link": _build_festa_public_link(festa_id)
+        "link": _resolve_festa_public_link(festa)
     }
 
 @app.delete("/api/festas/{festa_id}")
@@ -2936,6 +3652,74 @@ def balancete(
         if r.valor:
             renda_por_cat[r.categoria or "Outros"] += r.valor
 
+    entradas_por_conta = defaultdict(float)
+    entradas_meta = {}
+    entradas_por_conta["1.1"] += total_mensalidades
+    entradas_meta["1.1"] = {"codigo": "1.1", "nome": "Mensalidades"}
+
+    for r in rendas:
+        if not r.valor:
+            continue
+        codigo = (r.conta_codigo or "1.5").strip()
+        nome = (r.conta_nome or r.categoria or "Outras arrecadações").strip()
+        entradas_por_conta[codigo] += float(r.valor)
+        entradas_meta[codigo] = {"codigo": codigo, "nome": nome}
+
+    saidas_por_conta = defaultdict(float)
+    saidas_meta = {}
+    for d in desp:
+        if not d.valor:
+            continue
+        codigo = (d.conta_codigo or "2.99").strip()
+        nome = (d.conta_nome or d.categoria or "Outros").strip()
+        saidas_por_conta[codigo] += float(d.valor)
+        saidas_meta[codigo] = {"codigo": codigo, "nome": nome}
+
+    contas_entrada = db.query(models.PlanoConta).filter(models.PlanoConta.tipo == "entrada").all()
+    contas_saida = db.query(models.PlanoConta).filter(models.PlanoConta.tipo == "saida").all()
+
+    for c in contas_entrada:
+        codigo = (c.codigo or "").strip()
+        if not codigo:
+            continue
+        entradas_meta[codigo] = {"codigo": codigo, "nome": c.nome or ""}
+
+    for c in contas_saida:
+        codigo = (c.codigo or "").strip()
+        if not codigo:
+            continue
+        saidas_meta[codigo] = {"codigo": codigo, "nome": c.nome or ""}
+
+    def _ordena_codigo_conta(item):
+        codigo = item[0]
+        partes = []
+        for p in codigo.split('.'):
+            try:
+                partes.append(int(p))
+            except Exception:
+                partes.append(9999)
+        return tuple(partes)
+
+    entradas_ordenadas = [
+        {
+            "codigo": c,
+            "nome": entradas_meta.get(c, {}).get("nome") or "",
+            "valor": round(v, 2),
+        }
+        for c, v in sorted(entradas_por_conta.items(), key=_ordena_codigo_conta)
+        if abs(float(v or 0)) > 0.000001
+    ]
+
+    saidas_ordenadas = [
+        {
+            "codigo": c,
+            "nome": saidas_meta.get(c, {}).get("nome") or "",
+            "valor": round(v, 2),
+        }
+        for c, v in sorted(saidas_por_conta.items(), key=_ordena_codigo_conta)
+        if abs(float(v or 0)) > 0.000001
+    ]
+
     return {
         "mes_referencia": mes_ref,
         "mes_referencia_anterior": _mes_anterior(mes_ref),
@@ -2950,6 +3734,8 @@ def balancete(
         "qtd_pagantes": len(pags),
         "despesas_por_categoria": dict(desp_por_cat),
         "rendas_por_categoria": dict(renda_por_cat),
+        "entradas_por_conta": entradas_ordenadas,
+        "saidas_por_conta": saidas_ordenadas,
         "pagamentos": [{
             "membro_id": p.membro_id, "valor_pago": float(p.valor_pago) if p.valor_pago else 0,
             "data_pagamento": str(p.data_pagamento) if p.data_pagamento else None,
@@ -2957,23 +3743,68 @@ def balancete(
         } for p in pags],
         "despesas": [{
             "id": d.id, "descricao": d.descricao, "categoria": d.categoria,
-            "valor": d.valor, "data_despesa": str(d.data_despesa) if d.data_despesa else None
+            "valor": d.valor, "data_despesa": str(d.data_despesa) if d.data_despesa else None,
+            "conta_id": d.conta_id, "conta_codigo": d.conta_codigo, "conta_nome": d.conta_nome
         } for d in desp],
+        "rendas": [{
+            "id": r.id, "descricao": r.descricao, "categoria": r.categoria,
+            "valor": r.valor, "data_recebimento": str(r.data_recebimento) if r.data_recebimento else None,
+            "conta_id": r.conta_id, "conta_codigo": r.conta_codigo, "conta_nome": r.conta_nome
+        } for r in rendas],
     }
 
 
 # ════════════════════════════════════════════════════════════════════════════════
 # RELATÓRIOS / EXPORTAÇÃO EXCEL
 # ════════════════════════════════════════════════════════════════════════════════
+def _excel_header_style(cell):
+    cell.fill = PatternFill("solid", fgColor="1E3A5F")
+    cell.font = Font(color="FFFFFF", bold=True)
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+
+
+def _excel_thin_border() -> Border:
+    return Border(
+        left=Side(style="thin", color="D1D5DB"),
+        right=Side(style="thin", color="D1D5DB"),
+        top=Side(style="thin", color="D1D5DB"),
+        bottom=Side(style="thin", color="D1D5DB"),
+    )
+
+
+def _excel_apply_borders(ws, start_row: int, end_row: int, start_col: int, end_col: int):
+    border = _excel_thin_border()
+    for row in range(start_row, end_row + 1):
+        for col in range(start_col, end_col + 1):
+            ws.cell(row=row, column=col).border = border
+
+
+def _excel_apply_zebra(ws, start_row: int, end_row: int, start_col: int, end_col: int, fill_color: str = "F8FAFC"):
+    if end_row < start_row:
+        return
+    zebra_fill = PatternFill("solid", fgColor=fill_color)
+    for index, row in enumerate(range(start_row, end_row + 1)):
+        if index % 2 == 0:
+            for col in range(start_col, end_col + 1):
+                ws.cell(row=row, column=col).fill = zebra_fill
+
+
+def _excel_autofit_columns(ws, min_width: int = 10, max_width: int = 48):
+    for column in ws.columns:
+        column_letter = get_column_letter(column[0].column)
+        max_length = 0
+        for cell in column:
+            if cell.value is not None:
+                max_length = max(max_length, len(str(cell.value)))
+        ws.column_dimensions[column_letter].width = max(min_width, min(max_length + 2, max_width))
+
+
 @app.get("/api/relatorios/membros")
 def exportar_membros(
     status: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment
-
     q = db.query(models.Membro)
     if status:
         q = q.filter(models.Membro.status == status)
@@ -2983,20 +3814,23 @@ def exportar_membros(
     ws = wb.active
     ws.title = "Membros"
 
+    ws.merge_cells("A1:P1")
+    ws["A1"] = "RELATÓRIO DE MEMBROS"
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
+    ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
     headers = ["Matrícula", "Nome", "CPF", "Email", "Telefone", "Celular",
                "Endereço", "Bairro", "Cidade", "Estado", "CEP",
                "Data Nascimento", "Data Associação", "Status", "Benefício", "Valor Mensalidade"]
 
-    header_fill = PatternFill("solid", fgColor="1e3a5f")
-    header_font = Font(color="FFFFFF", bold=True)
-
+    header_row = 3
     for col, header in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col, value=header)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center")
+        cell = ws.cell(row=header_row, column=col, value=header)
+        _excel_header_style(cell)
 
-    for row, m in enumerate(membros, 2):
+    first_data_row = header_row + 1
+    for row, m in enumerate(membros, first_data_row):
         ws.cell(row=row, column=1, value=m.matricula)
         ws.cell(row=row, column=2, value=m.nome_completo)
         ws.cell(row=row, column=3, value=m.cpf)
@@ -3013,10 +3847,20 @@ def exportar_membros(
         ws.cell(row=row, column=14, value=m.status)
         ws.cell(row=row, column=15, value=m.beneficio)
         ws.cell(row=row, column=16, value=float(m.valor_mensalidade) if m.valor_mensalidade else 0)
+        ws.cell(row=row, column=16).number_format = 'R$ #,##0.00'
 
-    for col in ws.columns:
-        max_length = max((len(str(cell.value)) if cell.value else 0) for cell in col)
-        ws.column_dimensions[col[0].column_letter].width = max(max_length + 2, 12)
+    last_row = max(first_data_row, first_data_row + len(membros) - 1)
+    _excel_apply_zebra(ws, first_data_row, last_row, 1, 16)
+    _excel_apply_borders(ws, header_row, last_row, 1, 16)
+    ws.freeze_panes = f"A{first_data_row}"
+    ws.auto_filter.ref = f"A{header_row}:P{last_row}"
+
+    for row in range(first_data_row, last_row + 1):
+        ws.cell(row=row, column=12).alignment = Alignment(horizontal="center")
+        ws.cell(row=row, column=13).alignment = Alignment(horizontal="center")
+        ws.cell(row=row, column=16).alignment = Alignment(horizontal="right")
+
+    _excel_autofit_columns(ws, min_width=12, max_width=44)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -3032,9 +3876,6 @@ def exportar_pagamentos(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment, numbers
-
     today = date.today()
     mes_ref = mes_referencia or today.strftime("%Y-%m")
 
@@ -3045,20 +3886,28 @@ def exportar_pagamentos(
     ws = wb.active
     ws.title = f"Pagamentos {mes_ref}"
 
-    headers = ["Matrícula", "Nome", "Valor Mensalidade", "Valor Pago", "Data Pagamento", "Status", "Forma Pagamento"]
-    header_fill = PatternFill("solid", fgColor="1e3a5f")
-    header_font = Font(color="FFFFFF", bold=True)
+    ws.merge_cells("A1:H1")
+    ws["A1"] = f"RELATÓRIO DE PAGAMENTOS - {mes_ref}"
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
+    ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
 
+    headers = ["Matrícula", "Nome", "Valor Mensalidade", "Valor Pago", "Data Pagamento", "Status", "Forma Pagamento"]
+
+    header_row = 3
     for col, header in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col, value=header)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center")
+        cell = ws.cell(row=header_row, column=col, value=header)
+        _excel_header_style(cell)
 
     red_fill = PatternFill("solid", fgColor="FFB3B3")
     green_fill = PatternFill("solid", fgColor="B3FFB3")
 
-    for row, m in enumerate(membros, 2):
+    first_data_row = header_row + 1
+    total_mens = 0.0
+    total_pago = 0.0
+    status_by_row = {}
+
+    for row, m in enumerate(membros, first_data_row):
         p = pagamentos.get(m.id)
         status = p.status_pagamento if p else "pendente"
         fill = green_fill if status == "pago" else red_fill
@@ -3073,7 +3922,39 @@ def exportar_pagamentos(
         ]
         for col, val in enumerate(values, 1):
             cell = ws.cell(row=row, column=col, value=val)
-            cell.fill = fill
+            if col in (3, 4):
+                cell.number_format = 'R$ #,##0.00'
+                cell.alignment = Alignment(horizontal="right")
+            elif col == 5:
+                cell.alignment = Alignment(horizontal="center")
+            elif col == 6:
+                cell.alignment = Alignment(horizontal="center")
+
+        status_by_row[row] = fill
+
+        total_mens += float(values[2] or 0)
+        total_pago += float(values[3] or 0)
+
+    total_row = first_data_row + len(membros)
+    ws.cell(row=total_row, column=2, value="TOTAL").font = Font(bold=True)
+    ws.cell(row=total_row, column=3, value=round(total_mens, 2)).font = Font(bold=True)
+    ws.cell(row=total_row, column=4, value=round(total_pago, 2)).font = Font(bold=True)
+    ws.cell(row=total_row, column=3).number_format = 'R$ #,##0.00'
+    ws.cell(row=total_row, column=4).number_format = 'R$ #,##0.00'
+    ws.cell(row=total_row, column=3).alignment = Alignment(horizontal="right")
+    ws.cell(row=total_row, column=4).alignment = Alignment(horizontal="right")
+    ws.cell(row=total_row, column=2).fill = PatternFill("solid", fgColor="E2E8F0")
+    ws.cell(row=total_row, column=3).fill = PatternFill("solid", fgColor="E2E8F0")
+    ws.cell(row=total_row, column=4).fill = PatternFill("solid", fgColor="E2E8F0")
+
+    _excel_apply_zebra(ws, first_data_row, total_row - 1, 1, 7)
+    for row, status_fill in status_by_row.items():
+        ws.cell(row=row, column=6).fill = status_fill
+
+    _excel_apply_borders(ws, header_row, total_row, 1, 7)
+    ws.freeze_panes = f"A{first_data_row}"
+    ws.auto_filter.ref = f"A{header_row}:G{total_row}"
+    _excel_autofit_columns(ws, min_width=12, max_width=42)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -3089,9 +3970,6 @@ def exportar_aniversariantes(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment
-
     today = date.today()
     mes_filtro = mes or today.month
     membros = db.query(models.Membro).filter(
@@ -3102,14 +3980,22 @@ def exportar_aniversariantes(
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = f"Aniversariantes Mês {mes_filtro}"
+
+    ws.merge_cells("A1:G1")
+    ws["A1"] = f"RELATÓRIO DE ANIVERSARIANTES - {mes_filtro:02d}"
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
+    ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
     headers = ["Nome", "Data Nascimento", "Dia", "Idade", "Email", "Celular", "Telefone"]
-    header_fill = PatternFill("solid", fgColor="1e3a5f")
-    header_font = Font(color="FFFFFF", bold=True)
+
+    header_row = 3
     for col, h in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col, value=h)
-        cell.fill = header_fill
-        cell.font = header_font
-    for row, m in enumerate(membros, 2):
+        cell = ws.cell(row=header_row, column=col, value=h)
+        _excel_header_style(cell)
+
+    first_data_row = header_row + 1
+    for row, m in enumerate(membros, first_data_row):
         idade = today.year - m.data_nascimento.year
         ws.cell(row=row, column=1, value=m.nome_completo)
         ws.cell(row=row, column=2, value=str(m.data_nascimento))
@@ -3118,6 +4004,14 @@ def exportar_aniversariantes(
         ws.cell(row=row, column=5, value=m.email)
         ws.cell(row=row, column=6, value=m.celular)
         ws.cell(row=row, column=7, value=m.telefone)
+
+    last_row = max(first_data_row, first_data_row + len(membros) - 1)
+    _excel_apply_zebra(ws, first_data_row, last_row, 1, 7)
+    _excel_apply_borders(ws, header_row, last_row, 1, 7)
+    ws.freeze_panes = f"A{first_data_row}"
+    ws.auto_filter.ref = f"A{header_row}:G{last_row}"
+    _excel_autofit_columns(ws, min_width=12, max_width=40)
+
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -3132,9 +4026,6 @@ def exportar_balancete(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment
-
     today = date.today()
     mes_ref = mes_referencia or today.strftime("%Y-%m")
     pags = _pagamentos_pagos_membros_ativos_no_mes(db, mes_ref)
@@ -3143,40 +4034,154 @@ def exportar_balancete(
     saldo_anterior = _saldo_anterior_mes(db, mes_ref)
 
     wb = openpyxl.Workbook()
-    
-    # Sheet 1: Resumo
+
     ws1 = wb.active
-    ws1.title = "Resumo"
-    ws1["A1"] = f"BALANCETE MENSAL - {mes_ref}"
-    ws1["A1"].font = Font(bold=True, size=14)
-    ws1["A3"] = "ENTRADAS"
-    ws1["A3"].font = Font(bold=True)
-    ws1["A4"] = "Saldo Anterior"
-    ws1["B4"] = saldo_anterior
-    ws1["A5"] = "Mensalidades"
-    ws1["B5"] = sum(float(p.valor_pago) for p in pags if p.valor_pago)
-    ws1["A6"] = "Outras Rendas"
-    ws1["B6"] = sum(r.valor for r in rendas if r.valor)
-    ws1["A7"] = "TOTAL ENTRADAS"
-    ws1["A7"].font = Font(bold=True)
-    ws1["B7"] = ws1["B5"].value + ws1["B6"].value
-    ws1["B7"].font = Font(bold=True)
-    ws1["A9"] = "SAÍDAS"
-    ws1["A9"].font = Font(bold=True)
-    ws1["A10"] = "Despesas"
-    ws1["B10"] = sum(d.valor for d in desp if d.valor)
-    ws1["A11"] = "TOTAL SAÍDAS"
-    ws1["A11"].font = Font(bold=True)
-    ws1["B11"] = ws1["B10"].value
-    ws1["B11"].font = Font(bold=True)
-    ws1["A13"] = "SALDO DO MÊS"
-    ws1["A13"].font = Font(bold=True, size=12)
-    ws1["B13"] = ws1["B7"].value - ws1["B11"].value
-    ws1["B13"].font = Font(bold=True, size=12)
-    ws1["A14"] = "SALDO FINAL"
-    ws1["A14"].font = Font(bold=True, size=12)
-    ws1["B14"] = ws1["B4"].value + ws1["B13"].value
-    ws1["B14"].font = Font(bold=True, size=12)
+    ws1.title = "Balancete"
+
+    title_fill = PatternFill("solid", fgColor="1E3A5F")
+    header_fill = PatternFill("solid", fgColor="D9E1F2")
+    total_fill = PatternFill("solid", fgColor="FCE4D6")
+    title_font = Font(bold=True, size=14, color="FFFFFF")
+    bold_font = Font(bold=True)
+
+    total_mensalidades = sum(float(p.valor_pago) for p in pags if p.valor_pago)
+    entradas_por_conta = defaultdict(float)
+    entradas_meta = {"1.1": "Mensalidades"}
+    entradas_por_conta["1.1"] = total_mensalidades
+
+    for r in rendas:
+        if not r.valor:
+            continue
+        codigo = (r.conta_codigo or "1.5").strip()
+        nome = (r.conta_nome or r.categoria or "Outras arrecadações").strip()
+        entradas_meta[codigo] = nome
+        entradas_por_conta[codigo] += float(r.valor)
+
+    saidas_por_conta = defaultdict(float)
+    saidas_meta = {}
+    for d in desp:
+        if not d.valor:
+            continue
+        codigo = (d.conta_codigo or "2.99").strip()
+        nome = (d.conta_nome or d.categoria or "Outros").strip()
+        saidas_meta[codigo] = nome
+        saidas_por_conta[codigo] += float(d.valor)
+
+    contas_entrada = db.query(models.PlanoConta).filter(models.PlanoConta.tipo == "entrada").all()
+    contas_saida = db.query(models.PlanoConta).filter(models.PlanoConta.tipo == "saida").all()
+    for c in contas_entrada:
+        codigo = (c.codigo or "").strip()
+        if not codigo:
+            continue
+        entradas_meta[codigo] = c.nome or ""
+    for c in contas_saida:
+        codigo = (c.codigo or "").strip()
+        if not codigo:
+            continue
+        saidas_meta[codigo] = c.nome or ""
+
+    def _sort_codigo(codigo: str):
+        out = []
+        for p in codigo.split('.'):
+            try:
+                out.append(int(p))
+            except Exception:
+                out.append(9999)
+        return tuple(out)
+
+    row = 1
+    ws1.merge_cells("A1:D1")
+    ws1[f"A{row}"] = f"BALANCETE MENSAL - {mes_ref}"
+    ws1[f"A{row}"].fill = title_fill
+    ws1[f"A{row}"].alignment = Alignment(horizontal="center", vertical="center")
+    ws1[f"A{row}"].font = title_font
+    row += 2
+
+    ws1[f"B{row}"] = "SALDO ANTERIOR"
+    ws1[f"C{row}"] = "R$"
+    ws1[f"D{row}"] = round(float(saldo_anterior or 0), 2)
+    ws1[f"B{row}"].font = bold_font
+    ws1[f"C{row}"].font = bold_font
+    ws1[f"D{row}"].font = bold_font
+    ws1[f"D{row}"].alignment = Alignment(horizontal="right")
+    row += 2
+
+    ws1[f"A{row}"] = "Contas"
+    ws1[f"B{row}"] = "ENTRADAS"
+    ws1[f"C{row}"] = "Total"
+    total_entradas = round(sum(entradas_por_conta.values()), 2)
+    ws1[f"D{row}"] = total_entradas
+    for col in ("A", "B", "C", "D"):
+        ws1[f"{col}{row}"].fill = header_fill
+        ws1[f"{col}{row}"].font = bold_font
+    row += 1
+
+    entrada_start_row = row
+    for codigo in sorted(entradas_por_conta.keys(), key=_sort_codigo):
+        if abs(float(entradas_por_conta[codigo] or 0)) <= 0.000001:
+            continue
+        ws1[f"A{row}"] = codigo
+        ws1[f"B{row}"] = entradas_meta.get(codigo, "")
+        ws1[f"C{row}"] = "R$"
+        ws1[f"D{row}"] = round(float(entradas_por_conta[codigo] or 0), 2)
+        ws1[f"D{row}"].alignment = Alignment(horizontal="right")
+        row += 1
+    entrada_end_row = row - 1
+    _excel_apply_zebra(ws1, entrada_start_row, entrada_end_row, 1, 4)
+
+    row += 1
+    ws1[f"A{row}"] = "Contas"
+    ws1[f"B{row}"] = "SAÍDAS"
+    ws1[f"C{row}"] = "Total"
+    total_saidas = round(sum(saidas_por_conta.values()), 2)
+    ws1[f"D{row}"] = total_saidas
+    for col in ("A", "B", "C", "D"):
+        ws1[f"{col}{row}"].fill = header_fill
+        ws1[f"{col}{row}"].font = bold_font
+    row += 1
+
+    saida_start_row = row
+    for codigo in sorted(saidas_por_conta.keys(), key=_sort_codigo):
+        if abs(float(saidas_por_conta[codigo] or 0)) <= 0.000001:
+            continue
+        ws1[f"A{row}"] = codigo
+        ws1[f"B{row}"] = saidas_meta.get(codigo, "")
+        ws1[f"C{row}"] = "R$"
+        ws1[f"D{row}"] = round(float(saidas_por_conta[codigo] or 0), 2)
+        ws1[f"D{row}"].alignment = Alignment(horizontal="right")
+        row += 1
+    saida_end_row = row - 1
+    _excel_apply_zebra(ws1, saida_start_row, saida_end_row, 1, 4)
+
+    row += 1
+    saldo_mes = round(total_entradas - total_saidas, 2)
+    saldo_final = round(float(saldo_anterior or 0) + saldo_mes, 2)
+
+    ws1[f"B{row}"] = "SALDO DO MÊS"
+    ws1[f"C{row}"] = "R$"
+    ws1[f"D{row}"] = saldo_mes
+    for col in ("B", "C", "D"):
+        ws1[f"{col}{row}"].fill = total_fill
+        ws1[f"{col}{row}"].font = bold_font
+    ws1[f"D{row}"].alignment = Alignment(horizontal="right")
+    row += 1
+
+    ws1[f"B{row}"] = "SALDO FINAL"
+    ws1[f"C{row}"] = "R$"
+    ws1[f"D{row}"] = saldo_final
+    for col in ("B", "C", "D"):
+        ws1[f"{col}{row}"].fill = total_fill
+        ws1[f"{col}{row}"].font = bold_font
+    ws1[f"D{row}"].alignment = Alignment(horizontal="right")
+
+    for col_letter, width in {"A": 12, "B": 56, "C": 8, "D": 18}.items():
+        ws1.column_dimensions[col_letter].width = width
+
+    for r_idx in range(1, row + 1):
+        ws1[f"D{r_idx}"].number_format = 'R$ #,##0.00'
+
+    _excel_apply_borders(ws1, 3, row, 1, 4)
+    ws1.freeze_panes = "A6"
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -3187,15 +4192,162 @@ def exportar_balancete(
     )
 
 
+@app.get("/api/relatorios/livro-diario")
+def exportar_livro_diario(
+    mes_referencia: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    today = date.today()
+    mes_ref = mes_referencia or today.strftime("%Y-%m")
+
+    pags = _pagamentos_pagos_membros_ativos_no_mes(db, mes_ref)
+    rendas = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all()
+    despesas = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all()
+    saldo_anterior = _saldo_anterior_mes(db, mes_ref)
+
+    nomes_membros = {}
+    membro_ids = [p.membro_id for p in pags if p.membro_id]
+    if membro_ids:
+        nomes_membros = {
+            m.id: m.nome_completo
+            for m in db.query(models.Membro).filter(models.Membro.id.in_(membro_ids)).all()
+        }
+
+    linhas = []
+
+    for p in pags:
+        valor = float(p.valor_pago or 0)
+        if valor <= 0:
+            continue
+        nome_membro = nomes_membros.get(p.membro_id, p.membro_id or "Membro")
+        linhas.append({
+            "data": p.data_pagamento,
+            "codigo": "1.1",
+            "conta": "Mensalidades",
+            "historico": f"Mensalidade de {nome_membro}",
+            "tipo": "entrada",
+            "valor": valor,
+        })
+
+    for r in rendas:
+        valor = float(r.valor or 0)
+        if valor <= 0:
+            continue
+        linhas.append({
+            "data": r.data_recebimento,
+            "codigo": (r.conta_codigo or "1.5"),
+            "conta": (r.conta_nome or r.categoria or "Outras arrecadações"),
+            "historico": r.descricao or "Outras receitas",
+            "tipo": "entrada",
+            "valor": valor,
+        })
+
+    for d in despesas:
+        valor = float(d.valor or 0)
+        if valor <= 0:
+            continue
+        linhas.append({
+            "data": d.data_despesa,
+            "codigo": (d.conta_codigo or "2.99"),
+            "conta": (d.conta_nome or d.categoria or "Outros"),
+            "historico": d.descricao or "Despesa",
+            "tipo": "saida",
+            "valor": valor,
+        })
+
+    linhas.sort(key=lambda x: (x["data"] or date.min, x["codigo"] or "", x["historico"] or ""))
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Livro Diário"
+
+    title_fill = PatternFill("solid", fgColor="1E3A5F")
+    total_fill = PatternFill("solid", fgColor="FCE4D6")
+    bold_font = Font(bold=True)
+
+    ws.merge_cells("A1:H1")
+    ws["A1"] = f"LIVRO DIÁRIO - {mes_ref}"
+    ws["A1"].font = Font(bold=True, size=14, color="FFFFFF")
+    ws["A1"].fill = title_fill
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    ws["A3"] = "Saldo Anterior"
+    ws["B3"] = round(float(saldo_anterior or 0), 2)
+    ws["A3"].font = bold_font
+    ws["B3"].font = bold_font
+    ws["B3"].number_format = 'R$ #,##0.00'
+
+    headers = ["Data", "Conta", "Descrição da Conta", "Histórico", "Tipo", "Entradas (R$)", "Saídas (R$)", "Saldo Acumulado (R$)"]
+    start_row = 5
+    for idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=start_row, column=idx, value=h)
+        _excel_header_style(cell)
+
+    saldo_acumulado = float(saldo_anterior or 0)
+    row = start_row + 1
+    total_entradas = 0.0
+    total_saidas = 0.0
+
+    for item in linhas:
+        entrada = float(item["valor"] or 0) if item["tipo"] == "entrada" else 0.0
+        saida = float(item["valor"] or 0) if item["tipo"] == "saida" else 0.0
+        saldo_acumulado += entrada - saida
+        total_entradas += entrada
+        total_saidas += saida
+
+        ws.cell(row=row, column=1, value=item["data"])
+        ws.cell(row=row, column=2, value=item["codigo"])
+        ws.cell(row=row, column=3, value=item["conta"])
+        ws.cell(row=row, column=4, value=item["historico"])
+        ws.cell(row=row, column=5, value="Entrada" if item["tipo"] == "entrada" else "Saída")
+        ws.cell(row=row, column=6, value=round(entrada, 2))
+        ws.cell(row=row, column=7, value=round(saida, 2))
+        ws.cell(row=row, column=8, value=round(saldo_acumulado, 2))
+        row += 1
+
+    movimentos_end_row = row - 1
+    _excel_apply_zebra(ws, start_row + 1, movimentos_end_row, 1, 8)
+
+    ws.cell(row=row, column=4, value="TOTAL DO MÊS").font = bold_font
+    ws.cell(row=row, column=6, value=round(total_entradas, 2)).font = bold_font
+    ws.cell(row=row, column=7, value=round(total_saidas, 2)).font = bold_font
+    ws.cell(row=row, column=8, value=round(saldo_acumulado, 2)).font = bold_font
+    for col in range(4, 9):
+        ws.cell(row=row, column=col).fill = total_fill
+
+    for col_letter, width in {"A": 14, "B": 10, "C": 34, "D": 44, "E": 12, "F": 16, "G": 16, "H": 20}.items():
+        ws.column_dimensions[col_letter].width = width
+
+    for r in range(start_row + 1, row + 1):
+        ws.cell(row=r, column=1).number_format = 'DD/MM/YYYY'
+        ws.cell(row=r, column=1).alignment = Alignment(horizontal="center")
+        ws.cell(row=r, column=5).alignment = Alignment(horizontal="center")
+        ws.cell(row=r, column=6).number_format = 'R$ #,##0.00'
+        ws.cell(row=r, column=7).number_format = 'R$ #,##0.00'
+        ws.cell(row=r, column=8).number_format = 'R$ #,##0.00'
+        ws.cell(row=r, column=6).alignment = Alignment(horizontal="right")
+        ws.cell(row=r, column=7).alignment = Alignment(horizontal="right")
+        ws.cell(row=r, column=8).alignment = Alignment(horizontal="right")
+
+    _excel_apply_borders(ws, start_row, row, 1, 8)
+    ws.freeze_panes = f"A{start_row + 1}"
+    ws.auto_filter.ref = f"A{start_row}:H{row}"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=livro_diario_{mes_ref}.xlsx"}
+    )
+
+
 @app.get("/api/relatorios/conciliacao")
 def exportar_conciliacao(
     mes_referencia: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment
-
     today = date.today()
     mes_ref = mes_referencia or today.strftime("%Y-%m")
     saldo_anterior = _saldo_anterior_mes(db, mes_ref)
@@ -3214,7 +4366,10 @@ def exportar_conciliacao(
     ws.title = f"Conciliação {mes_ref}"
 
     ws["A1"] = f"CONCILIAÇÃO BANCÁRIA - {mes_ref}"
-    ws["A1"].font = Font(bold=True, size=14)
+    ws["A1"].font = Font(bold=True, size=14, color="FFFFFF")
+    ws.merge_cells("A1:J1")
+    ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
+    ws["A1"].alignment = Alignment(horizontal="center")
 
     ws["A3"] = "RESUMO"
     ws["A3"].font = Font(bold=True)
@@ -3233,21 +4388,22 @@ def exportar_conciliacao(
     ws["B8"] = saldo_final
     ws["B8"].font = Font(bold=True)
 
+    for row in range(4, 9):
+        ws.cell(row=row, column=2).number_format = 'R$ #,##0.00'
+    _excel_apply_borders(ws, 3, 8, 1, 2)
+
     headers = [
         "Data", "Descrição", "Valor", "Tipo", "Conciliado",
         "Mês Referência", "Banco", "Documento", "Pagamento ID", "Observações"
     ]
 
-    header_fill = PatternFill("solid", fgColor="1e3a5f")
-    header_font = Font(color="FFFFFF", bold=True)
-
+    header_row = 10
     for col, header in enumerate(headers, 1):
-        cell = ws.cell(row=10, column=col, value=header)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center")
+        cell = ws.cell(row=header_row, column=col, value=header)
+        _excel_header_style(cell)
 
-    for row, c in enumerate(conciliacoes, 11):
+    first_data_row = header_row + 1
+    for row, c in enumerate(conciliacoes, first_data_row):
         ws.cell(row=row, column=1, value=str(c.data_extrato) if c.data_extrato else "")
         ws.cell(row=row, column=2, value=c.descricao_extrato)
         ws.cell(row=row, column=3, value=float(c.valor_extrato) if c.valor_extrato else 0)
@@ -3259,9 +4415,18 @@ def exportar_conciliacao(
         ws.cell(row=row, column=9, value=c.pagamento_id)
         ws.cell(row=row, column=10, value=c.observacoes)
 
-    for col in ws.columns:
-        max_length = max((len(str(cell.value)) if cell.value else 0) for cell in col)
-        ws.column_dimensions[col[0].column_letter].width = max(max_length + 2, 14)
+        ws.cell(row=row, column=3).number_format = 'R$ #,##0.00'
+        ws.cell(row=row, column=3).alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=1).alignment = Alignment(horizontal="center")
+        ws.cell(row=row, column=4).alignment = Alignment(horizontal="center")
+        ws.cell(row=row, column=5).alignment = Alignment(horizontal="center")
+
+    last_row = max(first_data_row, first_data_row + len(conciliacoes) - 1)
+    _excel_apply_zebra(ws, first_data_row, last_row, 1, 10)
+    _excel_apply_borders(ws, header_row, last_row, 1, 10)
+    ws.freeze_panes = f"A{first_data_row}"
+    ws.auto_filter.ref = f"A{header_row}:J{last_row}"
+    _excel_autofit_columns(ws, min_width=12, max_width=46)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -3388,6 +4553,7 @@ def exportar_aplicacoes_financeiras(
                 cell.alignment = Alignment(horizontal="right", vertical="center")
 
     total_row = first_data_row + len(registros)
+    _excel_apply_zebra(ws, first_data_row, total_row - 1, 1, 9)
     ws.cell(row=total_row, column=1, value="TOTAIS").font = bold_font
     ws.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=2)
     for col, key in zip([3, 4, 5, 6, 7, 8], ["saldo_anterior", "aplicacoes", "rendimento_bruto", "impostos", "resgate", "saldo_atual"]):
@@ -3429,15 +4595,300 @@ def exportar_aplicacoes_financeiras(
         headers={"Content-Disposition": f"attachment; filename=aplicacoes_financeiras_{mes_ref}.xlsx"}
     )
 
+
+@app.get("/api/relatorios/consolidado-financeiro")
+def exportar_consolidado_financeiro(
+    ano: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    ano_ref = ano or date.today().year
+    meses = [f"{ano_ref}-{m:02d}" for m in range(1, 13)]
+    previsoes_ano = db.query(models.PrevisaoOrcamentaria).filter(models.PrevisaoOrcamentaria.ano == ano_ref).all()
+    previsao_map = {
+        (p.conta_id, p.mes): float(p.valor_previsto or 0)
+        for p in previsoes_ano
+    }
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"Consolidado {ano_ref}"
+
+    detalhes_por_conta = []
+    linhas_consolidado = []
+
+    ws.merge_cells("A1:G1")
+    ws["A1"] = f"RELATÓRIO CONSOLIDADO FINANCEIRO - {ano_ref}"
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
+    ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    header_row = 3
+    headers = [
+        "Classificação (Nome)",
+        "Previsão",
+        "Mês",
+        "Entradas",
+        "Saídas",
+        "Aplicações",
+        "Saldo Líquido",
+        "Diferença (Realizado - Previsão)",
+    ]
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=header_row, column=col, value=header)
+        _excel_header_style(cell)
+
+    first_data_row = header_row + 1
+    total_entradas = 0.0
+    total_saidas = 0.0
+    total_aplicacoes = 0.0
+    total_previsao = 0.0
+
+    for idx, mes_ref in enumerate(meses):
+        row = first_data_row + idx
+
+        mensalidades = _pagamentos_pagos_membros_ativos_no_mes(db, mes_ref)
+        outras_rendas = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all()
+        despesas = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all()
+        aplicacoes = db.query(models.AplicacaoFinanceira).filter(models.AplicacaoFinanceira.mes_referencia == mes_ref).all()
+
+        entradas_conta_mes = defaultdict(float)
+        entradas_meta_mes = {"1.1": "Mensalidades"}
+        entradas_conta_mes["1.1"] += round(sum(float(p.valor_pago or 0) for p in mensalidades), 2)
+
+        for r in outras_rendas:
+            if not r.valor:
+                continue
+            codigo = (r.conta_codigo or "1.5").strip()
+            nome = (r.conta_nome or r.categoria or "Outras arrecadações").strip()
+            entradas_conta_mes[codigo] += float(r.valor)
+            entradas_meta_mes[codigo] = nome
+
+        saidas_conta_mes = defaultdict(float)
+        saidas_meta_mes = {}
+        for d in despesas:
+            if not d.valor:
+                continue
+            codigo = (d.conta_codigo or "2.99").strip()
+            nome = (d.conta_nome or d.categoria or "Outros").strip()
+            saidas_conta_mes[codigo] += float(d.valor)
+            saidas_meta_mes[codigo] = nome
+
+        for codigo, valor in entradas_conta_mes.items():
+            if abs(float(valor or 0)) <= 0.000001:
+                continue
+            conta_entrada = db.query(models.PlanoConta).filter(models.PlanoConta.codigo == codigo, models.PlanoConta.tipo == "entrada").first()
+            previsao_valor = previsao_map.get((conta_entrada.id, int(mes_ref[-2:])), 0.0) if conta_entrada else 0.0
+            linhas_consolidado.append({
+                "classificacao": f"{codigo} - {entradas_meta_mes.get(codigo, '')}".strip(" -"),
+                "previsao": float(previsao_valor or 0),
+                "mes": mes_ref,
+                "entradas": round(float(valor), 2),
+                "saidas": 0.0,
+                "aplicacoes": 0.0,
+            })
+            detalhes_por_conta.append({
+                "mes": mes_ref,
+                "tipo": "entrada",
+                "codigo": codigo,
+                "descricao": entradas_meta_mes.get(codigo, ""),
+                "valor": round(float(valor), 2),
+            })
+
+        for codigo, valor in saidas_conta_mes.items():
+            if abs(float(valor or 0)) <= 0.000001:
+                continue
+            conta_saida = db.query(models.PlanoConta).filter(models.PlanoConta.codigo == codigo, models.PlanoConta.tipo == "saida").first()
+            previsao_valor = previsao_map.get((conta_saida.id, int(mes_ref[-2:])), 0.0) if conta_saida else 0.0
+            linhas_consolidado.append({
+                "classificacao": f"{codigo} - {saidas_meta_mes.get(codigo, '')}".strip(" -"),
+                "previsao": float(previsao_valor or 0),
+                "mes": mes_ref,
+                "entradas": 0.0,
+                "saidas": round(float(valor), 2),
+                "aplicacoes": 0.0,
+            })
+            detalhes_por_conta.append({
+                "mes": mes_ref,
+                "tipo": "saida",
+                "codigo": codigo,
+                "descricao": saidas_meta_mes.get(codigo, ""),
+                "valor": round(float(valor), 2),
+            })
+
+        for a in aplicacoes:
+            aplicacao_valor = round(float(a.aplicacoes or 0), 2)
+            if abs(aplicacao_valor) <= 0.000001:
+                continue
+            nome_aplicacao = " / ".join([x for x in [a.instituicao, a.produto] if x]) or "Aplicação financeira"
+            linhas_consolidado.append({
+                "classificacao": nome_aplicacao,
+                "previsao": 0,
+                "mes": mes_ref,
+                "entradas": 0.0,
+                "saidas": 0.0,
+                "aplicacoes": aplicacao_valor,
+            })
+
+        entradas_valor = round(
+            sum(float(p.valor_pago or 0) for p in mensalidades) +
+            sum(float(r.valor or 0) for r in outras_rendas),
+            2
+        )
+        saidas_valor = round(sum(float(d.valor or 0) for d in despesas), 2)
+        aplicacoes_valor = round(sum(float(a.aplicacoes or 0) for a in aplicacoes), 2)
+        saldo_liquido = round(entradas_valor - saidas_valor + aplicacoes_valor, 2)
+
+        total_entradas += entradas_valor
+        total_saidas += saidas_valor
+        total_aplicacoes += aplicacoes_valor
+
+    if not linhas_consolidado:
+        linhas_consolidado.append({
+            "classificacao": "Sem movimentação",
+            "previsao": 0,
+            "mes": f"{ano_ref}-01",
+            "entradas": 0.0,
+            "saidas": 0.0,
+            "aplicacoes": 0.0,
+        })
+
+    linhas_consolidado = sorted(
+        linhas_consolidado,
+        key=lambda item: (item["mes"], item["classificacao"].lower())
+    )
+
+    for idx, item in enumerate(linhas_consolidado):
+        row = first_data_row + idx
+        previsao_linha = float(item["previsao"] or 0)
+        saldo_linha = round(
+            float(item["entradas"] or 0) - float(item["saidas"] or 0) + float(item["aplicacoes"] or 0),
+            2
+        )
+        diferenca_linha = round(saldo_linha - previsao_linha, 2)
+        ws.cell(row=row, column=1, value=item["classificacao"])
+        ws.cell(row=row, column=2, value=previsao_linha)
+        ws.cell(row=row, column=3, value=item["mes"])
+        ws.cell(row=row, column=4, value=float(item["entradas"] or 0))
+        ws.cell(row=row, column=5, value=float(item["saidas"] or 0))
+        ws.cell(row=row, column=6, value=float(item["aplicacoes"] or 0))
+        ws.cell(row=row, column=7, value=saldo_linha)
+        ws.cell(row=row, column=8, value=diferenca_linha)
+        total_previsao += previsao_linha
+
+    fill_diff_positive = PatternFill("solid", fgColor="E6F4EA")
+    fill_diff_negative = PatternFill("solid", fgColor="FDE8E8")
+    fill_diff_neutral = PatternFill("solid", fgColor="F8FAFC")
+    font_diff_positive = Font(color="166534")
+    font_diff_negative = Font(color="B91C1C")
+    font_diff_neutral = Font(color="374151")
+
+    total_row = first_data_row + len(linhas_consolidado)
+    ws.cell(row=total_row, column=1, value="TOTAL").font = Font(bold=True)
+    ws.cell(row=total_row, column=4, value=round(total_entradas, 2)).font = Font(bold=True)
+    ws.cell(row=total_row, column=5, value=round(total_saidas, 2)).font = Font(bold=True)
+    ws.cell(row=total_row, column=6, value=round(total_aplicacoes, 2)).font = Font(bold=True)
+    ws.cell(
+        row=total_row,
+        column=7,
+        value=round(total_entradas - total_saidas + total_aplicacoes, 2)
+    ).font = Font(bold=True)
+    ws.cell(
+        row=total_row,
+        column=8,
+        value=round((total_entradas - total_saidas + total_aplicacoes) - total_previsao, 2)
+    ).font = Font(bold=True)
+
+    for row in range(first_data_row, total_row + 1):
+        ws.cell(row=row, column=3).alignment = Alignment(horizontal="center")
+        for col in (2, 4, 5, 6, 7, 8):
+            ws.cell(row=row, column=col).number_format = 'R$ #,##0.00'
+            ws.cell(row=row, column=col).alignment = Alignment(horizontal="right")
+
+    for col in range(1, 9):
+        ws.cell(row=total_row, column=col).fill = PatternFill("solid", fgColor="E2E8F0")
+
+    _excel_apply_zebra(ws, first_data_row, total_row - 1, 1, 8)
+    _excel_apply_borders(ws, header_row, total_row, 1, 8)
+
+    for row in range(first_data_row, total_row + 1):
+        cell_diff = ws.cell(row=row, column=8)
+        valor_diff = float(cell_diff.value or 0)
+        if valor_diff > 0:
+            cell_diff.fill = fill_diff_positive
+            cell_diff.font = Font(bold=(row == total_row), color=font_diff_positive.color)
+        elif valor_diff < 0:
+            cell_diff.fill = fill_diff_negative
+            cell_diff.font = Font(bold=(row == total_row), color=font_diff_negative.color)
+        else:
+            cell_diff.fill = fill_diff_neutral
+            cell_diff.font = Font(bold=(row == total_row), color=font_diff_neutral.color)
+
+    ws.freeze_panes = f"A{first_data_row}"
+    ws.auto_filter.ref = f"A{header_row}:H{total_row}"
+    ws.column_dimensions["A"].width = 42
+    ws.column_dimensions["B"].width = 14
+    ws.column_dimensions["C"].width = 12
+    ws.column_dimensions["D"].width = 16
+    ws.column_dimensions["E"].width = 16
+    ws.column_dimensions["F"].width = 16
+    ws.column_dimensions["G"].width = 16
+    ws.column_dimensions["H"].width = 22
+
+    ws_det = wb.create_sheet(title=f"Detalhes Contas {ano_ref}")
+    ws_det.merge_cells("A1:E1")
+    ws_det["A1"] = f"DETALHAMENTO POR CONTA - {ano_ref}"
+    ws_det["A1"].font = Font(bold=True, color="FFFFFF", size=13)
+    ws_det["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
+    ws_det["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    det_header_row = 3
+    det_headers = ["Mês", "Tipo", "Código da Conta", "Descrição da Conta", "Valor"]
+    for col, header in enumerate(det_headers, 1):
+        _excel_header_style(ws_det.cell(row=det_header_row, column=col, value=header))
+
+    detalhes_ordenados = sorted(
+        detalhes_por_conta,
+        key=lambda item: (item["mes"], item["tipo"], _ordenar_codigo_conta(item["codigo"]))
+    )
+
+    det_first_data_row = det_header_row + 1
+    for idx, item in enumerate(detalhes_ordenados):
+        row = det_first_data_row + idx
+        ws_det.cell(row=row, column=1, value=item["mes"])
+        ws_det.cell(row=row, column=2, value="Entrada" if item["tipo"] == "entrada" else "Saída")
+        ws_det.cell(row=row, column=3, value=item["codigo"])
+        ws_det.cell(row=row, column=4, value=item["descricao"])
+        ws_det.cell(row=row, column=5, value=item["valor"])
+        ws_det.cell(row=row, column=5).number_format = 'R$ #,##0.00'
+        ws_det.cell(row=row, column=5).alignment = Alignment(horizontal="right")
+
+    det_last_row = max(det_first_data_row, det_first_data_row + len(detalhes_ordenados) - 1)
+    _excel_apply_zebra(ws_det, det_first_data_row, det_last_row, 1, 5)
+    _excel_apply_borders(ws_det, det_header_row, det_last_row, 1, 5)
+    ws_det.freeze_panes = f"A{det_first_data_row}"
+    ws_det.auto_filter.ref = f"A{det_header_row}:E{det_last_row}"
+    ws_det.column_dimensions["A"].width = 14
+    ws_det.column_dimensions["B"].width = 12
+    ws_det.column_dimensions["C"].width = 18
+    ws_det.column_dimensions["D"].width = 48
+    ws_det.column_dimensions["E"].width = 18
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=consolidado_financeiro_{ano_ref}.xlsx"}
+    )
+
 @app.get("/api/relatorios/festas/{festa_id}")
 def exportar_festa(
     festa_id: str,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment
-
     festa = db.query(models.Festa).filter(models.Festa.id == festa_id).first()
     if not festa:
         raise HTTPException(status_code=404, detail="Festa não encontrada")
@@ -3446,18 +4897,22 @@ def exportar_festa(
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Participantes"
+    ws.merge_cells("A1:F1")
     ws["A1"] = f"LISTA DE PARTICIPANTES - {festa.nome_festa}"
-    ws["A1"].font = Font(bold=True, size=14)
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
+    ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
+    ws["A1"].alignment = Alignment(horizontal="center")
     ws["A2"] = f"Data: {festa.data_festa} | Local: {festa.local_festa}"
+    ws.merge_cells("A2:F2")
     
     headers = ["Nome Participante", "Tipo", "Membro Titular", "Dependente/Convidado", "Custo Convite", "Pago"]
+    header_row = 4
     for col, h in enumerate(headers, 1):
-        cell = ws.cell(row=4, column=col, value=h)
-        cell.font = Font(bold=True)
-        cell.fill = PatternFill("solid", fgColor="1e3a5f")
-        cell.font = Font(color="FFFFFF", bold=True)
+        cell = ws.cell(row=header_row, column=col, value=h)
+        _excel_header_style(cell)
     
-    for row, p in enumerate(parts, 5):
+    first_data_row = header_row + 1
+    for row, p in enumerate(parts, first_data_row):
         membro_nome = ""
         if p.membro_id:
             m = db.query(models.Membro).filter(models.Membro.id == p.membro_id).first()
@@ -3469,6 +4924,22 @@ def exportar_festa(
         ws.cell(row=row, column=4, value=p.nome_dependente or "")
         ws.cell(row=row, column=5, value=float(p.custo_convite) if p.custo_convite else 0)
         ws.cell(row=row, column=6, value="Sim" if p.pago else "Não")
+        ws.cell(row=row, column=5).number_format = 'R$ #,##0.00'
+        ws.cell(row=row, column=5).alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=6).alignment = Alignment(horizontal="center")
+
+    total_row = first_data_row + len(parts)
+    _excel_apply_zebra(ws, first_data_row, total_row - 1, 1, 6)
+    ws.cell(row=total_row, column=4, value="TOTAL").font = Font(bold=True)
+    ws.cell(row=total_row, column=5, value=round(sum(float(p.custo_convite or 0) for p in parts), 2)).font = Font(bold=True)
+    ws.cell(row=total_row, column=5).number_format = 'R$ #,##0.00'
+    ws.cell(row=total_row, column=4).fill = PatternFill("solid", fgColor="E2E8F0")
+    ws.cell(row=total_row, column=5).fill = PatternFill("solid", fgColor="E2E8F0")
+
+    _excel_apply_borders(ws, header_row, total_row, 1, 6)
+    ws.freeze_panes = f"A{first_data_row}"
+    ws.auto_filter.ref = f"A{header_row}:F{total_row}"
+    _excel_autofit_columns(ws, min_width=12, max_width=44)
 
     buf = io.BytesIO()
     wb.save(buf)

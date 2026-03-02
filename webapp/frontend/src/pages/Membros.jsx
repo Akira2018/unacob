@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../api';
 import toast from 'react-hot-toast';
 import { Plus, Edit, Trash2, Search, Download, UserCheck, UserX } from 'lucide-react';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const ESTADOS = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 
@@ -28,8 +29,13 @@ export default function Membros() {
   const load = () => {
     setLoading(true);
     api.get('/membros', { params: { limit: 1000 } })
-      .then(r => { setMembros(r.data); setFiltered(r.data); })
-      .catch(() => toast.error('Erro ao carregar membros'))
+      .then(r => {
+        const data = Array.isArray(r.data) ? r.data : [];
+        setMembros(data);
+        setFiltered(data);
+        if (!Array.isArray(r.data)) toast.error('Resposta inválida ao carregar membros');
+      })
+      .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar membros')))
       .finally(() => setLoading(false));
   };
 
@@ -71,7 +77,7 @@ export default function Membros() {
       setModal(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao salvar');
+      toast.error(getApiErrorMessage(err, 'Erro ao salvar'));
     } finally {
       setSaving(false);
     }
@@ -83,7 +89,7 @@ export default function Membros() {
       await api.delete(`/membros/${id}`);
       toast.success('Membro removido');
       load();
-    } catch { toast.error('Erro ao remover'); }
+    } catch (err) { toast.error(getApiErrorMessage(err, 'Erro ao remover')); }
   };
 
   const exportar = async () => {

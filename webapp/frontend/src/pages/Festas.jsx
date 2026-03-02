@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../api';
 import toast from 'react-hot-toast';
 import { Plus, Edit, Trash2, Users, PartyPopper, Download, Link, Mail } from 'lucide-react';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
 const fmtDataBR = (valor) => {
@@ -96,10 +97,15 @@ export default function Festas() {
 
   const load = () => {
     setLoading(true);
-    api.get('/festas').then(r => setFestas(r.data)).catch(() => toast.error('Erro')).finally(() => setLoading(false));
+    api.get('/festas').then(r => setFestas(r.data)).catch(err => toast.error(getApiErrorMessage(err, 'Erro'))).finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); api.get('/membros', { params: { limit: 1000 } }).then(r => setMembros(r.data)); }, []);
+  useEffect(() => {
+    load();
+    api.get('/membros', { params: { limit: 1000 } })
+      .then(r => setMembros(r.data))
+      .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar membros')));
+  }, []);
 
   const openModalFesta = (f = null) => {
     setEditingFesta(f);
@@ -167,7 +173,7 @@ export default function Festas() {
       setModalFesta(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao salvar');
+      toast.error(getApiErrorMessage(err, 'Erro ao salvar'));
     } finally {
       setSaving(false);
     }
@@ -176,7 +182,7 @@ export default function Festas() {
   const handleDeleteFesta = async (id) => {
     if (!confirm('Remover festa?')) return;
     try { await api.delete(`/festas/${id}`); toast.success('Removida'); load(); }
-    catch { toast.error('Erro ao remover'); }
+    catch (err) { toast.error(getApiErrorMessage(err, 'Erro ao remover')); }
   };
 
   const openParticipantes = async (festa) => {
@@ -186,7 +192,7 @@ export default function Festas() {
     try {
       const r = await api.get(`/festas/${festa.id}/participantes`);
       setParticipantes(r.data);
-    } catch { toast.error('Erro ao carregar participantes'); }
+    } catch (err) { toast.error(getApiErrorMessage(err, 'Erro ao carregar participantes')); }
     finally { setLoadingParts(false); }
   };
 
@@ -213,7 +219,7 @@ export default function Festas() {
       const r = await api.get(`/festas/${festaSel.id}/participantes`);
       setParticipantes(r.data);
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao salvar');
+      toast.error(getApiErrorMessage(err, 'Erro ao salvar'));
     } finally {
       setSaving(false);
     }
@@ -226,7 +232,7 @@ export default function Festas() {
       toast.success('Removido');
       const r = await api.get(`/festas/${festaSel.id}/participantes`);
       setParticipantes(r.data);
-    } catch { toast.error('Erro ao remover'); }
+    } catch (err) { toast.error(getApiErrorMessage(err, 'Erro ao remover')); }
   };
 
   const exportarFesta = async (festaId, nomeFesta) => {
@@ -255,8 +261,8 @@ export default function Festas() {
       const r = await api.get('/membros', { params: { limit: 2000 } });
       const lista = (r.data || []).filter(m => m.email && `${m.email}`.trim() !== '');
       setDestinatarios(lista);
-    } catch {
-      toast.error('Erro ao carregar membros para convite');
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao carregar membros para convite'));
     } finally {
       setLoadingConvites(false);
     }
@@ -287,21 +293,31 @@ export default function Festas() {
       }
       setModalConvites(false);
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao enviar convites');
+      toast.error(getApiErrorMessage(err, 'Erro ao enviar convites'));
     }
   };
 
   const copyLink = (link) => { navigator.clipboard.writeText(link); toast.success('Link copiado!'); };
   const getLinkTemplate = (festa) => {
+    const fallback = `${window.location.origin}/#/festa-inscricao/${festa?.id || ''}`;
+
     if (festa?.link_inscricao) {
+      let link = festa.link_inscricao;
+
       if (festa.link_inscricao.includes('{festa_id}')) {
-        return festa.link_inscricao.replace('{festa_id}', festa.id || '');
+        link = festa.link_inscricao.replace('{festa_id}', festa.id || '');
       }
       if (festa.link_inscricao.includes('{token}')) {
-        return festa.link_inscricao.replace('{token}', festa.id || '');
+        link = festa.link_inscricao.replace('{token}', festa.id || '');
       }
+
+      if (link.includes('localhost') || link.includes('127.0.0.1')) return fallback;
+      if (link.includes('/festa-inscricao/') && !link.includes('/#/')) {
+        return link.replace('/festa-inscricao/', '/#/festa-inscricao/');
+      }
+      return link;
     }
-    return `${window.location.origin}/festa-inscricao/${festa?.id || ''}`;
+    return fallback;
   };
 
   const setFF = (k, v) => setFormFesta(f => ({ ...f, [k]: v }));

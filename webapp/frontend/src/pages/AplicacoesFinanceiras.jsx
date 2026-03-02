@@ -3,8 +3,20 @@ import { format, subMonths } from 'date-fns';
 import { Download, Edit, Plus, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../api';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
+const fmtDataAplicacao = (dataAplicacao, mesReferencia) => {
+  if (dataAplicacao && typeof dataAplicacao === 'string') {
+    const [ano, mes, dia] = dataAplicacao.split('-');
+    if (ano && mes && dia) return `${dia}/${mes}/${ano}`;
+  }
+  if (mesReferencia && typeof mesReferencia === 'string') {
+    const [ano, mes] = mesReferencia.split('-');
+    if (ano && mes) return `01/${mes}/${ano}`;
+  }
+  return '-';
+};
 const getMeses = () => {
   const r = [];
   for (let i = 0; i < 13; i++) r.push(format(subMonths(new Date(), i), 'yyyy-MM'));
@@ -12,6 +24,7 @@ const getMeses = () => {
 };
 
 const emptyForm = {
+  data_aplicacao: format(new Date(), 'yyyy-MM-dd'),
   instituicao: '',
   produto: '',
   saldo_anterior: '',
@@ -25,6 +38,13 @@ const emptyForm = {
 const toNumber = value => {
   const parsed = parseFloat(value);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const toMesReferencia = value => {
+  if (!value || typeof value !== 'string') return null;
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return `${match[1]}-${match[2]}`;
 };
 
 export default function AplicacoesFinanceiras() {
@@ -51,7 +71,7 @@ export default function AplicacoesFinanceiras() {
         setItems(lista.data || []);
         setResumo(resumoResp.data || { total_registros: 0, totais: { saldo_anterior: 0, aplicacoes: 0, rendimento_bruto: 0, impostos: 0, resgate: 0, saldo_atual: 0 } });
       })
-      .catch(() => toast.error('Erro ao carregar aplicações financeiras'))
+        .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar aplicações financeiras')))
       .finally(() => setLoading(false));
   }, [mes]);
 
@@ -63,6 +83,7 @@ export default function AplicacoesFinanceiras() {
   const openModal = (item = null) => {
     setEditing(item);
     setForm(item ? {
+      data_aplicacao: item.data_aplicacao || (item.mes_referencia ? `${item.mes_referencia}-01` : format(new Date(), 'yyyy-MM-dd')),
       instituicao: item.instituicao || '',
       produto: item.produto || '',
       saldo_anterior: item.saldo_anterior ?? '',
@@ -89,6 +110,11 @@ export default function AplicacoesFinanceiras() {
 
   const handleSave = async e => {
     e.preventDefault();
+    const mesReferenciaForm = toMesReferencia(form.data_aplicacao);
+    if (!mesReferenciaForm) {
+      toast.error('Informe uma data válida para a aplicação');
+      return;
+    }
     setSaving(true);
     const payload = {
       instituicao: form.instituicao.trim(),
@@ -99,7 +125,8 @@ export default function AplicacoesFinanceiras() {
       impostos: toNumber(form.impostos),
       resgate: toNumber(form.resgate),
       observacoes: form.observacoes,
-      mes_referencia: mes
+      data_aplicacao: form.data_aplicacao,
+      mes_referencia: mesReferenciaForm
     };
 
     try {
@@ -110,10 +137,11 @@ export default function AplicacoesFinanceiras() {
         await api.post('/aplicacoes-financeiras', payload);
         toast.success('Aplicação registrada!');
       }
+      setMes(mesReferenciaForm);
       setModal(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao salvar');
+      toast.error(getApiErrorMessage(err, 'Erro ao salvar'));
     } finally {
       setSaving(false);
     }
@@ -125,8 +153,8 @@ export default function AplicacoesFinanceiras() {
       await api.delete(`/aplicacoes-financeiras/${id}`);
       toast.success('Aplicação removida');
       load();
-    } catch {
-      toast.error('Erro ao remover');
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao remover'));
     }
   };
 
@@ -142,8 +170,8 @@ export default function AplicacoesFinanceiras() {
       a.download = `aplicacoes_financeiras_${mes}.xlsx`;
       a.click();
       toast.success('Relatório gerado!');
-    } catch {
-      toast.error('Erro ao gerar relatório');
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao gerar relatório'));
     }
   };
 
@@ -238,6 +266,7 @@ export default function AplicacoesFinanceiras() {
                     <table>
                       <tbody>
                         <tr><td>Saldo Anterior</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.saldo_anterior)}</td></tr>
+                        <tr><td>Data da Aplicação</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtDataAplicacao(item.data_aplicacao, item.mes_referencia)}</td></tr>
                         <tr><td>Aplicações</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.aplicacoes)}</td></tr>
                         <tr><td>Renda Bruta</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.rendimento_bruto)}</td></tr>
                         <tr><td>IR/IOF</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.impostos)}</td></tr>
@@ -281,6 +310,15 @@ export default function AplicacoesFinanceiras() {
 
             <form onSubmit={handleSave}>
               <div className="form-grid">
+                <div className="form-group">
+                  <label>Data da Aplicação *</label>
+                  <input
+                    type="date"
+                    required
+                    value={form.data_aplicacao}
+                    onChange={e => setF('data_aplicacao', e.target.value)}
+                  />
+                </div>
                 <div className="form-group">
                   <label>Instituição *</label>
                   <input required value={form.instituicao} onChange={e => setF('instituicao', e.target.value)} placeholder="Ex: BB" />

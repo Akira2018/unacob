@@ -6,6 +6,7 @@ import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts';
 import { TrendingUp, TrendingDown, DollarSign } from 'lucide-react';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
 const getMeses = () => { const r = []; for (let i = 0; i < 13; i++) r.push(format(subMonths(new Date(), i), 'yyyy-MM')); return r; };
@@ -30,7 +31,7 @@ export default function FluxoCaixa() {
       .then(([fluxoResp, saldoResp]) => {
         setData({ ...fluxoResp.data, observacoes_saldo_inicial: saldoResp.data?.observacoes || '' });
       })
-      .catch(() => toast.error('Erro ao carregar fluxo de caixa'))
+        .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar fluxo de caixa')))
       .finally(() => setLoading(false));
   }, [mes]);
 
@@ -64,7 +65,7 @@ export default function FluxoCaixa() {
       setModalSaldo(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao salvar saldo inicial');
+      toast.error(getApiErrorMessage(err, 'Erro ao salvar saldo inicial'));
     } finally {
       setSavingSaldo(false);
     }
@@ -81,7 +82,7 @@ export default function FluxoCaixa() {
       setModalSaldo(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao remover saldo manual');
+      toast.error(getApiErrorMessage(err, 'Erro ao remover saldo manual'));
     } finally {
       setSavingSaldo(false);
     }

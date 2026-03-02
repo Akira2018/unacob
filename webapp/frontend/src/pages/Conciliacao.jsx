@@ -3,6 +3,7 @@ import api from '../api';
 import toast from 'react-hot-toast';
 import { Plus, Edit, Trash2, CheckCircle, XCircle, Upload } from 'lucide-react';
 import { format, subMonths } from 'date-fns';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
 const getMeses = () => { const r = []; for (let i = 0; i < 13; i++) r.push(format(subMonths(new Date(), i), 'yyyy-MM')); return r; };
@@ -44,7 +45,7 @@ export default function Conciliacao() {
         setOrigemSaldoAnterior(saldoResp.data?.origem || 'calculado');
         setSaldoObservacoes(saldoResp.data?.observacoes || '');
       })
-      .catch(() => toast.error('Erro'))
+        .catch(err => toast.error(getApiErrorMessage(err, 'Erro')))
       .finally(() => setLoading(false));
   }, [mes]);
 
@@ -89,7 +90,7 @@ export default function Conciliacao() {
           diferenca: Math.abs(editing.valor_extrato - p.valor)
         })));
       })
-      .catch(() => toast.error('Erro ao carregar pagamentos'))
+        .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar pagamentos')))
       .finally(() => setCarregandoSugestoes(false));
   };
 
@@ -108,7 +109,7 @@ export default function Conciliacao() {
       setModal(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao salvar');
+      toast.error(getApiErrorMessage(err, 'Erro ao salvar'));
     } finally {
       setSaving(false);
     }
@@ -121,7 +122,7 @@ export default function Conciliacao() {
       setModal(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro');
+      toast.error(getApiErrorMessage(err, 'Erro'));
     }
   };
 
@@ -140,7 +141,7 @@ export default function Conciliacao() {
       toast.success(`${res.data.total_importados} lançamentos importados!`);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao importar');
+      toast.error(getApiErrorMessage(err, 'Erro ao importar'));
     }
     e.target.value = '';
   };
@@ -150,13 +151,13 @@ export default function Conciliacao() {
       await api.put(`/conciliacao/${item.id}`, { conciliado: !item.conciliado });
       toast.success(item.conciliado ? 'Desconciliado' : 'Conciliado!');
       load();
-    } catch { toast.error('Erro'); }
+    } catch (err) { toast.error(getApiErrorMessage(err, 'Erro')); }
   };
 
   const handleDelete = async (id) => {
     if (!confirm('Remover?')) return;
     try { await api.delete(`/conciliacao/${id}`); toast.success('Removido'); load(); }
-    catch { toast.error('Erro'); }
+    catch (err) { toast.error(getApiErrorMessage(err, 'Erro')); }
   };
 
   const openSaldoModal = () => {
@@ -184,7 +185,7 @@ export default function Conciliacao() {
       setSaldoModal(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao salvar saldo inicial');
+      toast.error(getApiErrorMessage(err, 'Erro ao salvar saldo inicial'));
     } finally {
       setSavingSaldo(false);
     }
@@ -201,7 +202,7 @@ export default function Conciliacao() {
       setSaldoModal(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao remover saldo manual');
+      toast.error(getApiErrorMessage(err, 'Erro ao remover saldo manual'));
     } finally {
       setSavingSaldo(false);
     }

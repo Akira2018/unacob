@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import api from "../api";
 import { Printer } from "lucide-react";
+import { getApiErrorMessage } from "../utils/apiError";
 
 export default function Etiquetas() {
   const [membros, setMembros] = useState([]);
@@ -46,9 +47,11 @@ export default function Etiquetas() {
       } else if (error.response?.status === 403) {
         mensagem = "Sem permissão para acessar este recurso.";
       } else if (error.response?.status === 500) {
-        mensagem = "Erro no servidor: " + (error.response?.data?.detail || "");
+        mensagem = getApiErrorMessage(error, "Erro no servidor");
       } else if (error.message === "Network Error") {
         mensagem = "Erro de conexão. Verifique a URL do servidor.";
+      } else {
+        mensagem = getApiErrorMessage(error, mensagem);
       }
       
       setErro(mensagem);

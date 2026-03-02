@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { Plus, Edit, Trash2, Download } from 'lucide-react';
 import { format, subMonths } from 'date-fns';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const CATEGORIAS = ['Aluguel', 'Energia', 'Água', 'Telefone/Internet', 'Material de Escritório', 'Serviços', 'Eventos', 'Manutenção', 'Salários', 'Impostos', 'Seguros', 'Transporte', 'Alimentação', 'Outros'];
 const COLORS = ['#1e3a5f', '#c8a84b', '#38a169', '#e53e3e', '#805ad5', '#dd6b20', '#2c7a7b', '#553c9a', '#b7791f', '#2d3748'];
@@ -14,7 +15,7 @@ const toNumber = (value) => {
   return Number.isFinite(num) ? num : 0;
 };
 
-const emptyForm = { descricao: '', categoria: 'Outros', valor: '', data_despesa: format(new Date(), 'yyyy-MM-dd'), forma_pagamento: 'dinheiro', fornecedor: '', nota_fiscal: '', observacoes: '' };
+const emptyForm = { descricao: '', categoria: 'Outros', conta_id: '', valor: '', data_despesa: format(new Date(), 'yyyy-MM-dd'), forma_pagamento: 'dinheiro', fornecedor: '', nota_fiscal: '', observacoes: '' };
 
 export default function Despesas() {
   const [despesas, setDespesas] = useState([]);
@@ -25,12 +26,13 @@ export default function Despesas() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [contas, setContas] = useState([]);
 
   const load = useCallback(() => {
     setLoading(true);
     api.get('/despesas', { params: { mes_referencia: mes } })
       .then(r => setDespesas(r.data))
-      .catch(() => toast.error('Erro ao carregar despesas'))
+      .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar despesas')))
       .finally(() => setLoading(false));
   }, [mes]);
 
@@ -39,9 +41,15 @@ export default function Despesas() {
     return () => clearTimeout(timerId);
   }, [load]);
 
+  useEffect(() => {
+    api.get('/contas', { params: { tipo: 'saida', apenas_ativas: true } })
+      .then(r => setContas(Array.isArray(r.data) ? r.data : []))
+      .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar plano de contas (saídas)')));
+  }, []);
+
   const openModal = (d = null) => {
     setEditing(d);
-    setForm(d ? { ...emptyForm, ...d, valor: d.valor || '' } : emptyForm);
+    setForm(d ? { ...emptyForm, ...d, valor: d.valor || '' } : { ...emptyForm, conta_id: contas[0]?.id || '' });
     setModal(true);
   };
 
@@ -49,6 +57,11 @@ export default function Despesas() {
     e.preventDefault();
     setSaving(true);
     try {
+      if (!form.conta_id) {
+        toast.error('Selecione a conta da despesa');
+        setSaving(false);
+        return;
+      }
       const payload = { ...form, valor: parseFloat(form.valor) };
       if (editing) {
         await api.put(`/despesas/${editing.id}`, payload);
@@ -60,7 +73,7 @@ export default function Despesas() {
       setModal(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao salvar');
+      toast.error(getApiErrorMessage(err, 'Erro ao salvar'));
     } finally {
       setSaving(false);
     }
@@ -72,7 +85,7 @@ export default function Despesas() {
       await api.delete(`/despesas/${id}`);
       toast.success('Despesa removida');
       load();
-    } catch { toast.error('Erro ao remover'); }
+    } catch (err) { toast.error(getApiErrorMessage(err, 'Erro ao remover')); }
   };
 
   const total = despesas.reduce((s, d) => s + toNumber(d.valor), 0);
@@ -86,6 +99,8 @@ export default function Despesas() {
       d.categoria,
       d.fornecedor,
       d.forma_pagamento,
+      d.conta_codigo,
+      d.conta_nome,
       d.data_despesa,
       String(d.valor ?? '')
     ]
@@ -143,13 +158,14 @@ export default function Despesas() {
                     <th>Categoria</th>
                     <th>Fornecedor</th>
                     <th>Forma</th>
+                    <th>Conta</th>
                     <th>Valor</th>
                     <th>Ações</th>
                   </tr>
                 </thead>
                 <tbody>
                   {despesasFiltradas.length === 0 ? (
-                    <tr><td colSpan={7} style={{ textAlign: 'center', padding: 40, color: '#718096' }}>{searchTerm ? 'Nenhuma despesa encontrada para a busca' : 'Sem despesas neste mês'}</td></tr>
+                    <tr><td colSpan={8} style={{ textAlign: 'center', padding: 40, color: '#718096' }}>{searchTerm ? 'Nenhuma despesa encontrada para a busca' : 'Sem despesas neste mês'}</td></tr>
                   ) : despesasFiltradas.map(d => (
                     <tr key={d.id}>
                       <td>{d.data_despesa || '-'}</td>
@@ -157,6 +173,7 @@ export default function Despesas() {
                       <td><span className="badge badge-info">{d.categoria}</span></td>
                       <td>{d.fornecedor || '-'}</td>
                       <td>{d.forma_pagamento || '-'}</td>
+                      <td>{d.conta_codigo ? `${d.conta_codigo} - ${d.conta_nome || ''}` : '-'}</td>
                       <td><strong style={{ color: '#e53e3e' }}>{fmt(d.valor)}</strong></td>
                       <td>
                         <div style={{ display: 'flex', gap: 4 }}>
@@ -170,7 +187,7 @@ export default function Despesas() {
                 {despesas.length > 0 && (
                   <tfoot>
                     <tr>
-                      <td colSpan={5} style={{ fontWeight: 700, textAlign: 'right', padding: '10px 12px' }}>{searchTerm ? 'Total da busca' : 'Total'}</td>
+                      <td colSpan={6} style={{ fontWeight: 700, textAlign: 'right', padding: '10px 12px' }}>{searchTerm ? 'Total da busca' : 'Total'}</td>
                       <td style={{ fontWeight: 700, color: '#e53e3e', fontSize: 15 }}>{fmt(totalExibido)}</td>
                       <td></td>
                     </tr>
@@ -228,6 +245,25 @@ export default function Despesas() {
                     autoCapitalize="none"
                     autoComplete="off"
                   />
+                </div>
+                <div className="form-group">
+                  <label>Conta da Saída *</label>
+                  <select
+                    required
+                    value={form.conta_id}
+                    onChange={e => {
+                      const contaId = e.target.value;
+                      const contaSel = contas.find(c => c.id === contaId);
+                      setForm(prev => ({
+                        ...prev,
+                        conta_id: contaId,
+                        categoria: contaSel?.nome || prev.categoria
+                      }));
+                    }}
+                  >
+                    <option value="">Selecione...</option>
+                    {contas.map(c => <option key={c.id} value={c.id}>{c.codigo} - {c.nome}</option>)}
+                  </select>
                 </div>
                 <div className="form-group">
                   <label>Categoria *</label>

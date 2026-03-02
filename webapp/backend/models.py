@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Date, DateTime, Index, Numeric, String, Text, Float, Integer, ForeignKey
+from sqlalchemy import Boolean, Date, DateTime, Index, Numeric, String, Text, Float, Integer, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 from datetime import datetime
@@ -90,6 +90,36 @@ class Transacao(Base):
     updated_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, nullable=True)
 
 
+class PlanoConta(Base):
+    __tablename__ = "plano_contas"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    codigo: Mapped[str | None] = mapped_column(String(20), unique=True, index=True)
+    nome: Mapped[str | None] = mapped_column(String(255))
+    tipo: Mapped[str | None] = mapped_column(String(10), index=True)  # entrada, saida
+    ordem: Mapped[int | None] = mapped_column(Integer, default=0)
+    ativo: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    created_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class PrevisaoOrcamentaria(Base):
+    __tablename__ = "previsoes_orcamentarias"
+    __table_args__ = (
+        UniqueConstraint("conta_id", "ano", "mes", name="uq_previsao_orcamentaria_conta_ano_mes"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    conta_id: Mapped[str] = mapped_column(String(36), ForeignKey("plano_contas.id"), index=True, nullable=False)
+    ano: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    mes: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    valor_previsto: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    observacoes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[DateTime | None] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[DateTime | None] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Despesa(Base):
     __tablename__ = "despesas"
 
@@ -103,6 +133,9 @@ class Despesa(Base):
     fornecedor: Mapped[str | None] = mapped_column(String(255))
     nota_fiscal: Mapped[str | None] = mapped_column(String(100))
     observacoes: Mapped[str | None] = mapped_column(Text)
+    conta_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("plano_contas.id"), index=True, nullable=True)
+    conta_codigo: Mapped[str | None] = mapped_column(String(20), index=True, nullable=True)
+    conta_nome: Mapped[str | None] = mapped_column(String(255), nullable=True)
     user_id: Mapped[str | None] = mapped_column(String(36))
     created_at: Mapped[DateTime | None] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -118,6 +151,9 @@ class OutraRenda(Base):
     mes_referencia: Mapped[str | None] = mapped_column(String(7))  # YYYY-MM
     fonte: Mapped[str | None] = mapped_column(String(255))
     observacoes: Mapped[str | None] = mapped_column(Text)
+    conta_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("plano_contas.id"), index=True, nullable=True)
+    conta_codigo: Mapped[str | None] = mapped_column(String(20), index=True, nullable=True)
+    conta_nome: Mapped[str | None] = mapped_column(String(255), nullable=True)
     user_id: Mapped[str | None] = mapped_column(String(36))
     created_at: Mapped[DateTime | None] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -128,6 +164,7 @@ class AplicacaoFinanceira(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[str | None] = mapped_column(String(36))
     mes_referencia: Mapped[str | None] = mapped_column(String(7), index=True)  # YYYY-MM
+    data_aplicacao: Mapped[Date | None] = mapped_column(Date, index=True)
     instituicao: Mapped[str | None] = mapped_column(String(150))
     produto: Mapped[str | None] = mapped_column(String(150))
     saldo_anterior: Mapped[float | None] = mapped_column(Float, default=0)

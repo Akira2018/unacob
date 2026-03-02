@@ -3,14 +3,17 @@ import api from '../api';
 import toast from 'react-hot-toast';
 import { Plus, Edit, Trash2 } from 'lucide-react';
 import { format, subMonths } from 'date-fns';
+import { useNavigate } from 'react-router-dom';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const CATEGORIAS = ['Doação', 'Aluguel', 'Patrocínio', 'Evento', 'Convênio', 'Aplicação Financeira', 'Multa', 'Outros'];
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
 const getMeses = () => { const r = []; for (let i = 0; i < 13; i++) r.push(format(subMonths(new Date(), i), 'yyyy-MM')); return r; };
 
-const emptyForm = { descricao: '', categoria: 'Outros', valor: '', data_recebimento: format(new Date(), 'yyyy-MM-dd'), fonte: '', observacoes: '' };
+const emptyForm = { descricao: '', categoria: 'Outros', conta_id: '', valor: '', data_recebimento: format(new Date(), 'yyyy-MM-dd'), fonte: '', observacoes: '' };
 
 export default function OutrasRendas() {
+  const navigate = useNavigate();
   const [rendas, setRendas] = useState([]);
   const [mes, setMes] = useState(format(new Date(), 'yyyy-MM'));
   const [busca, setBusca] = useState('');
@@ -19,12 +22,13 @@ export default function OutrasRendas() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [contas, setContas] = useState([]);
 
   const load = useCallback(() => {
     setLoading(true);
     api.get('/outras-rendas', { params: { mes_referencia: mes } })
       .then(r => setRendas(r.data))
-      .catch(() => toast.error('Erro ao carregar'))
+      .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar')))
       .finally(() => setLoading(false));
   }, [mes]);
 
@@ -33,9 +37,15 @@ export default function OutrasRendas() {
     return () => clearTimeout(timerId);
   }, [load]);
 
+  useEffect(() => {
+    api.get('/contas', { params: { tipo: 'entrada', apenas_ativas: true } })
+      .then(r => setContas(Array.isArray(r.data) ? r.data : []))
+      .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar plano de contas (entradas)')));
+  }, []);
+
   const openModal = (r = null) => {
     setEditing(r);
-    setForm(r ? { ...emptyForm, ...r, valor: r.valor || '' } : emptyForm);
+    setForm(r ? { ...emptyForm, ...r, valor: r.valor || '' } : { ...emptyForm, conta_id: contas[0]?.id || '' });
     setModal(true);
   };
 
@@ -43,6 +53,11 @@ export default function OutrasRendas() {
     e.preventDefault();
     setSaving(true);
     try {
+      if (!form.conta_id) {
+        toast.error('Selecione a conta da entrada');
+        setSaving(false);
+        return;
+      }
       const payload = { ...form, valor: parseFloat(form.valor) };
       if (editing) {
         await api.put(`/outras-rendas/${editing.id}`, payload);
@@ -54,7 +69,7 @@ export default function OutrasRendas() {
       setModal(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erro ao salvar');
+      toast.error(getApiErrorMessage(err, 'Erro ao salvar'));
     } finally {
       setSaving(false);
     }
@@ -63,14 +78,14 @@ export default function OutrasRendas() {
   const handleDelete = async id => {
     if (!confirm('Remover?')) return;
     try { await api.delete(`/outras-rendas/${id}`); toast.success('Removido'); load(); }
-    catch { toast.error('Erro ao remover'); }
+    catch (err) { toast.error(getApiErrorMessage(err, 'Erro ao remover')); }
   };
 
   const termoBusca = busca.trim().toLowerCase();
   const rendasFiltradas = termoBusca
     ? rendas.filter(r => {
         const valorTexto = String(r.valor ?? '');
-        return [r.descricao, r.categoria, r.fonte, r.data_recebimento, valorTexto]
+        return [r.descricao, r.categoria, r.fonte, r.data_recebimento, r.conta_codigo, r.conta_nome, valorTexto]
           .filter(Boolean)
           .some(campo => String(campo).toLowerCase().includes(termoBusca));
       })
@@ -83,7 +98,10 @@ export default function OutrasRendas() {
     <div>
       <div className="topbar">
         <h2>Outras Fontes de Renda</h2>
-        <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Nova Renda</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-outline" onClick={() => navigate('/plano-contas')}>Código de Contas</button>
+          <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Nova Renda</button>
+        </div>
       </div>
 
       <div className="filters">
@@ -117,6 +135,7 @@ export default function OutrasRendas() {
                   <th>Descrição</th>
                   <th>Categoria</th>
                   <th>Fonte</th>
+                  <th>Conta</th>
                   <th>Valor</th>
                   <th>Ações</th>
                 </tr>
@@ -124,7 +143,7 @@ export default function OutrasRendas() {
               <tbody>
                 {rendasFiltradas.length === 0 ? (
                   <tr>
-                    <td colSpan={6} style={{ textAlign: 'center', padding: 40, color: '#718096' }}>
+                    <td colSpan={7} style={{ textAlign: 'center', padding: 40, color: '#718096' }}>
                       {termoBusca ? 'Nenhum resultado para a busca informada' : 'Sem registros neste mês'}
                     </td>
                   </tr>
@@ -134,6 +153,7 @@ export default function OutrasRendas() {
                     <td><strong>{r.descricao}</strong></td>
                     <td><span className="badge badge-success">{r.categoria}</span></td>
                     <td>{r.fonte || '-'}</td>
+                    <td>{r.conta_codigo ? `${r.conta_codigo} - ${r.conta_nome || ''}` : '-'}</td>
                     <td><strong style={{ color: '#38a169' }}>{fmt(r.valor)}</strong></td>
                     <td>
                       <div style={{ display: 'flex', gap: 4 }}>
@@ -147,7 +167,7 @@ export default function OutrasRendas() {
               {rendasFiltradas.length > 0 && (
                 <tfoot>
                   <tr>
-                    <td colSpan={4} style={{ fontWeight: 700, textAlign: 'right', padding: '10px 12px' }}>Total</td>
+                    <td colSpan={5} style={{ fontWeight: 700, textAlign: 'right', padding: '10px 12px' }}>Total</td>
                     <td style={{ fontWeight: 700, color: '#38a169', fontSize: 15 }}>{fmt(total)}</td>
                     <td></td>
                   </tr>
@@ -170,6 +190,25 @@ export default function OutrasRendas() {
                 <div className="form-group form-full">
                   <label>Descrição *</label>
                   <input required value={form.descricao} onChange={e => setF('descricao', e.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label>Conta da Entrada *</label>
+                  <select
+                    required
+                    value={form.conta_id}
+                    onChange={e => {
+                      const contaId = e.target.value;
+                      const contaSel = contas.find(c => c.id === contaId);
+                      setForm(prev => ({
+                        ...prev,
+                        conta_id: contaId,
+                        categoria: contaSel?.nome || prev.categoria
+                      }));
+                    }}
+                  >
+                    <option value="">Selecione...</option>
+                    {contas.map(c => <option key={c.id} value={c.id}>{c.codigo} - {c.nome}</option>)}
+                  </select>
                 </div>
                 <div className="form-group">
                   <label>Categoria *</label>

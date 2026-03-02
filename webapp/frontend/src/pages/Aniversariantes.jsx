@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import api from '../api';
 import toast from 'react-hot-toast';
 import { Cake, Download, Mail, MessageCircle } from 'lucide-react';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 
@@ -15,7 +16,7 @@ export default function Aniversariantes() {
     setLoading(true);
     api.get('/aniversariantes', { params: { mes } })
       .then(r => setAniversariantes(r.data))
-      .catch(() => toast.error('Erro ao carregar'))
+      .catch(error => toast.error(getApiErrorMessage(error, 'Erro ao carregar')))
       .finally(() => setLoading(false));
   }, [mes]);
 
@@ -55,7 +56,7 @@ export default function Aniversariantes() {
       });
       toast.success(`E-mail enviado para ${aniv.nome}`);
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Erro ao enviar e-mail');
+      toast.error(getApiErrorMessage(error, 'Erro ao enviar e-mail'));
     } finally {
       setEnviandoEmailId(null);
     }
