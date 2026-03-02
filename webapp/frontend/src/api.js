@@ -1,7 +1,36 @@
 import axios from 'axios';
 import toast from 'react-hot-toast';
 
-const apiBaseURL = import.meta.env.VITE_API_BASE_URL || '/api';
+const normalizeApiBaseURL = () => {
+  const rawValue = String(import.meta.env.VITE_API_BASE_URL || '').trim();
+  const invalidValues = new Set(['', 'undefined', 'null', 'false']);
+
+  if (invalidValues.has(rawValue.toLowerCase())) {
+    return '/api';
+  }
+
+  if (rawValue.startsWith('/')) {
+    return rawValue;
+  }
+
+  try {
+    const parsed = new URL(rawValue);
+    const blockedHosts = new Set(['backend', 'localhost', '127.0.0.1', '0.0.0.0']);
+    if (blockedHosts.has(parsed.hostname.toLowerCase())) {
+      return '/api';
+    }
+
+    if (window.location.protocol === 'https:' && parsed.protocol === 'http:') {
+      parsed.protocol = 'https:';
+    }
+
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return '/api';
+  }
+};
+
+const apiBaseURL = normalizeApiBaseURL();
 let isRedirectingToLogin = false;
 
 const api = axios.create({
