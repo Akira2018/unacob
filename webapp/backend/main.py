@@ -137,20 +137,21 @@ def _ensure_financeiro_columns_and_seed_contas():
             return False
         return any(c.get("name") == column_name for c in cols)
 
-    with engine.begin() as conn:
-        if _has_column("despesas", "conta_id") is False:
-            conn.execute(text("ALTER TABLE despesas ADD COLUMN conta_id VARCHAR(36)"))
-        if _has_column("despesas", "conta_codigo") is False:
-            conn.execute(text("ALTER TABLE despesas ADD COLUMN conta_codigo VARCHAR(20)"))
-        if _has_column("despesas", "conta_nome") is False:
-            conn.execute(text("ALTER TABLE despesas ADD COLUMN conta_nome VARCHAR(255)"))
+    def _ensure_column(table_name: str, column_name: str, ddl_type: str) -> None:
+        if _has_column(table_name, column_name) is False:
+            conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl_type}"))
 
-        if _has_column("outras_rendas", "conta_id") is False:
-            conn.execute(text("ALTER TABLE outras_rendas ADD COLUMN conta_id VARCHAR(36)"))
-        if _has_column("outras_rendas", "conta_codigo") is False:
-            conn.execute(text("ALTER TABLE outras_rendas ADD COLUMN conta_codigo VARCHAR(20)"))
-        if _has_column("outras_rendas", "conta_nome") is False:
-            conn.execute(text("ALTER TABLE outras_rendas ADD COLUMN conta_nome VARCHAR(255)"))
+    with engine.begin() as conn:
+        _ensure_column("despesas", "conta_id", "VARCHAR(36)")
+        _ensure_column("despesas", "conta_codigo", "VARCHAR(20)")
+        _ensure_column("despesas", "conta_nome", "VARCHAR(255)")
+
+        _ensure_column("outras_rendas", "conta_id", "VARCHAR(36)")
+        _ensure_column("outras_rendas", "conta_codigo", "VARCHAR(20)")
+        _ensure_column("outras_rendas", "conta_nome", "VARCHAR(255)")
+
+        _ensure_column("aplicacoes_financeiras", "data_aplicacao", "DATE")
+        _ensure_column("aplicacoes_financeiras", "updated_at", "TIMESTAMP")
 
     from database import SessionLocal
     db = SessionLocal()
