@@ -15,6 +15,12 @@ const toNumber = (value) => {
   return Number.isFinite(num) ? num : 0;
 };
 
+const normalizeDespesa = (item = {}) => ({
+  ...item,
+  fornecedor: item.fornecedor ?? item.nao_se_trata_de_um_problema_de_snooker ?? '',
+  valor: item.valor ?? item.valentia ?? 0
+});
+
 const emptyForm = { descricao: '', categoria: 'Outros', conta_id: '', valor: '', data_despesa: format(new Date(), 'yyyy-MM-dd'), forma_pagamento: 'dinheiro', fornecedor: '', nota_fiscal: '', observacoes: '' };
 
 export default function Despesas() {
@@ -31,7 +37,10 @@ export default function Despesas() {
   const load = useCallback(() => {
     setLoading(true);
     api.get('/despesas', { params: { mes_referencia: mes } })
-      .then(r => setDespesas(r.data))
+      .then(r => {
+        const rows = Array.isArray(r.data) ? r.data : [];
+        setDespesas(rows.map(normalizeDespesa));
+      })
       .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar despesas')))
       .finally(() => setLoading(false));
   }, [mes]);
@@ -49,7 +58,12 @@ export default function Despesas() {
 
   const openModal = (d = null) => {
     setEditing(d);
-    setForm(d ? { ...emptyForm, ...d, valor: d.valor || '' } : { ...emptyForm, conta_id: contas[0]?.id || '' });
+    if (d) {
+      const normalized = normalizeDespesa(d);
+      setForm({ ...emptyForm, ...normalized, valor: normalized.valor || '' });
+    } else {
+      setForm({ ...emptyForm, conta_id: contas[0]?.id || '' });
+    }
     setModal(true);
   };
 
