@@ -396,6 +396,65 @@ def _sqlite_db_path_or_400() -> Path:
     return db_path
 
 
+@app.get("/api/admin/system/schema")
+def schema_diagnostic(current_user=Depends(get_current_user)):
+    _assert_admin(current_user)
+
+    inspector = inspect(engine)
+    required_columns = {
+        "aplicacoes_financeiras": [
+            "id",
+            "user_id",
+            "mes_referencia",
+            "data_aplicacao",
+            "instituicao",
+            "produto",
+            "saldo_anterior",
+            "aplicacoes",
+            "rendimento_bruto",
+            "impostos",
+            "resgate",
+            "saldo_atual",
+            "observacoes",
+            "created_at",
+            "updated_at",
+        ]
+    }
+
+    tables = {}
+    has_any_issue = False
+
+    for table_name, expected in required_columns.items():
+        try:
+            columns = [c.get("name") for c in inspector.get_columns(table_name)]
+            missing = [c for c in expected if c not in columns]
+            tables[table_name] = {
+                "exists": True,
+                "missing_columns": missing,
+                "column_count": len(columns),
+            }
+            if missing:
+                has_any_issue = True
+        except Exception as exc:
+            has_any_issue = True
+            tables[table_name] = {
+                "exists": False,
+                "missing_columns": expected,
+                "error": str(exc),
+            }
+
+    db_backend = engine.url.get_backend_name()
+    response = {
+        "status": "error" if has_any_issue else "ok",
+        "database": {
+            "backend": db_backend,
+            "database": engine.url.database if db_backend == "sqlite" else None,
+        },
+        "tables": tables,
+    }
+    return response
+
+
 @app.get("/api/admin/system/backup")
 def backup_database(current_user=Depends(get_current_user)):
     _assert_admin(current_user)
