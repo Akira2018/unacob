@@ -3560,94 +3560,265 @@ def delete_conciliacao(
     db.commit()
     return {"ok": True}
 
+
+def _parse_valor_extrato(valor_raw: str) -> float:
+    valor_limpo = (valor_raw or "").replace("R$", "").replace(" ", "").strip()
+    if not valor_limpo:
+        return 0.0
+
+    if "," in valor_limpo and "." in valor_limpo:
+        valor_limpo = valor_limpo.replace(".", "").replace(",", ".")
+    elif "," in valor_limpo:
+        valor_limpo = valor_limpo.replace(",", ".")
+
+    return float(valor_limpo)
+
+
+def _parse_data_ofx(data_raw: str) -> date:
+    digits = "".join(ch for ch in (data_raw or "") if ch.isdigit())
+    if len(digits) < 8:
+        raise ValueError("DATA OFX invalida")
+    return datetime.strptime(digits[:8], "%Y%m%d").date()
+
+
+def _parse_data_extrato(data_raw: str) -> date:
+    valor = (data_raw or "").strip()
+    if not valor:
+        raise ValueError("DATA invalida")
+
+    # Remove timezone/textos adicionais comuns em exportacoes.
+    valor = valor.replace("T", " ").split("[")[0].strip()
+
+    formatos = [
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%d/%m/%Y",
+        "%d/%m/%y",
+        "%d-%m-%Y",
+        "%d-%m-%y",
+        "%d/%m/%Y %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+    ]
+    for fmt in formatos:
+        try:
+            return datetime.strptime(valor, fmt).date()
+        except Exception:
+            continue
+
+    # Fallback: pega apenas a parte de data antes do espaco.
+    primeira_parte = valor.split(" ")[0]
+    for fmt in ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"]:
+        try:
+            return datetime.strptime(primeira_parte, fmt).date()
+        except Exception:
+            continue
+
+    raise ValueError("DATA invalida")
+
+
+def _normalizar_header_csv(valor: str) -> str:
+    norm = unicodedata.normalize("NFKD", (valor or "")).encode("ascii", "ignore").decode().lower().strip()
+    norm = re.sub(r"\s+", " ", norm)
+    return norm
+
+
+def _escolher_delimitador_csv(header_line: str) -> str:
+    if header_line.count(";") > header_line.count(","):
+        return ";"
+    if header_line.count("\t") > 0:
+        return "\t"
+    return ","
+
+
+def _encontrar_inicio_csv(lines: List[str]) -> int:
+    candidatos = [
+        "data", "descricao", "descricao lancamento", "historico", "detalhes", "lancamento", "valor", "tipo"
+    ]
+    for idx, line in enumerate(lines[:20]):
+        header_norm = _normalizar_header_csv(line)
+        hits = sum(1 for c in candidatos if c in header_norm)
+        if hits >= 2:
+            return idx
+    return 0
+
+
+def _valor_por_alias(row: dict, aliases: List[str]) -> str:
+    for key, value in row.items():
+        key_norm = _normalizar_header_csv(key)
+        if key_norm in aliases:
+            return (value or "").strip()
+    return ""
+
+
+def _normalizar_texto_chave(valor: Optional[str]) -> str:
+    txt = unicodedata.normalize("NFKD", (valor or "")).encode("ascii", "ignore").decode().lower().strip()
+    return re.sub(r"\s+", " ", txt)
+
+
+def _buscar_duplicado_conciliacao(
+    db: Session,
+    data_extrato: date,
+    valor_extrato: float,
+    banco: str,
+    tipo: str,
+    numero_documento: Optional[str],
+    descricao_extrato: Optional[str],
+):
+    valor_abs = abs(float(valor_extrato or 0))
+    banco_norm = (banco or "").strip()
+    tipo_norm = (tipo or "").strip().lower()
+    numero_doc_norm = (numero_documento or "").strip()
+    descricao_norm = _normalizar_texto_chave(descricao_extrato)
+
+    q = db.query(models.Conciliacao).filter(
+        models.Conciliacao.data_extrato == data_extrato,
+        models.Conciliacao.valor_extrato == valor_abs,
+        models.Conciliacao.banco == banco_norm,
+        models.Conciliacao.tipo == tipo_norm,
+    )
+
+    if numero_doc_norm:
+        return q.filter(models.Conciliacao.numero_documento == numero_doc_norm).first()
+
+    candidatos = q.filter(
+        or_(
+            models.Conciliacao.numero_documento.is_(None),
+            models.Conciliacao.numero_documento == "",
+        )
+    ).all()
+    for cand in candidatos:
+        if _normalizar_texto_chave(cand.descricao_extrato) == descricao_norm:
+            return cand
+    return None
+
+
+def _descricao_indica_linha_saldo(descricao: Optional[str]) -> bool:
+    txt = _normalizar_texto_chave(descricao)
+    if not txt:
+        return False
+
+    if txt in {"saldo", "saldo do dia", "saldo anterior"}:
+        return True
+
+    if txt.replace(" ", "") == "saldo":
+        return True
+
+    return txt.startswith("saldo ") or " saldo " in f" {txt} "
+
+
+def _extrair_tag_ofx(bloco: str, tag: str) -> str:
+    match = re.search(rf"<{tag}>([^<\r\n]+)", bloco, re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
+def _decode_uploaded_text(contents: bytes) -> str:
+    # Alguns bancos exportam OFX em UTF-16 ou UTF-8 com BOM.
+    for encoding in ("utf-8-sig", "utf-16", "latin-1"):
+        try:
+            return contents.decode(encoding)
+        except Exception:
+            continue
+    return contents.decode("utf-8", errors="ignore")
+
+
+def _iterar_transacoes_ofx(texto: str):
+    # Suporta OFX com e sem fechamento explicito de </STMTTRN>.
+    padrao = r"<STMTTRN>(.*?)(?=(</STMTTRN>|<STMTTRN>|</BANKTRANLIST>|$))"
+    for match in re.finditer(padrao, texto, flags=re.IGNORECASE | re.DOTALL):
+        bloco = match.group(1)
+        data_str = _extrair_tag_ofx(bloco, "DTPOSTED")
+        valor_str = _extrair_tag_ofx(bloco, "TRNAMT")
+        if not data_str or not valor_str:
+            continue
+
+        data_tx = _parse_data_ofx(data_str)
+        valor_tx = _parse_valor_extrato(valor_str)
+        trntype = _extrair_tag_ofx(bloco, "TRNTYPE").lower()
+        fitid = _extrair_tag_ofx(bloco, "FITID")
+        memo = _extrair_tag_ofx(bloco, "MEMO")
+        name = _extrair_tag_ofx(bloco, "NAME")
+        descricao = memo or name or trntype or "Lancamento bancario"
+
+        if trntype in {"debit", "payment", "check", "atm", "pos", "fee"}:
+            tipo = "debito"
+        elif trntype in {"credit", "dep", "directdep", "int", "div"}:
+            tipo = "credito"
+        else:
+            tipo = "credito" if valor_tx >= 0 else "debito"
+
+        yield {
+            "data": data_tx,
+            "valor": abs(valor_tx),
+            "tipo": tipo,
+            "descricao": descricao,
+            "numero_documento": fitid or None,
+        }
+
 @app.post("/api/conciliacao/importar/csv")
-async def importar_extrato_csv(
+@app.post("/api/conciliacao/importar/extrato")
+async def importar_extrato_arquivo(
     file: UploadFile = File(...),
     banco: str = "Importado",
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
     """
-    Importa extrato bancário em formato CSV.
-    Suporta formatos:
+    Importa extrato bancário em formato CSV ou OFX.
+    CSV suportado:
     1. Simples: data, descricao, tipo (credito|debito), valor
     2. Banco Real: Data, Lançamento, Detalhes, Nº documento, Valor, Tipo Lançamento
     """
-    if not file.filename.endswith('.csv'):
-        raise HTTPException(status_code=400, detail="Arquivo deve ser CSV")
-
     try:
         import csv
-        import io
-        
-        contents = await file.read()
-        # Tenta UTF-8, se falhar tenta Latin-1
-        try:
-            text = contents.decode('utf-8')
-        except:
-            text = contents.decode('latin-1')
-        
-        lines = text.strip().split('\n')
-        if not lines:
-            raise HTTPException(status_code=400, detail="Arquivo vazio")
-        
-        # Detecta o formato baseado no header
-        header = lines[0].lower()
-        
-        importados = []
-        
-        if any(x in header for x in ['data', 'lançamento', 'detalhes', 'valor', 'tipo']):
-            # Formato de banco real
-            reader = csv.DictReader(lines)
-            for row in reader:
-                try:
-                    # Mapeia os nomes de coluna (caseless)
-                    row_lower = {k.lower().strip(): v for k, v in row.items()}
-                    
-                    data_str = row_lower.get('data', '').strip()
-                    lancamento = row_lower.get('lançamento', '').strip()
-                    detalhes = row_lower.get('detalhes', '').strip()
-                    numero_doc = row_lower.get('nº documento', row_lower.get('n° documento', '')).strip()
-                    valor_str = row_lower.get('valor', '0').strip()
-                    tipo_lance = row_lower.get('tipo lançamento', '').strip().lower()
 
-                    if not data_str or not valor_str:
+        contents = await file.read()
+        text = _decode_uploaded_text(contents)
+
+        text = text.strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Arquivo vazio")
+
+        ext = Path((file.filename or "").strip().lower()).suffix
+        is_ofx_content = "<OFX" in text.upper() or "<STMTTRN>" in text.upper()
+
+        if ext not in {".csv", ".ofx"} and not is_ofx_content:
+            raise HTTPException(status_code=400, detail="Arquivo deve ser CSV ou OFX")
+
+        importados = []
+        linhas_lidas = 0
+        linhas_duplicadas = 0
+        linhas_invalidas = 0
+        meses_lidos = set()
+
+        if ext == ".ofx" or is_ofx_content:
+            for tx in _iterar_transacoes_ofx(text):
+                linhas_lidas += 1
+                try:
+                    data = tx["data"]
+                    valor = tx["valor"]
+                    tipo = tx["tipo"]
+                    descricao = tx["descricao"]
+                    numero_doc = tx["numero_documento"]
+                    mes_ref = data.strftime("%Y-%m")
+                    meses_lidos.add(mes_ref)
+
+                    if _descricao_indica_linha_saldo(descricao):
+                        linhas_invalidas += 1
                         continue
 
-                    # Parse da data (formato DD/MM/YYYY)
-                    if '/' in data_str:
-                        data = datetime.strptime(data_str, "%d/%m/%Y").date()
-                    else:
-                        data = datetime.strptime(data_str, "%Y-%m-%d").date()
-
-                    # Parse do valor (pode ter R$ na frente e usar , como decimal)
-                    valor_str = valor_str.replace('R$', '').replace(',', '.').strip()
-                    valor = float(valor_str)
-
-                    # Determina tipo (entrada/crédito ou saída/débito)
-                    if tipo_lance.lower() in ['entrada', 'crédito', 'credito', 'credit']:
-                        tipo = 'credito'
-                    elif tipo_lance.lower() in ['saída', 'débito', 'debito', 'debit']:
-                        tipo = 'debito'
-                    else:
-                        tipo = 'credito' if valor > 0 else 'debito'
-
-                    # Monta descrição
-                    descricao = detalhes or lancamento or tipo_lance
-                    if not descricao or descricao == '':
-                        descricao = f"Lançamento {tipo}"
-
-                    mes_ref = data.strftime("%Y-%m")
-
-                    # Verifica duplicate
-                    existe = db.query(models.Conciliacao).filter(
-                        models.Conciliacao.data_extrato == data,
-                        models.Conciliacao.valor_extrato == abs(valor),
-                        models.Conciliacao.numero_documento == numero_doc or numero_doc == '',
-                        models.Conciliacao.banco == banco
-                    ).first()
+                    existe = _buscar_duplicado_conciliacao(
+                        db=db,
+                        data_extrato=data,
+                        valor_extrato=valor,
+                        banco=banco,
+                        tipo=tipo,
+                        numero_documento=numero_doc,
+                        descricao_extrato=descricao,
+                    )
 
                     if existe:
+                        linhas_duplicadas += 1
                         continue
 
                     c = models.Conciliacao(
@@ -3655,7 +3826,95 @@ async def importar_extrato_csv(
                         user_id=current_user.id,
                         data_extrato=data,
                         descricao_extrato=descricao,
-                        valor_extrato=abs(valor),
+                        valor_extrato=valor,
+                        tipo=tipo,
+                        mes_referencia=mes_ref,
+                        banco=banco,
+                        numero_documento=numero_doc,
+                        conciliado=False,
+                        created_at=datetime.utcnow(),
+                        updated_at=datetime.utcnow()
+                    )
+                    db.add(c)
+                    importados.append({
+                        "data": data.strftime("%Y-%m-%d"),
+                        "descricao": descricao,
+                        "valor": valor,
+                        "tipo": tipo,
+                        "numero_doc": numero_doc
+                    })
+                except Exception:
+                    linhas_invalidas += 1
+                    continue
+        else:
+            all_lines = [ln for ln in text.splitlines() if ln.strip()]
+            if not all_lines:
+                raise HTTPException(status_code=400, detail="Arquivo CSV vazio")
+
+            start_idx = _encontrar_inicio_csv(all_lines)
+            lines = all_lines[start_idx:]
+            if not lines:
+                raise HTTPException(status_code=400, detail="Cabecalho CSV nao encontrado")
+
+            delimiter = _escolher_delimitador_csv(lines[0])
+            reader = csv.DictReader(lines, delimiter=delimiter)
+
+            for row in reader:
+                linhas_lidas += 1
+                try:
+                    data_str = _valor_por_alias(row, ["data", "data lancamento", "data movimento", "dt lancamento"])
+                    valor_str = _valor_por_alias(row, ["valor", "valor r$", "valor (r$)", "valor lancamento", "vlr"])
+                    descricao = _valor_por_alias(
+                        row,
+                        ["descricao", "descricao lancamento", "historico", "detalhes", "lancamento", "memo", "name"]
+                    )
+                    tipo_raw = _valor_por_alias(row, ["tipo", "tipo lancamento", "natureza"])
+                    numero_doc = _valor_por_alias(row, ["n documento", "no documento", "numero documento", "documento", "fitid"])
+
+                    if not data_str or not valor_str:
+                        linhas_invalidas += 1
+                        continue
+
+                    data = _parse_data_extrato(data_str)
+                    valor = _parse_valor_extrato(valor_str)
+
+                    tipo_norm = _normalizar_header_csv(tipo_raw)
+                    if tipo_norm in ["entrada", "credito", "credit", "c"]:
+                        tipo = "credito"
+                    elif tipo_norm in ["saida", "debito", "debit", "d"]:
+                        tipo = "debito"
+                    else:
+                        tipo = "credito" if valor >= 0 else "debito"
+
+                    descricao_final = descricao or tipo_raw or "Lancamento bancario"
+                    valor_abs = abs(valor)
+                    mes_ref = data.strftime("%Y-%m")
+                    meses_lidos.add(mes_ref)
+
+                    if _descricao_indica_linha_saldo(descricao_final):
+                        linhas_invalidas += 1
+                        continue
+
+                    existe = _buscar_duplicado_conciliacao(
+                        db=db,
+                        data_extrato=data,
+                        valor_extrato=valor_abs,
+                        banco=banco,
+                        tipo=tipo,
+                        numero_documento=numero_doc,
+                        descricao_extrato=descricao_final,
+                    )
+
+                    if existe:
+                        linhas_duplicadas += 1
+                        continue
+
+                    c = models.Conciliacao(
+                        id=str(uuid.uuid4()),
+                        user_id=current_user.id,
+                        data_extrato=data,
+                        descricao_extrato=descricao_final,
+                        valor_extrato=valor_abs,
                         tipo=tipo,
                         mes_referencia=mes_ref,
                         banco=banco,
@@ -3667,71 +3926,26 @@ async def importar_extrato_csv(
                     db.add(c)
                     importados.append({
                         "data": data.strftime("%Y-%m-%d"),
-                        "descricao": descricao,
-                        "valor": abs(valor),
+                        "descricao": descricao_final,
+                        "valor": valor_abs,
                         "tipo": tipo,
                         "numero_doc": numero_doc
                     })
 
-                except Exception as e:
-                    continue
-
-        else:
-            # Formato simples: data, descricao, tipo, valor
-            reader = csv.DictReader(lines)
-            for row in reader:
-                try:
-                    data_str = row.get('data', '').strip()
-                    descricao = row.get('descricao', row.get('descrição', '')).strip()
-                    tipo = row.get('tipo', 'credito').strip().lower()
-                    valor_str = row.get('valor', '0').replace(',', '.').strip()
-
-                    if not data_str or not valor_str:
-                        continue
-
-                    data = datetime.strptime(data_str, "%Y-%m-%d").date()
-                    valor = float(valor_str)
-                    mes_ref = data.strftime("%Y-%m")
-
-                    # Verifica duplicate
-                    existe = db.query(models.Conciliacao).filter(
-                        models.Conciliacao.data_extrato == data,
-                        models.Conciliacao.descricao_extrato == descricao,
-                        models.Conciliacao.valor_extrato == valor,
-                        models.Conciliacao.banco == banco
-                    ).first()
-
-                    if existe:
-                        continue
-
-                    c = models.Conciliacao(
-                        id=str(uuid.uuid4()),
-                        user_id=current_user.id,
-                        data_extrato=data,
-                        descricao_extrato=descricao,
-                        valor_extrato=valor,
-                        tipo=tipo if tipo in ("credito", "debito") else "credito",
-                        mes_referencia=mes_ref,
-                        banco=banco,
-                        conciliado=False,
-                        created_at=datetime.utcnow(),
-                        updated_at=datetime.utcnow()
-                    )
-                    db.add(c)
-                    importados.append({
-                        "data": data,
-                        "descricao": descricao,
-                        "valor": valor,
-                        "tipo": tipo
-                    })
-
-                except Exception as e:
+                except Exception:
+                    linhas_invalidas += 1
                     continue
 
         db.commit()
+        meses_importados = sorted({item.get("data", "")[:7] for item in importados if item.get("data")})
         return {
             "ok": True,
             "total_importados": len(importados),
+            "linhas_lidas": linhas_lidas,
+            "linhas_duplicadas": linhas_duplicadas,
+            "linhas_invalidas": linhas_invalidas,
+            "meses_importados": meses_importados,
+            "meses_lidos": sorted(meses_lidos),
             "registros": importados
         }
 

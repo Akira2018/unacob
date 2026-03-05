@@ -9,6 +9,22 @@ const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: '
 const getMeses = () => { const r = []; for (let i = 0; i < 13; i++) r.push(format(subMonths(new Date(), i), 'yyyy-MM')); return r; };
 const emptyForm = { data_extrato: format(new Date(), 'yyyy-MM-dd'), descricao_extrato: '', valor_extrato: '', tipo: 'debito', conciliado: false, observacoes: '' };
 
+const normalizeText = (value) =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+
+const isSaldoLinha = (item) => {
+  const desc = normalizeText(item?.descricao_extrato);
+  if (!desc) return false;
+  if (desc === 'saldo' || desc === 'saldo do dia' || desc === 'saldo anterior') return true;
+  if (desc.replace(/\s/g, '') === 'saldo') return true;
+  return desc.startsWith('saldo ') || desc.includes(' saldo ');
+};
+
 export default function Conciliacao() {
   const [items, setItems] = useState([]);
   const [mes, setMes] = useState(format(new Date(), 'yyyy-MM'));
@@ -35,8 +51,23 @@ export default function Conciliacao() {
 
   const load = useCallback(() => {
     setLoading(true);
+    const paramsConciliacao = mes ? { mes_referencia: mes } : undefined;
+
+    if (!mes) {
+      api.get('/conciliacao', { params: paramsConciliacao })
+        .then((conciliacaoResp) => {
+          setItems(conciliacaoResp.data || []);
+          setSaldoAnterior(0);
+          setOrigemSaldoAnterior('calculado');
+          setSaldoObservacoes('');
+        })
+        .catch(err => toast.error(getApiErrorMessage(err, 'Erro')))
+        .finally(() => setLoading(false));
+      return;
+    }
+
     Promise.all([
-      api.get('/conciliacao', { params: { mes_referencia: mes } }),
+      api.get('/conciliacao', { params: paramsConciliacao }),
       api.get('/saldo-inicial', { params: { mes_referencia: mes } })
     ])
       .then(([conciliacaoResp, saldoResp]) => {
@@ -45,7 +76,7 @@ export default function Conciliacao() {
         setOrigemSaldoAnterior(saldoResp.data?.origem || 'calculado');
         setSaldoObservacoes(saldoResp.data?.observacoes || '');
       })
-        .catch(err => toast.error(getApiErrorMessage(err, 'Erro')))
+      .catch(err => toast.error(getApiErrorMessage(err, 'Erro')))
       .finally(() => setLoading(false));
   }, [mes]);
 
@@ -126,22 +157,54 @@ export default function Conciliacao() {
     }
   };
 
-  const handleImportCSV = async (e) => {
+  const handleImportExtrato = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    const fileName = (file.name || '').toLowerCase();
+    if (!fileName.endsWith('.csv') && !fileName.endsWith('.ofx')) {
+      toast.error('Selecione um arquivo CSV ou OFX');
+      e.target.value = '';
+      return;
+    }
 
     const formData = new FormData();
     formData.append('file', file);
     formData.append('banco', 'Importado');
 
     try {
-      const res = await api.post('/conciliacao/importar/csv', formData, {
+      const res = await api.post('/conciliacao/importar/extrato', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
-      toast.success(`${res.data.total_importados} lançamentos importados!`);
-      load();
+
+      const total = Number(res.data?.total_importados || 0);
+      const linhasLidas = Number(res.data?.linhas_lidas || 0);
+      const linhasDuplicadas = Number(res.data?.linhas_duplicadas || 0);
+      const linhasInvalidas = Number(res.data?.linhas_invalidas || 0);
+      const mesesImportados = Array.isArray(res.data?.meses_importados) ? res.data.meses_importados : [];
+      const mesesLidos = Array.isArray(res.data?.meses_lidos) ? res.data.meses_lidos : [];
+
+      if (total === 0) {
+        toast(
+          `Nenhum lancamento novo foi importado. Lidas: ${linhasLidas}, duplicadas: ${linhasDuplicadas}, invalidas: ${linhasInvalidas}.`
+        );
+      } else {
+        toast.success(`${total} lancamentos importados!`);
+      }
+
+      const mesDestino =
+        (mes && mesesImportados.length > 0 && !mesesImportados.includes(mes) && mesesImportados[0]) ||
+        (mes && total === 0 && linhasLidas > 0 && linhasDuplicadas > 0 && mesesLidos.length > 0 && !mesesLidos.includes(mes) && mesesLidos[0]) ||
+        null;
+
+      if (mesDestino) {
+        setMes(mesDestino);
+        toast('Ha lancamentos do arquivo em outro mes. Ajustei o filtro automaticamente.');
+      } else {
+        load();
+      }
     } catch (err) {
-      toast.error(getApiErrorMessage(err, 'Erro ao importar'));
+      toast.error(getApiErrorMessage(err, 'Erro ao importar extrato'));
     }
     e.target.value = '';
   };
@@ -161,6 +224,10 @@ export default function Conciliacao() {
   };
 
   const openSaldoModal = () => {
+    if (!mes) {
+      toast('Selecione um mes especifico para editar o saldo inicial.');
+      return;
+    }
     setSaldoInput(String(saldoAnterior ?? 0));
     setSaldoObsInput(saldoObservacoes || '');
     setSaldoModal(true);
@@ -208,14 +275,15 @@ export default function Conciliacao() {
     }
   };
 
-  const totalCreditos = items.filter(i => i.tipo === 'credito').reduce((s, i) => s + (i.valor_extrato || 0), 0);
-  const totalDebitos = items.filter(i => i.tipo === 'debito').reduce((s, i) => s + (i.valor_extrato || 0), 0);
+  const itensCalculo = items.filter(item => !isSaldoLinha(item));
+  const totalCreditos = itensCalculo.filter(i => i.tipo === 'credito').reduce((s, i) => s + (i.valor_extrato || 0), 0);
+  const totalDebitos = itensCalculo.filter(i => i.tipo === 'debito').reduce((s, i) => s + (i.valor_extrato || 0), 0);
   const saldoExtrato = totalCreditos - totalDebitos;
   const saldoFinal = saldoAnterior + saldoExtrato;
-  const conciliados = items.filter(i => i.conciliado).length;
-  const totalPendentes = items.length - conciliados;
+  const conciliados = itensCalculo.filter(i => i.conciliado).length;
+  const totalPendentes = itensCalculo.length - conciliados;
   const searchTerm = search.trim().toLowerCase();
-  const itensFiltrados = items.filter(item => {
+  const itensFiltrados = itensCalculo.filter(item => {
     if (statusFilter === 'conciliados' && !item.conciliado) {
       return false;
     }
@@ -250,8 +318,8 @@ export default function Conciliacao() {
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn-outline" onClick={openSaldoModal}>Saldo Inicial</button>
           <label className="btn btn-info">
-            <Upload size={15} /> Importar CSV
-            <input type="file" accept=".csv" onChange={handleImportCSV} style={{ display: 'none' }} />
+            <Upload size={15} /> Importar Extrato
+            <input type="file" accept="*/*" onChange={handleImportExtrato} style={{ display: 'none' }} />
           </label>
           <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Novo Lançamento</button>
         </div>
@@ -261,6 +329,7 @@ export default function Conciliacao() {
         <div className="form-group" style={{ margin: 0 }}>
           <label>Mês</label>
           <select className="search-input" value={mes} onChange={e => setMes(e.target.value)}>
+            <option value="">Todos os meses</option>
             {getMeses().map(m => <option key={m} value={m}>{m}</option>)}
           </select>
         </div>
@@ -275,7 +344,7 @@ export default function Conciliacao() {
             className={`btn btn-sm ${statusFilter === 'todos' ? 'btn-primary' : 'btn-outline'}`}
             onClick={() => setStatusFilter('todos')}
           >
-            Todos ({items.length})
+            Todos ({itensCalculo.length})
           </button>
           <button
             className={`btn btn-sm ${statusFilter === 'pendentes' ? 'btn-primary' : 'btn-outline'}`}
@@ -305,7 +374,7 @@ export default function Conciliacao() {
         <div className="stat-card red"><div className="stat-label">Débitos</div><div className="stat-value money-value money-value-compact">{fmt(totalDebitos)}</div></div>
         <div className="stat-card blue"><div className="stat-label">Saldo Extrato</div><div className="stat-value money-value money-value-compact">{fmt(saldoExtrato)}</div></div>
         <div className={`stat-card ${saldoFinal >= 0 ? 'green' : 'red'}`}><div className="stat-label">Saldo Final</div><div className="stat-value money-value money-value-compact">{fmt(saldoFinal)}</div></div>
-        <div className="stat-card yellow"><div className="stat-label">Conciliados</div><div className="stat-value">{conciliados}/{items.length}</div></div>
+        <div className="stat-card yellow"><div className="stat-label">Conciliados</div><div className="stat-value">{conciliados}/{itensCalculo.length}</div></div>
       </div>
 
       <div className="card">
@@ -317,7 +386,7 @@ export default function Conciliacao() {
               </thead>
               <tbody>
                 {itensFiltrados.length === 0 ? (
-                  <tr><td colSpan={7} style={{ textAlign: 'center', padding: 40, color: '#718096' }}>Sem lançamentos neste mês</td></tr>
+                  <tr><td colSpan={7} style={{ textAlign: 'center', padding: 40, color: '#718096' }}>{mes ? 'Sem lancamentos neste mes' : 'Sem lancamentos'}</td></tr>
                 ) : itensFiltrados.map(item => (
                   <tr key={item.id} className={item.conciliado ? 'row-green' : ''}>
                     <td>{format(new Date(item.data_extrato), 'dd/MM/yyyy')}</td>
