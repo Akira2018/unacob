@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { format, subMonths } from 'date-fns';
-import { Download, Edit, Plus, Trash2 } from 'lucide-react';
+import { Download, Edit, Plus, Trash2, Upload } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../api';
 import { getApiErrorMessage } from '../utils/apiError';
@@ -30,7 +30,10 @@ const emptyForm = {
   saldo_anterior: '',
   aplicacoes: '',
   rendimento_bruto: '',
+  imposto_renda: '',
+  iof: '',
   impostos: '',
+  rendimento_liquido: '',
   resgate: '',
   observacoes: ''
 };
@@ -53,13 +56,16 @@ export default function AplicacoesFinanceiras() {
   const [items, setItems] = useState([]);
   const [resumo, setResumo] = useState({
     total_registros: 0,
-    totais: { saldo_anterior: 0, aplicacoes: 0, rendimento_bruto: 0, impostos: 0, resgate: 0, saldo_atual: 0 }
+    totais: { saldo_anterior: 0, aplicacoes: 0, rendimento_bruto: 0, imposto_renda: 0, iof: 0, impostos: 0, rendimento_liquido: 0, resgate: 0, saldo_atual: 0 }
   });
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [importPreview, setImportPreview] = useState(null);
+  const [importingPdf, setImportingPdf] = useState(false);
+  const [confirmingImport, setConfirmingImport] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -69,7 +75,7 @@ export default function AplicacoesFinanceiras() {
     ])
       .then(([lista, resumoResp]) => {
         setItems(lista.data || []);
-        setResumo(resumoResp.data || { total_registros: 0, totais: { saldo_anterior: 0, aplicacoes: 0, rendimento_bruto: 0, impostos: 0, resgate: 0, saldo_atual: 0 } });
+        setResumo(resumoResp.data || { total_registros: 0, totais: { saldo_anterior: 0, aplicacoes: 0, rendimento_bruto: 0, imposto_renda: 0, iof: 0, impostos: 0, rendimento_liquido: 0, resgate: 0, saldo_atual: 0 } });
       })
         .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar aplicações financeiras')))
       .finally(() => setLoading(false));
@@ -89,7 +95,10 @@ export default function AplicacoesFinanceiras() {
       saldo_anterior: item.saldo_anterior ?? '',
       aplicacoes: item.aplicacoes ?? '',
       rendimento_bruto: item.rendimento_bruto ?? '',
+      imposto_renda: item.imposto_renda ?? '',
+      iof: item.iof ?? '',
       impostos: item.impostos ?? '',
+      rendimento_liquido: item.rendimento_liquido ?? '',
       resgate: item.resgate ?? '',
       observacoes: item.observacoes || ''
     } : emptyForm);
@@ -99,14 +108,18 @@ export default function AplicacoesFinanceiras() {
   const setF = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
 
   const saldoCalculado = useMemo(() => {
+    const impostosTotais = toNumber(form.imposto_renda) + toNumber(form.iof);
     return (
       toNumber(form.saldo_anterior) +
       toNumber(form.aplicacoes) +
       toNumber(form.rendimento_bruto) -
-      toNumber(form.impostos) -
+      impostosTotais -
       toNumber(form.resgate)
     );
   }, [form]);
+
+  const impostosCalculados = useMemo(() => toNumber(form.imposto_renda) + toNumber(form.iof), [form.imposto_renda, form.iof]);
+  const rendimentoLiquidoCalculado = useMemo(() => toNumber(form.rendimento_bruto) - impostosCalculados, [form.rendimento_bruto, impostosCalculados]);
 
   const handleSave = async e => {
     e.preventDefault();
@@ -122,7 +135,10 @@ export default function AplicacoesFinanceiras() {
       saldo_anterior: toNumber(form.saldo_anterior),
       aplicacoes: toNumber(form.aplicacoes),
       rendimento_bruto: toNumber(form.rendimento_bruto),
-      impostos: toNumber(form.impostos),
+      imposto_renda: toNumber(form.imposto_renda),
+      iof: toNumber(form.iof),
+      impostos: impostosCalculados,
+      rendimento_liquido: rendimentoLiquidoCalculado,
       resgate: toNumber(form.resgate),
       observacoes: form.observacoes,
       data_aplicacao: form.data_aplicacao,
@@ -175,11 +191,61 @@ export default function AplicacoesFinanceiras() {
     }
   };
 
+  const handleImportPdf = async e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      toast.error('Selecione um arquivo PDF válido');
+      return;
+    }
+
+    setImportingPdf(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const { data } = await api.post('/aplicacoes-financeiras/importar-pdf-preview', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      setImportPreview(data);
+    } catch (err) {
+      const message = getApiErrorMessage(err, 'Erro ao ler PDF do extrato');
+      toast.error(`${message} Formatos aceitos: "Extratos - Investimentos Fundos - Mensal" e "Extratos - CDB / RDB e BB Reaplic".`);
+    } finally {
+      setImportingPdf(false);
+    }
+  };
+
+  const handleConfirmImport = async overwriteExisting => {
+    if (!importPreview) return;
+
+    setConfirmingImport(true);
+    try {
+      const payload = {
+        ...importPreview,
+        overwrite_existing: overwriteExisting || importPreview.existing_match,
+      };
+      const { data } = await api.post('/aplicacoes-financeiras/importar-pdf-confirmar', payload);
+      toast.success(importPreview.existing_match && overwriteExisting ? 'Aplicação atualizada via PDF!' : 'Aplicação importada via PDF!');
+      setImportPreview(null);
+      if (data?.mes_referencia) setMes(data.mes_referencia);
+      load();
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao confirmar importação do PDF'));
+    } finally {
+      setConfirmingImport(false);
+    }
+  };
+
   const totais = resumo?.totais || {
     saldo_anterior: 0,
     aplicacoes: 0,
     rendimento_bruto: 0,
+    imposto_renda: 0,
+    iof: 0,
     impostos: 0,
+    rendimento_liquido: 0,
     resgate: 0,
     saldo_atual: 0
   };
@@ -199,12 +265,27 @@ export default function AplicacoesFinanceiras() {
       <div className="topbar">
         <h2>Aplicações Financeiras</h2>
         <div className="topbar-right">
+          <label className="btn btn-outline" style={{ cursor: importingPdf ? 'wait' : 'pointer' }}>
+            <Upload size={15} /> {importingPdf ? 'Lendo PDF...' : 'Importar PDF'}
+            <input type="file" accept=".pdf,application/pdf" style={{ display: 'none' }} onChange={handleImportPdf} disabled={importingPdf} />
+          </label>
           <button className="btn btn-outline" onClick={handleDownloadExcel}>
             <Download size={15} /> Baixar Excel
           </button>
           <button className="btn btn-primary" onClick={() => openModal()}>
             <Plus size={15} /> Nova Aplicação
           </button>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 16, borderLeft: '4px solid #2b6cb0' }}>
+        <div style={{ color: '#4a5568', lineHeight: 1.6 }}>
+          O botão <strong>Importar PDF</strong> aceita extratos do Banco do Brasil nos formatos:
+          <strong> Fundos Mensal</strong> e <strong>CDB / RDB e BB Reaplic</strong>.
+        </div>
+        <div style={{ color: '#718096', lineHeight: 1.6, fontSize: 13, marginTop: 8 }}>
+          Exemplos de layout reconhecido: <strong>"Extratos - Investimentos Fundos - Mensal"</strong> e
+          <strong> "Extratos - CDB / RDB e BB Reaplic"</strong>.
         </div>
       </div>
 
@@ -253,7 +334,7 @@ export default function AplicacoesFinanceiras() {
                     alignItems: 'center'
                   }}>
                     <span>{`${item.instituicao} ${item.produto}`.trim().toUpperCase()}</span>
-                    <div style={{ display: 'flex', gap: 6 }}>
+                    <div className="table-actions">
                       <button className="btn btn-outline btn-icon btn-sm" onClick={() => openModal(item)} title="Editar" style={{ color: '#fff', borderColor: 'rgba(255,255,255,.5)' }}>
                         <Edit size={13} />
                       </button>
@@ -265,13 +346,15 @@ export default function AplicacoesFinanceiras() {
                   <div className="table-wrap">
                     <table>
                       <tbody>
-                        <tr><td>Saldo Anterior</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.saldo_anterior)}</td></tr>
-                        <tr><td>Data da Aplicação</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtDataAplicacao(item.data_aplicacao, item.mes_referencia)}</td></tr>
-                        <tr><td>Aplicações</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.aplicacoes)}</td></tr>
-                        <tr><td>Renda Bruta</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.rendimento_bruto)}</td></tr>
-                        <tr><td>IR/IOF</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.impostos)}</td></tr>
-                        <tr><td>Resgate</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.resgate)}</td></tr>
-                        <tr className="row-green"><td style={{ fontWeight: 700 }}>Saldo p/mês seguinte</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(item.saldo_atual)}</td></tr>
+                        <tr><td>SALDO ANTERIOR</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.saldo_anterior)}</td></tr>
+                        <tr><td>DATA DO EXTRATO</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtDataAplicacao(item.data_aplicacao, item.mes_referencia)}</td></tr>
+                        <tr><td>APLICAÇÕES (+)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.aplicacoes)}</td></tr>
+                        <tr><td>RENDIMENTO BRUTO (+)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.rendimento_bruto)}</td></tr>
+                        <tr><td>IMPOSTO DE RENDA (-)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.imposto_renda)}</td></tr>
+                        <tr><td>IOF (-)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.iof)}</td></tr>
+                        <tr><td>RENDIMENTO LÍQUIDO</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.rendimento_liquido)}</td></tr>
+                        <tr><td>RESGATES (-)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.resgate)}</td></tr>
+                        <tr className="row-green"><td style={{ fontWeight: 700 }}>SALDO ATUAL</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(item.saldo_atual)}</td></tr>
                       </tbody>
                     </table>
                   </div>
@@ -288,10 +371,12 @@ export default function AplicacoesFinanceiras() {
               <table>
                 <tbody>
                   <tr><td>SALDO ANTERIOR</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(totais.saldo_anterior)}</td></tr>
-                  <tr><td>APLICAÇÕES</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(totais.aplicacoes)}</td></tr>
-                  <tr><td>RENDIMENTO BRUTO</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(totais.rendimento_bruto)}</td></tr>
-                  <tr><td>IMPOSTOS (IR + IOF)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(totais.impostos)}</td></tr>
-                  <tr><td>RESGATE</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(totais.resgate)}</td></tr>
+                  <tr><td>APLICAÇÕES (+)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(totais.aplicacoes)}</td></tr>
+                  <tr><td>RENDIMENTO BRUTO (+)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(totais.rendimento_bruto)}</td></tr>
+                  <tr><td>IMPOSTO DE RENDA (-)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(totais.imposto_renda)}</td></tr>
+                  <tr><td>IOF (-)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(totais.iof)}</td></tr>
+                  <tr><td>RENDIMENTO LÍQUIDO</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(totais.rendimento_liquido)}</td></tr>
+                  <tr><td>RESGATES (-)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(totais.resgate)}</td></tr>
                   <tr className="row-green"><td style={{ fontWeight: 700 }}>SALDO ATUAL</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(totais.saldo_atual)}</td></tr>
                 </tbody>
               </table>
@@ -311,7 +396,7 @@ export default function AplicacoesFinanceiras() {
             <form onSubmit={handleSave}>
               <div className="form-grid">
                 <div className="form-group">
-                  <label>Data da Aplicação *</label>
+                  <label>Data do Extrato *</label>
                   <input
                     type="date"
                     required
@@ -328,27 +413,35 @@ export default function AplicacoesFinanceiras() {
                   <input required value={form.produto} onChange={e => setF('produto', e.target.value)} placeholder="Ex: CDB DI" />
                 </div>
                 <div className="form-group">
-                  <label>Saldo Anterior (R$)</label>
+                  <label>SALDO ANTERIOR (R$)</label>
                   <input type="number" step="0.01" value={form.saldo_anterior} onChange={e => setF('saldo_anterior', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>Aplicações (R$)</label>
+                  <label>APLICAÇÕES (+) (R$)</label>
                   <input type="number" step="0.01" value={form.aplicacoes} onChange={e => setF('aplicacoes', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>Rendimento Bruto (R$)</label>
+                  <label>RENDIMENTO BRUTO (+) (R$)</label>
                   <input type="number" step="0.01" value={form.rendimento_bruto} onChange={e => setF('rendimento_bruto', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>Impostos IR/IOF (R$)</label>
-                  <input type="number" step="0.01" value={form.impostos} onChange={e => setF('impostos', e.target.value)} />
+                  <label>IMPOSTO DE RENDA (-) (R$)</label>
+                  <input type="number" step="0.01" value={form.imposto_renda} onChange={e => setF('imposto_renda', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>Resgate (R$)</label>
+                  <label>IOF (-) (R$)</label>
+                  <input type="number" step="0.01" value={form.iof} onChange={e => setF('iof', e.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label>RENDIMENTO LÍQUIDO (calculado)</label>
+                  <input value={fmt(rendimentoLiquidoCalculado)} readOnly style={{ fontWeight: 700, color: '#276749' }} />
+                </div>
+                <div className="form-group">
+                  <label>RESGATES (-) (R$)</label>
                   <input type="number" step="0.01" value={form.resgate} onChange={e => setF('resgate', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>Saldo Atual (calculado)</label>
+                  <label>SALDO ATUAL (calculado)</label>
                   <input value={fmt(saldoCalculado)} readOnly style={{ fontWeight: 700, color: '#276749' }} />
                 </div>
                 <div className="form-group form-full">
@@ -362,6 +455,58 @@ export default function AplicacoesFinanceiras() {
                 <button type="submit" className="btn btn-primary modal-btn-save" disabled={saving}>{saving ? 'Salvando...' : 'Salvar'}</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {importPreview && (
+        <div className="modal-overlay">
+          <div className="modal" style={{ maxWidth: 760 }}>
+            <div className="modal-header">
+              <div className="modal-title">Prévia da Importação do PDF</div>
+              <button className="btn btn-outline btn-sm modal-close-btn" onClick={() => setImportPreview(null)}>✕</button>
+            </div>
+
+            <div style={{ padding: 20 }}>
+              <div className="card" style={{ marginBottom: 16, borderLeft: '4px solid #2b6cb0' }}>
+                <div style={{ color: '#4a5568', lineHeight: 1.6 }}>
+                  <div><strong>Arquivo:</strong> {importPreview.arquivo || '-'}</div>
+                  <div><strong>Instituição:</strong> {importPreview.instituicao}</div>
+                  <div><strong>Produto:</strong> {importPreview.produto}</div>
+                  <div><strong>Mês de referência:</strong> {importPreview.mes_referencia}</div>
+                  <div><strong>Conta:</strong> {importPreview.conta || '-'}</div>
+                  <div><strong>Data apurada:</strong> {fmtDataAplicacao(importPreview.data_aplicacao, importPreview.mes_referencia)}</div>
+                </div>
+              </div>
+
+              {importPreview.existing_match && (
+                <div className="card" style={{ marginBottom: 16, borderLeft: '4px solid #d69e2e', color: '#744210' }}>
+                  Já existe um registro deste mês para a mesma instituição/produto/conta. A confirmação vai atualizar o registro existente para evitar duplicidade.
+                </div>
+              )}
+
+              <div className="table-wrap card" style={{ padding: 0 }}>
+                <table>
+                  <tbody>
+                    <tr><td>SALDO ANTERIOR</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(importPreview.saldo_anterior)}</td></tr>
+                    <tr><td>APLICAÇÕES (+)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(importPreview.aplicacoes)}</td></tr>
+                    <tr><td>RENDIMENTO BRUTO (+)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(importPreview.rendimento_bruto)}</td></tr>
+                    <tr><td>IMPOSTO DE RENDA (-)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(importPreview.imposto_renda)}</td></tr>
+                    <tr><td>IOF (-)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(importPreview.iof)}</td></tr>
+                    <tr><td>RENDIMENTO LÍQUIDO</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(importPreview.rendimento_liquido)}</td></tr>
+                    <tr><td>RESGATES (-)</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(importPreview.resgate)}</td></tr>
+                    <tr className="row-green"><td style={{ fontWeight: 700 }}>SALDO ATUAL</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(importPreview.saldo_atual)}</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button type="button" className="btn btn-outline modal-btn-cancel" onClick={() => setImportPreview(null)} disabled={confirmingImport}>Cancelar</button>
+              <button type="button" className="btn btn-primary modal-btn-save" onClick={() => handleConfirmImport(importPreview.existing_match)} disabled={confirmingImport}>
+                {confirmingImport ? 'Confirmando...' : importPreview.existing_match ? 'Atualizar Existente' : 'Confirmar Importação'}
+              </button>
+            </div>
           </div>
         </div>
       )}

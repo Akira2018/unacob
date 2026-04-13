@@ -57,6 +57,8 @@ class MembroCreate(BaseModel):
     inscricao: Optional[str] = None
     nome_completo: str
     cpf: Optional[str] = None
+    cpf2: Optional[str] = None
+    codigo_dabb: Optional[str] = None
     email: Optional[str] = None
     telefone: Optional[str] = None
     celular: Optional[str] = None
@@ -70,7 +72,7 @@ class MembroCreate(BaseModel):
     cep: Optional[str] = None
     ect: Optional[str] = None
     data_nascimento: Optional[date] = None
-    data_associacao: Optional[date] = None
+    data_filiacao: Optional[date] = None
     status: Optional[str] = 'ativo'
     sexo: Optional[str] = None
     cat: Optional[str] = None
@@ -87,6 +89,8 @@ class MembroResponse(BaseModel):
     inscricao: Optional[str]
     nome_completo: Optional[str]
     cpf: Optional[str]
+    cpf2: Optional[str]
+    codigo_dabb: Optional[str]
     email: Optional[str]
     telefone: Optional[str]
     celular: Optional[str]
@@ -100,7 +104,16 @@ class MembroResponse(BaseModel):
     cep: Optional[str]
     ect: Optional[str]
     data_nascimento: Optional[date]
-    data_associacao: Optional[date]
+    data_filiacao: Optional[date]
+    status: Optional[str]
+    sexo: Optional[str]
+    cat: Optional[str]
+    beneficio: Optional[str]
+    valor_mensalidade: Optional[float]
+    observacoes: Optional[str]
+    ect: Optional[str]
+    data_nascimento: Optional[date]
+    data_filiacao: Optional[date]
     status: Optional[str]
     sexo: Optional[str]
     cat: Optional[str]
@@ -295,10 +308,16 @@ class AplicacaoFinanceiraCreate(BaseModel):
     instituicao: str
     produto: str
     data_aplicacao: Optional[date] = None
+    origem_registro: Optional[str] = "manual"
+    conta_origem: Optional[str] = None
+    arquivo_origem: Optional[str] = None
     saldo_anterior: Optional[float] = 0
     aplicacoes: Optional[float] = 0
     rendimento_bruto: Optional[float] = 0
+    imposto_renda: Optional[float] = 0
+    iof: Optional[float] = 0
     impostos: Optional[float] = 0
+    rendimento_liquido: Optional[float] = 0
     resgate: Optional[float] = 0
     mes_referencia: Optional[str] = None
     observacoes: Optional[str] = None
@@ -308,10 +327,16 @@ class AplicacaoFinanceiraUpdate(BaseModel):
     instituicao: Optional[str] = None
     produto: Optional[str] = None
     data_aplicacao: Optional[date] = None
+    origem_registro: Optional[str] = None
+    conta_origem: Optional[str] = None
+    arquivo_origem: Optional[str] = None
     saldo_anterior: Optional[float] = None
     aplicacoes: Optional[float] = None
     rendimento_bruto: Optional[float] = None
+    imposto_renda: Optional[float] = None
+    iof: Optional[float] = None
     impostos: Optional[float] = None
+    rendimento_liquido: Optional[float] = None
     resgate: Optional[float] = None
     mes_referencia: Optional[str] = None
     observacoes: Optional[str] = None
@@ -322,10 +347,16 @@ class AplicacaoFinanceiraResponse(BaseModel):
     instituicao: Optional[str]
     produto: Optional[str]
     data_aplicacao: Optional[date]
+    origem_registro: Optional[str]
+    conta_origem: Optional[str]
+    arquivo_origem: Optional[str]
     saldo_anterior: Optional[float]
     aplicacoes: Optional[float]
     rendimento_bruto: Optional[float]
+    imposto_renda: Optional[float]
+    iof: Optional[float]
     impostos: Optional[float]
+    rendimento_liquido: Optional[float]
     resgate: Optional[float]
     saldo_atual: Optional[float]
     mes_referencia: Optional[str]
@@ -340,7 +371,10 @@ class AplicacaoFinanceiraTotais(BaseModel):
     saldo_anterior: float
     aplicacoes: float
     rendimento_bruto: float
+    imposto_renda: float
+    iof: float
     impostos: float
+    rendimento_liquido: float
     resgate: float
     saldo_atual: float
 
@@ -349,6 +383,50 @@ class AplicacaoFinanceiraResumoResponse(BaseModel):
     mes_referencia: str
     total_registros: int
     totais: AplicacaoFinanceiraTotais
+
+
+class AplicacaoFinanceiraImportPreview(BaseModel):
+    instituicao: str
+    produto: str
+    data_aplicacao: Optional[date] = None
+    origem_registro: Optional[str] = "importacao_pdf"
+    saldo_anterior: float
+    aplicacoes: float
+    rendimento_bruto: float
+    imposto_renda: float
+    iof: float
+    impostos: float
+    rendimento_liquido: float
+    resgate: float
+    saldo_atual: float
+    mes_referencia: str
+    observacoes: Optional[str] = None
+    conta: Optional[str] = None
+    arquivo: Optional[str] = None
+    existing_id: Optional[str] = None
+    existing_match: bool = False
+
+
+class AplicacaoFinanceiraImportConfirmRequest(BaseModel):
+    instituicao: str
+    produto: str
+    data_aplicacao: Optional[date] = None
+    origem_registro: Optional[str] = "importacao_pdf"
+    conta_origem: Optional[str] = None
+    arquivo_origem: Optional[str] = None
+    saldo_anterior: float = 0
+    aplicacoes: float = 0
+    rendimento_bruto: float = 0
+    imposto_renda: float = 0
+    iof: float = 0
+    impostos: float = 0
+    rendimento_liquido: float = 0
+    resgate: float = 0
+    saldo_atual: Optional[float] = None
+    mes_referencia: str
+    observacoes: Optional[str] = None
+    existing_id: Optional[str] = None
+    overwrite_existing: bool = False
 
 
 class SaldoMensalUpsert(BaseModel):
@@ -511,6 +589,8 @@ class ConciliacaoUpdate(BaseModel):
 class ConciliacaoResponse(BaseModel):
     id: str
     pagamento_id: Optional[str]
+    despesa_id: Optional[str]
+    outra_renda_id: Optional[str]
     data_extrato: Optional[date]
     descricao_extrato: Optional[str]
     valor_extrato: Optional[float]
@@ -527,7 +607,24 @@ class ConciliacaoResponse(BaseModel):
 class ConciliacaoImportRequest(BaseModel):
     """Schema para sugerir matching de pagamentos"""
     conc_id: str
+    pagamento_id: Optional[str] = None
     membro_id: Optional[str] = None
+
+
+class ConciliacaoLancarDespesaRequest(BaseModel):
+    conta_id: str
+    categoria: Optional[str] = None
+    forma_pagamento: Optional[str] = None
+    fornecedor: Optional[str] = None
+    nota_fiscal: Optional[str] = None
+    observacoes: Optional[str] = None
+
+
+class ConciliacaoLancarReceitaRequest(BaseModel):
+    conta_id: str
+    categoria: Optional[str] = None
+    fonte: Optional[str] = None
+    observacoes: Optional[str] = None
 
 
 # Transacao schemas

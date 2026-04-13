@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import api from '../api';
 import toast from 'react-hot-toast';
-import { Save, Search } from 'lucide-react';
+import { Save, Search, Trash2 } from 'lucide-react';
 import { getApiErrorMessage } from '../utils/apiError';
 
 const MESES = [
@@ -21,6 +21,14 @@ const normalizeNumber = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const createEmptyCell = () => ({
+  id: null,
+  value: '0',
+  originalValue: '0',
+});
+
+const isCellDirty = (cell) => normalizeNumber(cell?.value) !== normalizeNumber(cell?.originalValue);
+
 export default function PrevisaoOrcamentaria() {
   const [anoInput, setAnoInput] = useState(new Date().getFullYear());
   const [tipoInput, setTipoInput] = useState('saida');
@@ -34,6 +42,8 @@ export default function PrevisaoOrcamentaria() {
   const [contas, setContas] = useState([]);
   const [grid, setGrid] = useState({});
   const [saving, setSaving] = useState(false);
+  const [savingRows, setSavingRows] = useState({});
+  const [deletingRows, setDeletingRows] = useState({});
   const [loading, setLoading] = useState(true);
 
   const anos = useMemo(() => {
@@ -56,13 +66,17 @@ export default function PrevisaoOrcamentaria() {
       contasData.forEach((conta) => {
         nextGrid[conta.id] = {};
         MESES.forEach((m) => {
-          nextGrid[conta.id][m.num] = '0';
+          nextGrid[conta.id][m.num] = createEmptyCell();
         });
       });
 
       previsoesData.forEach((p) => {
         if (!nextGrid[p.conta_id]) return;
-        nextGrid[p.conta_id][p.mes] = String(Number(p.valor_previsto || 0));
+        nextGrid[p.conta_id][p.mes] = {
+          id: p.id,
+          value: String(Number(p.valor_previsto || 0)),
+          originalValue: String(Number(p.valor_previsto || 0)),
+        };
       });
 
       setContas(contasData);
@@ -95,33 +109,118 @@ export default function PrevisaoOrcamentaria() {
       ...prev,
       [contaId]: {
         ...(prev[contaId] || {}),
-        [mes]: value,
+        [mes]: {
+          ...(prev?.[contaId]?.[mes] || createEmptyCell()),
+          value,
+        },
       },
     }));
   };
 
   const salvar = async () => {
-    setSaving(true);
-    try {
-      const payload = [];
-      contas.forEach((conta) => {
-        MESES.forEach((m) => {
-          payload.push({
+    const upsertPayload = [];
+    const deleteRequests = [];
+
+    contas.forEach((conta) => {
+      MESES.forEach((m) => {
+        const cell = grid?.[conta.id]?.[m.num];
+        if (!isCellDirty(cell)) return;
+
+        const valor = normalizeNumber(cell?.value);
+        if (valor === 0 && cell?.id) {
+          deleteRequests.push(api.delete(`/previsoes-orcamentarias/${cell.id}`));
+          return;
+        }
+
+        if (valor !== 0) {
+          upsertPayload.push({
             conta_id: conta.id,
             ano: filtros.ano,
             mes: m.num,
-            valor_previsto: normalizeNumber(grid?.[conta.id]?.[m.num]),
+            valor_previsto: valor,
           });
-        });
+        }
       });
+    });
 
-      await api.post('/previsoes-orcamentarias/upsert-lote', payload);
+    if (upsertPayload.length === 0 && deleteRequests.length === 0) {
+      toast('Não há alterações pendentes para salvar.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      if (upsertPayload.length > 0) {
+        await api.post('/previsoes-orcamentarias/upsert-lote', upsertPayload);
+      }
+      if (deleteRequests.length > 0) {
+        await Promise.all(deleteRequests);
+      }
       toast.success('Previsões salvas com sucesso');
       load();
     } catch (err) {
       toast.error(getApiErrorMessage(err, 'Erro ao salvar previsões'));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const salvarLinha = async (contaId) => {
+    const cell = grid?.[contaId]?.[mesSelecionado] || createEmptyCell();
+    const rowKey = `${contaId}:${mesSelecionado}`;
+    const valor = normalizeNumber(cell.value);
+
+    if (!isCellDirty(cell)) {
+      toast('Essa conta não tem alteração pendente neste mês.');
+      return;
+    }
+
+    setSavingRows((prev) => ({ ...prev, [rowKey]: true }));
+    try {
+      if (valor === 0 && cell.id) {
+        await api.delete(`/previsoes-orcamentarias/${cell.id}`);
+        toast.success('Valor removido com sucesso.');
+      } else if (valor !== 0) {
+        await api.post('/previsoes-orcamentarias/upsert-lote', [{
+          conta_id: contaId,
+          ano: filtros.ano,
+          mes: mesSelecionado,
+          valor_previsto: valor,
+        }]);
+        toast.success('Valor salvo com sucesso.');
+      }
+      load();
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao salvar valor'));
+    } finally {
+      setSavingRows((prev) => ({ ...prev, [rowKey]: false }));
+    }
+  };
+
+  const limparLinha = async (contaId) => {
+    const cell = grid?.[contaId]?.[mesSelecionado] || createEmptyCell();
+    const rowKey = `${contaId}:${mesSelecionado}`;
+
+    if (!cell.id && normalizeNumber(cell.value) === 0) {
+      setValor(contaId, mesSelecionado, '0');
+      toast('Esse valor já está zerado.');
+      return;
+    }
+
+    setDeletingRows((prev) => ({ ...prev, [rowKey]: true }));
+    try {
+      if (cell.id) {
+        await api.delete(`/previsoes-orcamentarias/${cell.id}`);
+        toast.success('Valor excluído com sucesso.');
+        load();
+      } else {
+        setValor(contaId, mesSelecionado, '0');
+        toast.success('Valor zerado. Clique em Salvar para gravar.');
+      }
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao excluir valor'));
+    } finally {
+      setDeletingRows((prev) => ({ ...prev, [rowKey]: false }));
     }
   };
 
@@ -136,17 +235,33 @@ export default function PrevisaoOrcamentaria() {
   }, [contas, filtros.busca]);
 
   const totalMesSelecionado = useMemo(() => {
-    return contasFiltradas.reduce((sum, c) => sum + normalizeNumber(grid?.[c.id]?.[mesSelecionado]), 0);
+    return contasFiltradas.reduce((sum, c) => sum + normalizeNumber(grid?.[c.id]?.[mesSelecionado]?.value), 0);
   }, [contasFiltradas, grid, mesSelecionado]);
 
   const mesSelecionadoLabel = MESES.find((m) => m.num === mesSelecionado)?.label || '';
+  const totalAlteracoesPendentes = useMemo(() => {
+    let total = 0;
+    Object.values(grid || {}).forEach((meses) => {
+      Object.values(meses || {}).forEach((cell) => {
+        if (isCellDirty(cell)) total += 1;
+      });
+    });
+    return total;
+  }, [grid]);
 
   return (
     <div>
       <div className="topbar">
-        <h2>Previsão Orçamentária</h2>
+        <div>
+          <h2>Previsão Orçamentária</h2>
+          <div style={{ fontSize: 13, color: '#718096', marginTop: 4 }}>
+            {totalAlteracoesPendentes > 0
+              ? `${totalAlteracoesPendentes} alteração(ões) pendente(s)`
+              : 'Nenhuma alteração pendente'}
+          </div>
+        </div>
         <button className="btn btn-primary" onClick={salvar} disabled={saving || loading}>
-          <Save size={15} /> {saving ? 'Salvando...' : 'Salvar Previsões'}
+          <Save size={15} /> {saving ? 'Salvando...' : 'Salvar Alterações'}
         </button>
       </div>
 
@@ -220,40 +335,68 @@ export default function PrevisaoOrcamentaria() {
               <colgroup>
                 <col style={{ width: 500 }} />
                 <col style={{ width: 220 }} />
+                <col style={{ width: 220 }} />
               </colgroup>
               <thead>
                 <tr>
                   <th>Conta</th>
                   <th style={{ textAlign: 'left', paddingLeft: 12 }}>{mesSelecionadoLabel}</th>
+                  <th>Ações</th>
                 </tr>
               </thead>
               <tbody>
                 {contasFiltradas.length === 0 ? (
                   <tr>
-                    <td colSpan={2} style={{ textAlign: 'center', padding: 30, color: '#718096' }}>
+                    <td colSpan={3} style={{ textAlign: 'center', padding: 30, color: '#718096' }}>
                       Nenhuma conta encontrada para o filtro informado
                     </td>
                   </tr>
-                ) : contasFiltradas.map((conta) => (
-                  <tr key={conta.id}>
-                    <td><strong>{conta.codigo}</strong> - {conta.nome}</td>
-                    <td style={{ textAlign: 'left', paddingLeft: 12 }}>
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={grid?.[conta.id]?.[mesSelecionado] ?? '0'}
-                        onChange={(e) => setValor(conta.id, mesSelecionado, e.target.value)}
-                        style={{ width: 150 }}
-                      />
-                    </td>
-                  </tr>
-                ))}
+                ) : contasFiltradas.map((conta) => {
+                  const cell = grid?.[conta.id]?.[mesSelecionado] || createEmptyCell();
+                  const rowKey = `${conta.id}:${mesSelecionado}`;
+                  const dirty = isCellDirty(cell);
+
+                  return (
+                    <tr key={conta.id}>
+                      <td><strong>{conta.codigo}</strong> - {conta.nome}</td>
+                      <td style={{ textAlign: 'center' }}>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={cell.value ?? '0'}
+                          onChange={(e) => setValor(conta.id, mesSelecionado, e.target.value)}
+                          style={{ width: 150, textAlign: 'center', borderColor: dirty ? '#d69e2e' : undefined, background: dirty ? '#fffaf0' : undefined }}
+                        />
+                      </td>
+                      <td className="table-actions-cell">
+                        <div className="table-actions">
+                          <button
+                            className="btn btn-primary btn-sm"
+                            onClick={() => salvarLinha(conta.id)}
+                            disabled={savingRows[rowKey] || deletingRows[rowKey] || !dirty}
+                          >
+                            <Save size={13} /> {savingRows[rowKey] ? 'Salvando...' : 'Salvar'}
+                          </button>
+                          <button
+                            className="btn btn-outline btn-sm"
+                            onClick={() => limparLinha(conta.id)}
+                            disabled={savingRows[rowKey] || deletingRows[rowKey]}
+                            title={cell.id ? 'Excluir valor salvo' : 'Zerar valor digitado'}
+                          >
+                            <Trash2 size={13} /> {deletingRows[rowKey] ? 'Excluindo...' : (cell.id ? 'Excluir' : 'Limpar')}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
               {contasFiltradas.length > 0 && (
                 <tfoot>
                   <tr>
                     <td style={{ fontWeight: 700 }}>TOTAL {mesSelecionadoLabel.toUpperCase()}</td>
                     <td style={{ fontWeight: 700 }}>{toCurrency(totalMesSelecionado)}</td>
+                    <td className="table-actions-cell"></td>
                   </tr>
                 </tfoot>
               )}

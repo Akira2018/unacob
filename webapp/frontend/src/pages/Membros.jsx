@@ -7,9 +7,9 @@ import { getApiErrorMessage } from '../utils/apiError';
 const ESTADOS = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 
 const emptyForm = {
-  matricula: '', inscricao: '', nome_completo: '', cpf: '', email: '', telefone: '', celular: '', ddd: '',
+  matricula: '', inscricao: '', nome_completo: '', cpf: '', cpf2: '', codigo_dabb: '', email: '', telefone: '', celular: '', ddd: '',
   endereco: '', numero: '', complemento: '', bairro: '', cidade: '', estado: '', cep: '', ect: '',
-  data_nascimento: '', data_associacao: '', status: 'ativo', sexo: '', cat: '', beneficio: '',
+  data_nascimento: '', data_filiacao: '', status: 'ativo', sexo: '', cat: '', beneficio: '',
   valor_mensalidade: '', observacoes: ''
 };
 
@@ -50,11 +50,16 @@ export default function Membros() {
 
   const openModal = (m = null) => {
     setEditing(m);
+    let estado = m?.estado;
+    if (estado && !ESTADOS.includes(estado)) estado = '';
     setForm(m ? {
       ...emptyForm, ...m,
+      estado,
       data_nascimento: m.data_nascimento || '',
-      data_associacao: m.data_associacao || '',
-      valor_mensalidade: m.valor_mensalidade || ''
+      data_filiacao: m.data_filiacao || '',
+      valor_mensalidade: m.valor_mensalidade || '',
+      codigo_dabb: m.codigo_dabb || '',
+      cpf2: m.cpf2 || ''
     } : emptyForm);
     setModal(true);
   };
@@ -64,8 +69,10 @@ export default function Membros() {
     setSaving(true);
     try {
       const payload = { ...form };
+      // Validação de estado
+      if (!ESTADOS.includes(payload.estado)) payload.estado = '';
       if (!payload.data_nascimento) delete payload.data_nascimento;
-      if (!payload.data_associacao) delete payload.data_associacao;
+      if (!payload.data_filiacao) delete payload.data_filiacao;
       if (payload.valor_mensalidade === '') payload.valor_mensalidade = 0;
       if (editing) {
         await api.put(`/membros/${editing.id}`, payload);
@@ -104,10 +111,10 @@ export default function Membros() {
   return (
     <div>
       <div className="topbar">
-        <h2>Membros</h2>
+        <h2>Cadastro de Associados</h2>
         <div className="topbar-right">
           <button className="btn btn-outline btn-sm" onClick={exportar}><Download size={14} /> Excel</button>
-          <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Novo Membro</button>
+          <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Novo Associado</button>
         </div>
       </div>
 
@@ -196,6 +203,14 @@ export default function Membros() {
                   <input value={form.matricula} onChange={e => setF('matricula', e.target.value)} />
                 </div>
                 <div className="form-group">
+                  <label>Código DABB</label>
+                  <input value={form.codigo_dabb} onChange={e => setF('codigo_dabb', e.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label>CPF2</label>
+                  <input value={form.cpf2} onChange={e => setF('cpf2', e.target.value)} />
+                </div>
+                <div className="form-group">
                   <label>Inscrição</label>
                   <input value={form.inscricao} onChange={e => setF('inscricao', e.target.value)} />
                 </div>
@@ -204,8 +219,8 @@ export default function Membros() {
                   <input type="date" value={form.data_nascimento} onChange={e => setF('data_nascimento', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>Data de Associação</label>
-                  <input type="date" value={form.data_associacao} onChange={e => setF('data_associacao', e.target.value)} />
+                  <label>Data de Filiação</label>
+                  <input type="date" value={form.data_filiacao} onChange={e => setF('data_filiacao', e.target.value)} />
                 </div>
                 <div className="form-group">
                   <label>Sexo</label>
@@ -225,7 +240,13 @@ export default function Membros() {
                 </div>
                 <div className="form-group">
                   <label>Categoria</label>
-                  <input value={form.cat} onChange={e => setF('cat', e.target.value)} />
+                  <select value={form.cat} onChange={e => setF('cat', e.target.value)}>
+                    <option value="">Selecione</option>
+                    <option value="CLT">CLT</option>
+                    <option value="1711">1711</option>
+                    <option value="1712">1712</option>
+                    <option value="Outros">Outros</option>
+                  </select>
                 </div>
                 <div className="form-group">
                   <label>Benefício</label>
@@ -261,9 +282,9 @@ export default function Membros() {
                 </div>
               </div>
 
-              <div style={{ borderBottom: '1px solid #e2e8f0', paddingBottom: 12, marginBottom: 16, marginTop: 20, fontWeight: 600, fontSize: 13, color: '#1e3a5f' }}>Endereço</div>
+              {/* Removido título e campo duplicado de Endereço */}
               <div className="form-grid">
-                <div className="form-group" style={{ gridColumn: 'span 2' }}>
+                <div className="form-group">
                   <label>Endereço</label>
                   <input value={form.endereco} onChange={e => setF('endereco', e.target.value)} />
                 </div>

@@ -6,8 +6,8 @@ import { Building2, Lock, Mail } from 'lucide-react';
 import { getApiErrorMessage } from '../utils/apiError';
 
 export default function Login() {
-  const [email, setEmail] = useState('admin@associacao.com');
-  const [password, setPassword] = useState('admin123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
@@ -70,9 +70,6 @@ export default function Login() {
             {loading ? 'Entrando...' : 'Entrar'}
           </button>
         </form>
-        <p style={{ textAlign: 'center', marginTop: 16, fontSize: 12, color: '#718096' }}>
-          Padrão: admin@associacao.com / admin123
-        </p>
       </div>
     </div>
   );

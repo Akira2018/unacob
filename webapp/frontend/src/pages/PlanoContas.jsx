@@ -173,8 +173,8 @@ export default function PlanoContas() {
                         {conta.ativo ? 'Ativa' : 'Inativa'}
                       </span>
                     </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 6 }}>
+                    <td className="table-actions-cell">
+                      <div className="table-actions">
                         <button className="btn btn-outline btn-icon btn-sm" onClick={() => openModal(conta)}>
                           <Edit size={13} />
                         </button>

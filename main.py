@@ -33,28 +33,6 @@ app.add_middleware(
 )
 
 # ─── Seed initial admin user ───────────────────────────────────────────────────
-def seed_admin():
-    from database import SessionLocal
-    db = SessionLocal()
-    try:
-        admin = db.query(models.User).filter(models.User.email == "admin@associacao.com").first()
-        if not admin:
-            admin = models.User(
-                id=str(uuid.uuid4()),
-                email="admin@associacao.com",
-                nome_completo="Administrador",
-                role="administrador",
-                password=get_password_hash("admin123"),
-                ativo=True,
-                created_at=datetime.utcnow()
-            )
-            db.add(admin)
-            db.commit()
-    finally:
-        db.close()
-
-seed_admin()
-
 # ════════════════════════════════════════════════════════════════════════════════
 # AUTH
 # ════════════════════════════════════════════════════════════════════════════════
@@ -875,7 +853,7 @@ def exportar_membros(
         ws.cell(row=row, column=10, value=m.estado)
         ws.cell(row=row, column=11, value=m.cep)
         ws.cell(row=row, column=12, value=str(m.data_nascimento) if m.data_nascimento else "")
-        ws.cell(row=row, column=13, value=str(m.data_associacao) if m.data_associacao else "")
+        ws.cell(row=row, column=13, value=str(m.data_filiacao) if m.data_filiacao else "")
         ws.cell(row=row, column=14, value=m.status)
         ws.cell(row=row, column=15, value=m.beneficio)
         ws.cell(row=row, column=16, value=float(m.valor_mensalidade) if m.valor_mensalidade else 0)

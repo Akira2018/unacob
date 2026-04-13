@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import api from '../api';
 import toast from 'react-hot-toast';
 import { Plus, Edit, Trash2, UserCog, Shield, User, Download, Upload } from 'lucide-react';
@@ -9,6 +9,13 @@ import { getApiErrorMessage } from '../utils/apiError';
 const emptyForm = { email: '', nome_completo: '', role: 'assistente', password: '' };
 const ROLE_LABELS = { administrador: 'Administrador', gerente: 'Gerente', assistente: 'Assistente' };
 const ROLE_COLORS = { administrador: 'badge-danger', gerente: 'badge-warning', assistente: 'badge-info' };
+const BACKUP_TYPE_LABELS = {
+  manual: 'Manual',
+  startup: 'Inicialização',
+  agendado: 'Agendado',
+  pre_restauracao: 'Pré-restauração',
+  outro: 'Outro',
+};
 
 function isStrongPassword(password) {
   if (password.length < 8) return false;
@@ -31,6 +38,8 @@ function getPasswordChecks(password) {
 
 export default function Usuarios() {
   const [users, setUsers] = useState([]);
+  const [backups, setBackups] = useState([]);
+  const [backupDirectory, setBackupDirectory] = useState('');
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -38,17 +47,36 @@ export default function Usuarios() {
   const [saving, setSaving] = useState(false);
   const [backupLoading, setBackupLoading] = useState(false);
   const [restoreLoading, setRestoreLoading] = useState(false);
+  const [backupListLoading, setBackupListLoading] = useState(false);
+  const [activeBackupAction, setActiveBackupAction] = useState('');
   const restoreInputRef = useRef(null);
   const { user: currentUser } = useAuth();
   const navigate = useNavigate();
   const isAdmin = currentUser?.role === 'administrador';
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true);
     api.get('/users').then(r => setUsers(r.data)).catch(err => toast.error(getApiErrorMessage(err, 'Erro'))).finally(() => setLoading(false));
-  };
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  const loadBackups = useCallback(async () => {
+    if (!isAdmin) return;
+    setBackupListLoading(true);
+    try {
+      const { data } = await api.get('/admin/system/backups');
+      setBackups(Array.isArray(data?.items) ? data.items : []);
+      setBackupDirectory(data?.directory || '');
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao carregar backups'));
+    } finally {
+      setBackupListLoading(false);
+    }
+  }, [isAdmin]);
+
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (isAdmin) loadBackups();
+  }, [isAdmin, loadBackups]);
 
   const openModal = (u = null) => {
     setEditing(u);
@@ -132,6 +160,7 @@ export default function Usuarios() {
       window.URL.revokeObjectURL(blobUrl);
 
       toast.success('Backup gerado com sucesso');
+      loadBackups();
     } catch (err) {
       toast.error(getApiErrorMessage(err, 'Erro ao gerar backup'));
     } finally {
@@ -168,6 +197,7 @@ export default function Usuarios() {
       });
 
       toast.success(data?.detail || 'Backup restaurado com sucesso');
+      loadBackups();
       setTimeout(() => {
         window.location.reload();
       }, 700);
@@ -178,6 +208,76 @@ export default function Usuarios() {
     }
   };
 
+  const downloadSavedBackup = async (filename) => {
+    setActiveBackupAction(`download:${filename}`);
+    try {
+      const response = await api.get(`/admin/system/backups/${encodeURIComponent(filename)}`, { responseType: 'blob' });
+      const blobUrl = window.URL.createObjectURL(response.data);
+      const anchor = document.createElement('a');
+      anchor.href = blobUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao baixar backup'));
+    } finally {
+      setActiveBackupAction('');
+    }
+  };
+
+  const restoreSavedBackup = async (filename) => {
+    const confirmed = confirm(
+      `Restaurar o backup "${filename}"? O banco atual será substituído e um backup automático será criado antes.`
+    );
+    if (!confirmed) return;
+
+    setActiveBackupAction(`restore:${filename}`);
+    try {
+      const { data } = await api.post(`/admin/system/backups/${encodeURIComponent(filename)}/restore`);
+      toast.success(data?.detail || 'Backup restaurado com sucesso');
+      loadBackups();
+      setTimeout(() => {
+        window.location.reload();
+      }, 700);
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao restaurar backup salvo'));
+    } finally {
+      setActiveBackupAction('');
+    }
+  };
+
+  const deleteSavedBackup = async (filename) => {
+    const confirmed = confirm(`Excluir o backup "${filename}"?`);
+    if (!confirmed) return;
+
+    setActiveBackupAction(`delete:${filename}`);
+    try {
+      await api.delete(`/admin/system/backups/${encodeURIComponent(filename)}`);
+      toast.success('Backup removido com sucesso');
+      loadBackups();
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao excluir backup'));
+    } finally {
+      setActiveBackupAction('');
+    }
+  };
+
+  const formatBackupDate = (value) => {
+    if (!value) return '-';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString('pt-BR');
+  };
+
+  const formatBackupSize = (bytes) => {
+    const value = Number(bytes) || 0;
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  };
+
   return (
     <div>
       <div className="topbar">
@@ -185,10 +285,10 @@ export default function Usuarios() {
         {isAdmin && (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn btn-outline" onClick={handleBackup} disabled={backupLoading || restoreLoading}>
-              <Download size={15} /> {backupLoading ? 'Gerando backup...' : 'Backup'}
+              <Download size={15} /> {backupLoading ? 'Gerando backup...' : 'Backup do Banco'}
             </button>
             <button className="btn btn-outline" onClick={handleRestoreClick} disabled={restoreLoading || backupLoading}>
-              <Upload size={15} /> {restoreLoading ? 'Restaurando...' : 'Restaurar'}
+              <Upload size={15} /> {restoreLoading ? 'Restaurando...' : 'Restaurar Banco'}
             </button>
             <input
               ref={restoreInputRef}
@@ -201,6 +301,102 @@ export default function Usuarios() {
           </div>
         )}
       </div>
+
+      {isAdmin && (
+        <div className="card" style={{ marginBottom: 20, borderLeft: '4px solid #2b6cb0' }}>
+          <div className="card-title">Segurança de Dados</div>
+          <p style={{ margin: '0 0 14px 0', color: '#4a5568', lineHeight: 1.6 }}>
+            Use o backup para baixar uma cópia atual do banco de dados. Se houver necessidade de recuperação,
+            a restauração aceita um arquivo <strong>.db</strong> válido e cria um backup automático do banco atual
+            antes de substituir os dados.
+          </p>
+          <p style={{ margin: '0 0 14px 0', color: '#718096', lineHeight: 1.6, fontSize: 13 }}>
+            O sistema também mantém backup automático diário ao iniciar e conserva somente os backups mais recentes
+            para evitar acúmulo excessivo de arquivos.
+          </p>
+          <p style={{ margin: '0 0 14px 0', color: '#718096', lineHeight: 1.6, fontSize: 13 }}>
+            Também há backup automático por horário configurável no backend, útil para rotina de segurança mesmo sem ação manual.
+          </p>
+          {backupDirectory && (
+            <p style={{ margin: '0 0 14px 0', color: '#718096', fontSize: 13 }}>
+              Pasta local dos backups: <strong>{backupDirectory}</strong>
+            </p>
+          )}
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <button className="btn btn-outline" onClick={handleBackup} disabled={backupLoading || restoreLoading}>
+              <Download size={15} /> {backupLoading ? 'Gerando backup...' : 'Backup do Banco'}
+            </button>
+            <button className="btn btn-outline" onClick={handleRestoreClick} disabled={restoreLoading || backupLoading}>
+              <Upload size={15} /> {restoreLoading ? 'Restaurando...' : 'Restaurar Banco'}
+            </button>
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <strong>Backups salvos no sistema</strong>
+              <button className="btn btn-outline btn-sm" onClick={loadBackups} disabled={backupListLoading || backupLoading || restoreLoading}>
+                {backupListLoading ? 'Atualizando...' : 'Atualizar Lista'}
+              </button>
+            </div>
+
+            {backupListLoading ? (
+              <div style={{ color: '#718096', fontSize: 13 }}>Carregando backups...</div>
+            ) : backups.length === 0 ? (
+              <div style={{ color: '#718096', fontSize: 13 }}>Nenhum backup salvo ainda.</div>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Arquivo</th>
+                      <th>Tipo</th>
+                      <th>Data</th>
+                      <th>Tamanho</th>
+                      <th>Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {backups.map((item) => (
+                      <tr key={item.filename}>
+                        <td style={{ fontSize: 13 }}>{item.filename}</td>
+                        <td>
+                          <span className="badge badge-info">{BACKUP_TYPE_LABELS[item.type] || item.type || 'Outro'}</span>
+                        </td>
+                        <td>{formatBackupDate(item.created_at)}</td>
+                        <td>{formatBackupSize(item.size_bytes)}</td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            <button
+                              className="btn btn-outline btn-sm"
+                              onClick={() => downloadSavedBackup(item.filename)}
+                              disabled={Boolean(activeBackupAction)}
+                            >
+                              {activeBackupAction === `download:${item.filename}` ? 'Baixando...' : 'Baixar'}
+                            </button>
+                            <button
+                              className="btn btn-outline btn-sm"
+                              onClick={() => restoreSavedBackup(item.filename)}
+                              disabled={Boolean(activeBackupAction)}
+                            >
+                              {activeBackupAction === `restore:${item.filename}` ? 'Restaurando...' : 'Restaurar'}
+                            </button>
+                            <button
+                              className="btn btn-danger btn-sm"
+                              onClick={() => deleteSavedBackup(item.filename)}
+                              disabled={Boolean(activeBackupAction)}
+                            >
+                              {activeBackupAction === `delete:${item.filename}` ? 'Excluindo...' : 'Excluir'}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {!isAdmin && (
         <div className="card" style={{ marginBottom: 20, borderLeft: '4px solid #1e3a5f' }}>

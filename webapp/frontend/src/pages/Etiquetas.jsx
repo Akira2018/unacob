@@ -13,6 +13,7 @@ export default function Etiquetas() {
     nome: "",
     cidade: "",
     sexo: "",
+    categoria: "",
     semEmail: false,
     semWhatsapp: false
   });
@@ -27,6 +28,7 @@ export default function Etiquetas() {
           nome: filtros.nome || undefined,
           cidade: filtros.cidade || undefined,
           sexo: filtros.sexo || undefined,
+          categoria: filtros.categoria || undefined,
           sem_email: filtros.semEmail,
           sem_whatsapp: filtros.semWhatsapp
         }
@@ -248,6 +250,23 @@ export default function Etiquetas() {
             <option value="">Todos</option>
             <option value="masculino">Masculino</option>
             <option value="feminino">Feminino</option>
+          </select>
+        </div>
+
+        <div className="form-group" style={{ margin: 0 }}>
+          <label>Categoria</label>
+          <select
+            className="search-input"
+            value={filtros.categoria}
+            onChange={(e) =>
+              setFiltros({ ...filtros, categoria: e.target.value })
+            }
+          >
+            <option value="">Todas</option>
+            <option value="CLT">CLT</option>
+            <option value="1711">1711</option>
+            <option value="1712">1712</option>
+            <option value="Outros">Outros</option>
           </select>
         </div>
 

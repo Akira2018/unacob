@@ -33,9 +33,17 @@ export default function Financeiro() {
   }, [load]);
 
   const exportar = async () => {
-    const r = await api.get(`/relatorios/balancete?mes_referencia=${mes}`, { responseType: 'blob' });
-    const url = URL.createObjectURL(r.data);
-    const a = document.createElement('a'); a.href = url; a.download = `balancete_${mes}.xlsx`; a.click();
+    try {
+      const r = await api.get(`/relatorios/balancete?mes_referencia=${mes}`, { responseType: 'blob' });
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `balancete_${mes}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao exportar balancete'));
+    }
   };
 
   const openSaldoModal = async () => {
@@ -92,8 +100,8 @@ export default function Financeiro() {
     }
   };
 
-  const desspCatData = data ? Object.entries(data.despesas_por_categoria).map(([name, value]) => ({ name, value })) : [];
-  const rendaCatData = data ? Object.entries(data.rendas_por_categoria).map(([name, value]) => ({ name, value })) : [];
+  const desspCatData = Object.entries(data?.despesas_por_categoria || {}).map(([name, value]) => ({ name, value }));
+  const rendaCatData = Object.entries(data?.rendas_por_categoria || {}).map(([name, value]) => ({ name, value }));
   const entradasContaData = data?.entradas_por_conta?.length
     ? data.entradas_por_conta
     : rendaCatData.map(item => ({ codigo: '-', nome: item.name, valor: item.value }));
@@ -236,7 +244,7 @@ export default function Financeiro() {
                   <tbody>
                     {data.pagamentos.map((p, i) => (
                       <tr key={i}>
-                        <td>{p.membro_id}</td>
+                        <td>{p.nome || p.membro_nome || p.membro_id}</td>
                         <td><strong style={{ color: '#38a169' }}>{fmt(p.valor_pago)}</strong></td>
                         <td>{p.data_pagamento || '-'}</td>
                         <td>{p.forma_pagamento || '-'}</td>

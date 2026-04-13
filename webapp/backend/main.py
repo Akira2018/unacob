@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Body, Request
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
 
 import models
@@ -20,9 +19,12 @@ import sqlite3
 import tempfile
 import unicodedata
 import smtplib
+import threading
+import time
 from pathlib import Path
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dotenv import load_dotenv
 from sqlalchemy import or_, cast, String, inspect, text
 from sqlalchemy import func as sql_func
@@ -32,8 +34,25 @@ import uuid
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+try:
+    from pypdf import PdfReader
+except Exception:
+    PdfReader = None
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
+
+BACKUP_RETENTION_COUNT = max(1, int(os.getenv("BACKUP_RETENTION_COUNT", "30")))
+AUTO_BACKUP_ON_STARTUP = os.getenv("AUTO_BACKUP_ON_STARTUP", "true").strip().lower() not in {"0", "false", "no"}
+SCHEDULED_BACKUP_ENABLED = os.getenv("SCHEDULED_BACKUP_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
+SCHEDULED_BACKUP_HOUR = min(23, max(0, int(os.getenv("SCHEDULED_BACKUP_HOUR", "20"))))
+SCHEDULED_BACKUP_INTERVAL_SECONDS = max(300, int(os.getenv("SCHEDULED_BACKUP_INTERVAL_SECONDS", "900")))
+BACKUP_TIMEZONE = os.getenv("BACKUP_TIMEZONE", "America/Sao_Paulo").strip() or "America/Sao_Paulo"
+
+try:
+    BACKUP_TZINFO = ZoneInfo(BACKUP_TIMEZONE)
+except ZoneInfoNotFoundError:
+    BACKUP_TIMEZONE = "UTC"
+    BACKUP_TZINFO = timezone.utc
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -151,7 +170,15 @@ def _ensure_financeiro_columns_and_seed_contas():
         _ensure_column("outras_rendas", "conta_nome", "VARCHAR(255)")
 
         _ensure_column("aplicacoes_financeiras", "data_aplicacao", "DATE")
+        _ensure_column("aplicacoes_financeiras", "origem_registro", "VARCHAR(50)")
+        _ensure_column("aplicacoes_financeiras", "conta_origem", "VARCHAR(150)")
+        _ensure_column("aplicacoes_financeiras", "arquivo_origem", "VARCHAR(255)")
+        _ensure_column("aplicacoes_financeiras", "imposto_renda", "FLOAT")
+        _ensure_column("aplicacoes_financeiras", "iof", "FLOAT")
+        _ensure_column("aplicacoes_financeiras", "rendimento_liquido", "FLOAT")
         _ensure_column("aplicacoes_financeiras", "updated_at", "TIMESTAMP")
+        _ensure_column("conciliacoes", "despesa_id", "VARCHAR(36)")
+        _ensure_column("conciliacoes", "outra_renda_id", "VARCHAR(36)")
 
     from database import SessionLocal
     db = SessionLocal()
@@ -245,7 +272,236 @@ def _ensure_financeiro_columns_and_seed_contas():
 
 _ensure_financeiro_columns_and_seed_contas()
 
+
 app = FastAPI(title="UNACOB - União dos aposentados dos correios em Bauru - SP API", version="1.0.0")
+
+# Endpoint para upload e processamento do PDF do Banco do Brasil
+import pdfplumber
+import os
+from fastapi import UploadFile, File
+
+@app.post("/api/conciliacao/importar/pdf-bb")
+async def importar_pdf_bb(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    nome_arquivo = (file.filename or "").strip() or "extrato_bb.pdf"
+    if not nome_arquivo.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Arquivo deve ser PDF")
+
+    temp_path = None
+    banco = "DABB"
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            temp_path = tmp.name
+            tmp.write(await file.read())
+
+        with pdfplumber.open(temp_path) as pdf:
+            texto = "\n".join((page.extract_text() or "") for page in pdf.pages).strip()
+
+        if not texto:
+            raise HTTPException(status_code=400, detail="Nao foi possivel extrair texto do PDF")
+
+        membros_por_codigo_dabb = _indexar_membros_por_codigo_dabb(db)
+        importados = []
+        linhas_lidas = 0
+        linhas_duplicadas = 0
+        linhas_invalidas = 0
+        total_baixas_automaticas = 0
+        total_sem_membro = 0
+        total_codigos_ambiguos = 0
+        meses_lidos = set()
+        codigos_sem_membro = {}
+        codigos_ambiguos = {}
+        diagnostico_dabb = {
+            "linhas_detalhe_encontradas": 0,
+            "linhas_detalhe_validas": 0,
+            "motivos_invalidos": {},
+            "exemplos_invalidos": [],
+        }
+
+        for indice, tx in enumerate(_iterar_transacoes_pdf_bb(texto), start=1):
+            diagnostico_dabb["linhas_detalhe_encontradas"] += 1
+            codigo_dabb = tx.get("codigo_dabb")
+            data = tx.get("data")
+            valor = tx.get("valor")
+
+            if not codigo_dabb or not data or valor is None:
+                linhas_invalidas += 1
+                diagnostico_dabb["motivos_invalidos"]["bloco_invalido"] = diagnostico_dabb["motivos_invalidos"].get("bloco_invalido", 0) + 1
+                if len(diagnostico_dabb["exemplos_invalidos"]) < 5:
+                    diagnostico_dabb["exemplos_invalidos"].append({
+                        "linha": indice,
+                        "motivo": "bloco_invalido",
+                        "conteudo": (tx.get("bloco_original") or "")[:160],
+                    })
+                continue
+
+            diagnostico_dabb["linhas_detalhe_validas"] += 1
+            linhas_lidas += 1
+            tipo = tx["tipo"]
+            descricao = tx["descricao"]
+            numero_doc = tx.get("numero_documento")
+            nome_pagador = tx.get("nome")
+            mes_ref = data.strftime("%Y-%m")
+            meses_lidos.add(mes_ref)
+
+            existe = _buscar_duplicado_conciliacao(
+                db=db,
+                data_extrato=data,
+                valor_extrato=valor,
+                banco=banco,
+                tipo=tipo,
+                numero_documento=numero_doc,
+                descricao_extrato=descricao,
+            )
+
+            if existe:
+                linhas_duplicadas += 1
+                continue
+
+            observacoes = [
+                f"Arquivo PDF BB: {nome_arquivo}",
+                f"codigo_dabb={codigo_dabb}",
+            ]
+            if nome_pagador:
+                observacoes.append(f"nome={nome_pagador}")
+
+            c = models.Conciliacao(
+                id=str(uuid.uuid4()),
+                user_id=current_user.id,
+                data_extrato=data,
+                descricao_extrato=descricao,
+                valor_extrato=valor,
+                tipo=tipo,
+                mes_referencia=mes_ref,
+                banco=banco,
+                numero_documento=numero_doc,
+                conciliado=False,
+                observacoes=" | ".join(observacoes),
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
+            )
+            db.add(c)
+            db.flush()
+
+            membros_match = {}
+            for variante in _variantes_codigo_dabb(codigo_dabb):
+                for membro in membros_por_codigo_dabb.get(variante, []):
+                    membros_match[membro.id] = membro
+
+            if len(membros_match) == 1:
+                membro = next(iter(membros_match.values()))
+                _baixar_pagamento_mensalidade_por_conciliacao(
+                    db=db,
+                    conciliacao=c,
+                    membro=membro,
+                    user_id=current_user.id,
+                    observacao_origem=(
+                        f"Baixa automática via PDF Banco do Brasil ({mes_ref}) - "
+                        f"codigo_dabb {codigo_dabb}"
+                    ),
+                )
+                total_baixas_automaticas += 1
+            elif len(membros_match) > 1:
+                total_codigos_ambiguos += 1
+                item = codigos_ambiguos.setdefault(codigo_dabb, {
+                    "codigo_dabb": codigo_dabb,
+                    "quantidade": 0,
+                    "valores": set(),
+                    "meses": set(),
+                    "registros": set(),
+                })
+                item["quantidade"] += 1
+                item["valores"].add(round(float(valor or 0), 2))
+                item["meses"].add(mes_ref)
+                item["registros"].add("PDF")
+                c.observacoes = (
+                    (c.observacoes + "\n") if c.observacoes else ""
+                ) + "Codigo DABB encontrado em mais de um membro ativo; baixa nao realizada automaticamente."
+            else:
+                total_sem_membro += 1
+                item = codigos_sem_membro.setdefault(codigo_dabb, {
+                    "codigo_dabb": codigo_dabb,
+                    "quantidade": 0,
+                    "valores": set(),
+                    "meses": set(),
+                    "registros": set(),
+                })
+                item["quantidade"] += 1
+                item["valores"].add(round(float(valor or 0), 2))
+                item["meses"].add(mes_ref)
+                item["registros"].add("PDF")
+                c.observacoes = (
+                    (c.observacoes + "\n") if c.observacoes else ""
+                ) + "Nenhum membro ativo encontrado para o codigo DABB; baixa nao realizada automaticamente."
+
+            importados.append({
+                "data": data.strftime("%Y-%m-%d"),
+                "descricao": descricao,
+                "valor": valor,
+                "tipo": tipo,
+                "numero_doc": numero_doc,
+                "codigo_dabb": codigo_dabb,
+                "nome": nome_pagador,
+                "conciliado": c.conciliado,
+            })
+
+        db.commit()
+        meses_importados = sorted({item.get("data", "")[:7] for item in importados if item.get("data")})
+        codigos_sem_membro_lista = [
+            {
+                "codigo_dabb": item["codigo_dabb"],
+                "quantidade": item["quantidade"],
+                "valores": sorted(item["valores"]),
+                "meses": sorted(item["meses"]),
+                "registros": sorted(item["registros"]),
+            }
+            for item in sorted(codigos_sem_membro.values(), key=lambda x: x["codigo_dabb"])
+        ]
+        codigos_ambiguos_lista = [
+            {
+                "codigo_dabb": item["codigo_dabb"],
+                "quantidade": item["quantidade"],
+                "valores": sorted(item["valores"]),
+                "meses": sorted(item["meses"]),
+                "registros": sorted(item["registros"]),
+            }
+            for item in sorted(codigos_ambiguos.values(), key=lambda x: x["codigo_dabb"])
+        ]
+
+        return {
+            "ok": True,
+            "mensagem": (
+                f"PDF processado com sucesso: {len(importados)} lançamento(s) importado(s), "
+                f"{total_baixas_automaticas} baixa(s) automática(s)."
+            ),
+            "total_importados": len(importados),
+            "linhas_lidas": linhas_lidas,
+            "linhas_duplicadas": linhas_duplicadas,
+            "linhas_invalidas": linhas_invalidas,
+            "total_baixas_automaticas": total_baixas_automaticas,
+            "total_despesas_automaticas": 0,
+            "total_sem_membro": total_sem_membro,
+            "total_codigos_ambiguos": total_codigos_ambiguos,
+            "codigos_sem_membro": codigos_sem_membro_lista,
+            "codigos_ambiguos": codigos_ambiguos_lista,
+            "diagnostico_dabb": diagnostico_dabb,
+            "meses_importados": meses_importados,
+            "meses_lidos": sorted(meses_lidos),
+            "registros": importados,
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Erro ao processar PDF do Banco do Brasil: {str(e)}")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 app.add_middleware(
     CORSMiddleware,
@@ -254,6 +510,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def create_startup_backup_if_needed():
+    try:
+        _ensure_daily_startup_backup()
+    except Exception:
+        # Falha de backup automático não deve impedir a API de iniciar.
+        pass
+
+    try:
+        _start_backup_scheduler()
+    except Exception:
+        pass
+
+
+@app.on_event("shutdown")
+def stop_backup_scheduler():
+    _backup_scheduler_stop_event.set()
 
 
 FINANCE_API_PREFIXES = (
@@ -396,6 +671,152 @@ def _sqlite_db_path_or_400() -> Path:
     return db_path
 
 
+def _sqlite_backup_dir_or_400() -> Path:
+    db_path = _sqlite_db_path_or_400()
+    backup_dir = db_path.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    return backup_dir
+
+
+def _cleanup_old_backups(backup_dir: Path, keep_count: int = BACKUP_RETENTION_COUNT) -> None:
+    if keep_count <= 0:
+        return
+
+    backup_files = sorted(
+        backup_dir.glob("*.db"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+
+    for old_file in backup_files[keep_count:]:
+        try:
+            old_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _backup_now() -> datetime:
+    return datetime.now(BACKUP_TZINFO)
+
+
+def _create_sqlite_backup_file(source_db_path: Path, prefix: str = "unacob_backup") -> Path:
+    backup_dir = _sqlite_backup_dir_or_400()
+    ts = _backup_now().strftime("%Y%m%d_%H%M%S")
+    backup_file = backup_dir / f"{prefix}_{ts}.db"
+
+    with sqlite3.connect(str(source_db_path)) as source_conn:
+        with sqlite3.connect(str(backup_file)) as dest_conn:
+            source_conn.backup(dest_conn)
+
+    _cleanup_old_backups(backup_dir)
+    return backup_file
+
+
+def _ensure_daily_startup_backup() -> Optional[Path]:
+    if not AUTO_BACKUP_ON_STARTUP:
+        return None
+
+    db_path = _sqlite_db_path_or_400()
+    if not db_path.exists():
+        return None
+
+    backup_dir = _sqlite_backup_dir_or_400()
+    today_stamp = _backup_now().strftime("%Y%m%d")
+    existing_daily_backup = next(
+        (item for item in backup_dir.glob(f"startup_backup_{today_stamp}_*.db")),
+        None,
+    )
+
+    if existing_daily_backup:
+        _cleanup_old_backups(backup_dir)
+        return existing_daily_backup
+
+    return _create_sqlite_backup_file(db_path, prefix="startup_backup")
+
+
+def _resolve_backup_file_or_404(filename: str) -> Path:
+    backup_dir = _sqlite_backup_dir_or_400()
+    safe_name = Path(filename or "").name
+    if not safe_name or safe_name != filename or not safe_name.lower().endswith(".db"):
+        raise HTTPException(status_code=400, detail="Nome de arquivo de backup inválido")
+
+    backup_file = (backup_dir / safe_name).resolve()
+    if backup_file.parent != backup_dir.resolve() or not backup_file.exists():
+        raise HTTPException(status_code=404, detail="Arquivo de backup não encontrado")
+
+    return backup_file
+
+
+def _get_backup_type(filename: str) -> str:
+    name = (filename or "").lower()
+    if name.startswith("startup_backup_"):
+      return "startup"
+    if name.startswith("scheduled_backup_"):
+      return "agendado"
+    if name.startswith("before_restore_"):
+      return "pre_restauracao"
+    if name.startswith("unacob_backup_"):
+      return "manual"
+    return "outro"
+
+
+_backup_scheduler_stop_event = threading.Event()
+_backup_scheduler_thread = None
+
+
+def _ensure_scheduled_backup() -> Optional[Path]:
+    if not SCHEDULED_BACKUP_ENABLED:
+        return None
+
+    db_path = _sqlite_db_path_or_400()
+    if not db_path.exists():
+        return None
+
+    backup_dir = _sqlite_backup_dir_or_400()
+    now = _backup_now()
+    today_stamp = now.strftime("%Y%m%d")
+    existing_scheduled_backup = next(
+        (item for item in backup_dir.glob(f"scheduled_backup_{today_stamp}_*.db")),
+        None,
+    )
+
+    if existing_scheduled_backup:
+        _cleanup_old_backups(backup_dir)
+        return existing_scheduled_backup
+
+    if now.hour < SCHEDULED_BACKUP_HOUR:
+        return None
+
+    return _create_sqlite_backup_file(db_path, prefix="scheduled_backup")
+
+
+def _backup_scheduler_loop() -> None:
+    while not _backup_scheduler_stop_event.is_set():
+        try:
+            _ensure_scheduled_backup()
+        except Exception:
+            pass
+        _backup_scheduler_stop_event.wait(SCHEDULED_BACKUP_INTERVAL_SECONDS)
+
+
+def _start_backup_scheduler() -> None:
+    global _backup_scheduler_thread
+
+    if not SCHEDULED_BACKUP_ENABLED:
+        return
+
+    if _backup_scheduler_thread and _backup_scheduler_thread.is_alive():
+        return
+
+    _backup_scheduler_stop_event.clear()
+    _backup_scheduler_thread = threading.Thread(
+        target=_backup_scheduler_loop,
+        name="backup-scheduler",
+        daemon=True,
+    )
+    _backup_scheduler_thread.start()
+
+
 @app.get("/api/admin/system/schema")
 def schema_diagnostic(current_user=Depends(get_current_user)):
     _assert_admin(current_user)
@@ -409,10 +830,16 @@ def schema_diagnostic(current_user=Depends(get_current_user)):
             "data_aplicacao",
             "instituicao",
             "produto",
+            "origem_registro",
+            "conta_origem",
+            "arquivo_origem",
             "saldo_anterior",
             "aplicacoes",
             "rendimento_bruto",
+            "imposto_renda",
+            "iof",
             "impostos",
+            "rendimento_liquido",
             "resgate",
             "saldo_atual",
             "observacoes",
@@ -463,22 +890,94 @@ def backup_database(current_user=Depends(get_current_user)):
     if not db_path.exists():
         raise HTTPException(status_code=404, detail="Banco de dados não encontrado")
 
-    backup_dir = db_path.parent / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    backup_file = backup_dir / f"unacob_backup_{ts}.db"
-
-    with sqlite3.connect(str(db_path)) as source_conn:
-        with sqlite3.connect(str(backup_file)) as dest_conn:
-            source_conn.backup(dest_conn)
+    backup_file = _create_sqlite_backup_file(db_path)
 
     return FileResponse(
         path=str(backup_file),
         media_type="application/octet-stream",
         filename=backup_file.name,
-        background=BackgroundTask(lambda: backup_file.unlink(missing_ok=True)),
     )
+
+
+@app.get("/api/admin/system/backups")
+def list_backups(current_user=Depends(get_current_user)):
+    _assert_admin(current_user)
+
+    backup_dir = _sqlite_backup_dir_or_400()
+    backups = []
+    for backup_file in sorted(backup_dir.glob("*.db"), key=lambda item: item.stat().st_mtime, reverse=True):
+        stat = backup_file.stat()
+        backups.append({
+            "filename": backup_file.name,
+            "type": _get_backup_type(backup_file.name),
+            "size_bytes": stat.st_size,
+            "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        })
+
+    return {
+        "items": backups,
+        "directory": str(backup_dir),
+    }
+
+
+@app.get("/api/admin/system/backups/{filename}")
+def download_saved_backup(filename: str, current_user=Depends(get_current_user)):
+    _assert_admin(current_user)
+    backup_file = _resolve_backup_file_or_404(filename)
+    return FileResponse(
+        path=str(backup_file),
+        media_type="application/octet-stream",
+        filename=backup_file.name,
+    )
+
+
+@app.post("/api/admin/system/backups/{filename}/restore")
+def restore_saved_backup(filename: str, current_user=Depends(get_current_user)):
+    _assert_admin(current_user)
+
+    db_path = _sqlite_db_path_or_400()
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Banco de dados atual não encontrado")
+
+    backup_file = _resolve_backup_file_or_404(filename)
+
+    try:
+        with sqlite3.connect(str(backup_file)) as conn_test:
+            integrity = conn_test.execute("PRAGMA integrity_check;").fetchone()
+            if not integrity or str(integrity[0]).lower() != "ok":
+                raise HTTPException(status_code=400, detail="Arquivo de backup inválido (integridade SQLite falhou)")
+
+        backup_before_restore = _create_sqlite_backup_file(db_path, prefix="before_restore")
+
+        try:
+            engine.dispose()
+            shutil.copy2(str(backup_file), str(db_path))
+
+            with sqlite3.connect(str(db_path)) as conn_new:
+                conn_new.execute("SELECT name FROM sqlite_master LIMIT 1;")
+
+            _ensure_financeiro_columns_and_seed_contas()
+        except Exception as restore_error:
+            shutil.copy2(str(backup_before_restore), str(db_path))
+            engine.dispose()
+            raise HTTPException(status_code=500, detail=f"Falha ao restaurar backup: {str(restore_error)}")
+
+        return {
+            "ok": True,
+            "detail": "Backup restaurado com sucesso",
+            "backup_restaurado": backup_file.name,
+            "backup_anterior": backup_before_restore.name,
+        }
+    finally:
+        engine.dispose()
+
+
+@app.delete("/api/admin/system/backups/{filename}")
+def delete_saved_backup(filename: str, current_user=Depends(get_current_user)):
+    _assert_admin(current_user)
+    backup_file = _resolve_backup_file_or_404(filename)
+    backup_file.unlink(missing_ok=True)
+    return {"ok": True, "detail": "Backup removido com sucesso"}
 
 
 @app.post("/api/admin/system/restore")
@@ -508,9 +1007,7 @@ async def restore_database(
             if not integrity or str(integrity[0]).lower() != "ok":
                 raise HTTPException(status_code=400, detail="Arquivo de backup inválido (integridade SQLite falhou)")
 
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        backup_before_restore = db_path.parent / f"{db_path.stem}.before_restore_{ts}{db_path.suffix}"
-        shutil.copy2(str(db_path), str(backup_before_restore))
+        backup_before_restore = _create_sqlite_backup_file(db_path, prefix="before_restore")
 
         try:
             engine.dispose()
@@ -1166,6 +1663,80 @@ def listar_pendencias_conciliacao_manual(
         "mes_referencia": mes_referencia,
         "total_pendencias": len(pendencias),
         "pendencias": pendencias
+    }
+
+
+@app.post("/api/pagamentos/reprocessar-dabb")
+def reprocessar_pendencias_dabb(
+    mes_referencia: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    if not mes_referencia or not re.match(r"^\d{4}-\d{2}$", mes_referencia):
+        raise HTTPException(status_code=400, detail="mes_referencia deve estar no formato YYYY-MM")
+
+    membros_por_codigo_dabb = _indexar_membros_por_codigo_dabb(db)
+    conciliacoes_abertas = db.query(models.Conciliacao).filter(
+        models.Conciliacao.mes_referencia == mes_referencia,
+        models.Conciliacao.tipo == "credito",
+        models.Conciliacao.conciliado == False,
+        models.Conciliacao.observacoes.isnot(None),
+        models.Conciliacao.observacoes.like("Arquivo DABB%")
+    ).order_by(models.Conciliacao.data_extrato.asc()).all()
+
+    total_analisados = len(conciliacoes_abertas)
+    total_reprocessados = 0
+    total_sem_match = 0
+    total_ambiguos = 0
+    detalhes = []
+
+    for conciliacao in conciliacoes_abertas:
+        codigo_dabb = _extrair_codigo_dabb_das_observacoes(conciliacao.observacoes)
+        if not codigo_dabb:
+            total_sem_match += 1
+            continue
+
+        membros_match = {}
+        for variante in _variantes_codigo_dabb(codigo_dabb):
+            for membro in membros_por_codigo_dabb.get(variante, []):
+                membros_match[membro.id] = membro
+
+        if len(membros_match) == 1:
+            membro = next(iter(membros_match.values()))
+            _baixar_pagamento_mensalidade_por_conciliacao(
+                db=db,
+                conciliacao=conciliacao,
+                membro=membro,
+                user_id=current_user.id,
+                observacao_origem=(
+                    f"Baixa reprocessada via codigo DABB ({mes_referencia}) - "
+                    f"codigo_dabb {codigo_dabb}"
+                ),
+            )
+            total_reprocessados += 1
+            detalhes.append({
+                "conciliacao_id": conciliacao.id,
+                "membro_id": membro.id,
+                "membro_nome": membro.nome_completo,
+                "codigo_dabb": codigo_dabb,
+                "valor": float(conciliacao.valor_extrato or 0),
+                "data_extrato": str(conciliacao.data_extrato) if conciliacao.data_extrato else None,
+            })
+        elif len(membros_match) > 1:
+            total_ambiguos += 1
+        else:
+            total_sem_match += 1
+
+    db.commit()
+
+    return {
+        "ok": True,
+        "mes_referencia": mes_referencia,
+        "total_analisados": total_analisados,
+        "total_reprocessados": total_reprocessados,
+        "total_sem_match": total_sem_match,
+        "total_ambiguos": total_ambiguos,
+        "detalhes": detalhes,
     }
 
 
@@ -1956,6 +2527,322 @@ def _calc_saldo_atual_aplicacao(
     return round(saldo_anterior + aplicacoes + rendimento_bruto - impostos - resgate, 2)
 
 
+def _calc_impostos_aplicacao(imposto_renda: Optional[float], iof: Optional[float], impostos: Optional[float]) -> float:
+    total_detalhado = float(imposto_renda or 0) + float(iof or 0)
+    if abs(total_detalhado) > 0.000001:
+        return round(total_detalhado, 2)
+    return round(float(impostos or 0), 2)
+
+
+def _calc_rendimento_liquido_aplicacao(rendimento_bruto: Optional[float], impostos: Optional[float], rendimento_liquido: Optional[float]) -> float:
+    if rendimento_liquido is not None and abs(float(rendimento_liquido or 0)) > 0.000001:
+        return round(float(rendimento_liquido or 0), 2)
+    return round(float(rendimento_bruto or 0) - float(impostos or 0), 2)
+
+
+MESES_PT_BR = {
+    "JANEIRO": "01",
+    "FEVEREIRO": "02",
+    "MARCO": "03",
+    "MARÇO": "03",
+    "ABRIL": "04",
+    "MAIO": "05",
+    "JUNHO": "06",
+    "JULHO": "07",
+    "AGOSTO": "08",
+    "SETEMBRO": "09",
+    "OUTUBRO": "10",
+    "NOVEMBRO": "11",
+    "DEZEMBRO": "12",
+}
+
+
+def _normalizar_texto_pdf(texto: str) -> str:
+    return re.sub(r"\s+", " ", (texto or "")).strip()
+
+
+def _valor_brl_para_float(valor: Optional[str]) -> float:
+    bruto = str(valor or "").strip()
+    if not bruto:
+        return 0.0
+    bruto = bruto.replace(".", "").replace(",", ".")
+    try:
+        return round(float(bruto), 2)
+    except Exception:
+        return 0.0
+
+
+def _parse_data_br(data_str: Optional[str]) -> Optional[date]:
+    texto = str(data_str or "").strip()
+    if not texto:
+        return None
+    try:
+        return datetime.strptime(texto, "%d/%m/%Y").date()
+    except Exception:
+        return None
+
+
+def _extrair_texto_pdf_investimento(file_path: Path) -> str:
+    if PdfReader is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Leitura de PDF indisponível no servidor. Instale a dependência 'pypdf'."
+        )
+
+    try:
+        reader = PdfReader(str(file_path))
+        paginas = [page.extract_text() or "" for page in reader.pages]
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Não foi possível ler o PDF enviado: {str(exc)}")
+
+    texto = "\n".join(paginas).strip()
+    if not texto:
+        raise HTTPException(status_code=400, detail="O PDF não possui texto legível. Pode ser um arquivo escaneado.")
+    return texto
+
+
+def _find_existing_aplicacao_importada(
+    db: Session,
+    mes_referencia: str,
+    instituicao: str,
+    produto: str,
+    conta_origem: Optional[str] = None,
+    arquivo_origem: Optional[str] = None,
+):
+    arquivo = (arquivo_origem or "").strip()
+    if arquivo:
+        by_file = db.query(models.AplicacaoFinanceira).filter(
+            models.AplicacaoFinanceira.mes_referencia == mes_referencia,
+            models.AplicacaoFinanceira.arquivo_origem == arquivo
+        ).order_by(models.AplicacaoFinanceira.updated_at.desc(), models.AplicacaoFinanceira.created_at.desc()).first()
+        if by_file:
+            return by_file
+
+    q = db.query(models.AplicacaoFinanceira).filter(
+        models.AplicacaoFinanceira.mes_referencia == mes_referencia,
+        models.AplicacaoFinanceira.instituicao.ilike(instituicao),
+        models.AplicacaoFinanceira.produto.ilike(produto)
+    )
+
+    conta = (conta_origem or "").strip()
+    if conta:
+        q = q.filter(models.AplicacaoFinanceira.conta_origem == conta)
+
+    return q.order_by(models.AplicacaoFinanceira.updated_at.desc(), models.AplicacaoFinanceira.created_at.desc()).first()
+
+
+def _extrair_dados_pdf_bb_investimento(texto_pdf: str, filename: str, db: Session) -> dict:
+    texto = texto_pdf or ""
+    texto_upper = texto.upper()
+
+    mes_ref_match = re.search(r"M[ÊE]S/ANO REFER[ÊE]NCIA\s+([A-ZÇÃ]+)\s*/\s*(\d{4})", texto_upper)
+    if not mes_ref_match:
+        raise HTTPException(status_code=400, detail="Não foi possível identificar o mês/ano de referência no PDF")
+
+    mes_nome = mes_ref_match.group(1).strip()
+    ano_ref = mes_ref_match.group(2)
+    mes_num = MESES_PT_BR.get(mes_nome)
+    if not mes_num:
+        raise HTTPException(status_code=400, detail=f"Mês de referência não reconhecido no PDF: {mes_nome}")
+    mes_referencia = f"{ano_ref}-{mes_num}"
+
+    produto_match = re.search(r"^\s*([^\n]+?)\s*-\s*CNPJ:", texto, re.MULTILINE | re.IGNORECASE)
+    produto = (produto_match.group(1).strip() if produto_match else "Fundo BB").strip()
+
+    conta_match = re.search(r"CONTA\s+([^\n]+)", texto_upper)
+    conta = conta_match.group(1).strip() if conta_match else None
+
+    resumo_match = re.search(
+        r"RESUMO DO M[ÊE]S(?P<bloco>.*?)(?:VALOR DA COTA|RENTABILIDADE|TRANSA[ÇC][AÃ]O EFETUADA)",
+        texto,
+        re.IGNORECASE | re.DOTALL
+    )
+    if not resumo_match:
+        raise HTTPException(status_code=400, detail="Não foi possível localizar o bloco 'Resumo do mês' no PDF")
+
+    resumo_texto = resumo_match.group("bloco")
+
+    def resumo_valor(rotulo: str) -> float:
+        match = re.search(rf"{rotulo}\s+([\d\.\,]+)", resumo_texto, re.IGNORECASE)
+        return _valor_brl_para_float(match.group(1) if match else None)
+
+    saldo_anterior = resumo_valor(r"SALDO ANTERIOR")
+    aplicacoes = resumo_valor(r"APLICA[ÇC][ÕO]ES\s*\(\+\)")
+    resgate = resumo_valor(r"RESGATES?\s*\(-\)")
+    rendimento_bruto = resumo_valor(r"RENDIMENTO BRUTO\s*\(\+\)")
+    imposto_renda = resumo_valor(r"IMPOSTO DE RENDA\s*\(-\)")
+    iof = resumo_valor(r"IOF\s*\(-\)")
+    rendimento_liquido = resumo_valor(r"RENDIMENTO L[ÍI]QUIDO")
+    saldo_atual = resumo_valor(r"SALDO ATUAL\s*=?")
+    impostos = _calc_impostos_aplicacao(imposto_renda, iof, None)
+    rendimento_liquido = _calc_rendimento_liquido_aplicacao(rendimento_bruto, impostos, rendimento_liquido)
+
+    datas_encontradas = re.findall(r"\b(\d{2}/\d{2}/\d{4})\b", texto)
+    data_aplicacao = _parse_data_br(datas_encontradas[-1]) if datas_encontradas else None
+
+    observacoes_partes = [f"Importado do PDF: {filename}"]
+    if conta:
+        observacoes_partes.append(f"Conta {conta}")
+    observacoes_partes.append(f"Referência {mes_referencia}")
+
+    existing = _find_existing_aplicacao_importada(
+        db,
+        mes_referencia=mes_referencia,
+        instituicao="%Banco do Brasil%",
+        produto=produto,
+        conta_origem=conta,
+        arquivo_origem=filename,
+    )
+
+    saldo_calculado = _calc_saldo_atual_aplicacao(
+        saldo_anterior,
+        aplicacoes,
+        rendimento_bruto,
+        impostos,
+        resgate
+    )
+    saldo_final = saldo_atual if saldo_atual else saldo_calculado
+
+    return {
+        "instituicao": "Banco do Brasil",
+        "produto": produto,
+        "data_aplicacao": data_aplicacao,
+        "origem_registro": "importacao_pdf",
+        "saldo_anterior": saldo_anterior,
+        "aplicacoes": aplicacoes,
+        "rendimento_bruto": rendimento_bruto,
+        "imposto_renda": imposto_renda,
+        "iof": iof,
+        "impostos": impostos,
+        "rendimento_liquido": rendimento_liquido,
+        "resgate": resgate,
+        "saldo_atual": saldo_final,
+        "mes_referencia": mes_referencia,
+        "observacoes": " | ".join(observacoes_partes),
+        "conta": conta,
+        "arquivo": filename,
+        "conta_origem": conta,
+        "arquivo_origem": filename,
+        "existing_id": existing.id if existing else None,
+        "existing_match": bool(existing),
+    }
+
+
+def _extrair_dados_pdf_bb_cdb(texto_pdf: str, filename: str, db: Session) -> dict:
+    texto = texto_pdf or ""
+    texto_upper = texto.upper()
+
+    periodo_match = re.search(r"PER[ÍI]ODO\s+(\d{2}/\d{2}/\d{4})\s+A\s+(\d{2}/\d{2}/\d{4})", texto_upper)
+    if not periodo_match:
+        raise HTTPException(status_code=400, detail="Não foi possível identificar o período do extrato de CDB")
+
+    data_inicio = _parse_data_br(periodo_match.group(1))
+    data_fim = _parse_data_br(periodo_match.group(2))
+    if not data_inicio or not data_fim:
+        raise HTTPException(status_code=400, detail="Período do extrato de CDB inválido")
+
+    mes_referencia = data_fim.strftime("%Y-%m")
+
+    conta_match = re.search(r"CONTA\s+([^\n]+)", texto_upper)
+    conta = conta_match.group(1).strip() if conta_match else None
+
+    produto_match = re.search(r"^\s*(BB\s+CDB\s+DI)\s*$", texto, re.MULTILINE | re.IGNORECASE)
+    produto = produto_match.group(1).strip() if produto_match else "BB CDB DI"
+
+    secao_saldos = re.search(
+        r"SALDO NOS [ÚU]LTIMOS 6 MESES(?P<bloco>.*?)(?:RESUMO DOS DEP[ÓO]SITOS EM SER|RENDIMENTO BRUTO NO PER[ÍI]ODO)",
+        texto,
+        re.IGNORECASE | re.DOTALL
+    )
+    if not secao_saldos:
+        raise HTTPException(status_code=400, detail="Não foi possível localizar a seção 'SALDO NOS ÚLTIMOS 6 MESES'")
+
+    linhas_saldo = re.findall(
+        r"(\d{2}/\d{2}/\d{4})\s+([\d\.\,]+)\s+([\d\.\,]+)\s+([\d\.\,]+)\s+([\d\.\,]+)",
+        secao_saldos.group("bloco")
+    )
+    if not linhas_saldo:
+        raise HTTPException(status_code=400, detail="Não foi possível extrair os saldos históricos do CDB")
+
+    linha_atual = linhas_saldo[-1]
+    linha_anterior = linhas_saldo[-2] if len(linhas_saldo) > 1 else None
+
+    capital_atual = _valor_brl_para_float(linha_atual[1])
+    juros_atual = _valor_brl_para_float(linha_atual[2])
+    ir_proj_atual = _valor_brl_para_float(linha_atual[3])
+    liquido_atual = _valor_brl_para_float(linha_atual[4])
+
+    if linha_anterior:
+        juros_anterior = _valor_brl_para_float(linha_anterior[2])
+        ir_proj_anterior = _valor_brl_para_float(linha_anterior[3])
+        liquido_anterior = _valor_brl_para_float(linha_anterior[4])
+        saldo_anterior = liquido_anterior
+        rendimento_bruto = round(juros_atual - juros_anterior, 2)
+        imposto_renda = round(ir_proj_atual - ir_proj_anterior, 2)
+        rendimento_liquido = round(liquido_atual - liquido_anterior, 2)
+    else:
+        saldo_anterior = capital_atual
+        rendimento_bruto = juros_atual
+        imposto_renda = ir_proj_atual
+        rendimento_liquido = liquido_atual - capital_atual
+
+    iof = 0.0
+    impostos = _calc_impostos_aplicacao(imposto_renda, iof, None)
+    aplicacoes = 0.0
+    resgate = 0.0
+    saldo_atual = liquido_atual
+
+    if abs(rendimento_liquido) <= 0.000001:
+        rendimento_liquido = _calc_rendimento_liquido_aplicacao(rendimento_bruto, impostos, rendimento_liquido)
+
+    observacoes_partes = [
+        f"Importado do PDF CDB: {filename}",
+        f"Período {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}",
+    ]
+    if conta:
+        observacoes_partes.append(f"Conta {conta}")
+
+    existing = _find_existing_aplicacao_importada(
+        db,
+        mes_referencia=mes_referencia,
+        instituicao="%Banco do Brasil%",
+        produto="%CDB%",
+        conta_origem=conta,
+        arquivo_origem=filename,
+    )
+
+    return {
+        "instituicao": "Banco do Brasil",
+        "produto": produto,
+        "data_aplicacao": data_fim,
+        "origem_registro": "importacao_pdf",
+        "saldo_anterior": round(saldo_anterior, 2),
+        "aplicacoes": aplicacoes,
+        "rendimento_bruto": round(rendimento_bruto, 2),
+        "imposto_renda": round(imposto_renda, 2),
+        "iof": iof,
+        "impostos": round(impostos, 2),
+        "rendimento_liquido": round(rendimento_liquido, 2),
+        "resgate": resgate,
+        "saldo_atual": round(saldo_atual, 2),
+        "mes_referencia": mes_referencia,
+        "observacoes": " | ".join(observacoes_partes),
+        "conta": conta,
+        "arquivo": filename,
+        "conta_origem": conta,
+        "arquivo_origem": filename,
+        "existing_id": existing.id if existing else None,
+        "existing_match": bool(existing),
+    }
+
+
+def _extrair_dados_pdf_investimento(texto_pdf: str, filename: str, db: Session) -> dict:
+    texto_upper = (texto_pdf or "").upper()
+    if "CDB / RDB" in texto_upper or "BB REAPLIC" in texto_upper or "BB CDB DI" in texto_upper:
+        return _extrair_dados_pdf_bb_cdb(texto_pdf, filename, db)
+    return _extrair_dados_pdf_bb_investimento(texto_pdf, filename, db)
+
+
 @app.get("/api/aplicacoes-financeiras", response_model=List[schemas.AplicacaoFinanceiraResponse])
 def list_aplicacoes_financeiras(
     mes_referencia: Optional[str] = None,
@@ -1986,7 +2873,10 @@ def resumo_aplicacoes_financeiras(
         "saldo_anterior": round(sum(float(r.saldo_anterior or 0) for r in registros), 2),
         "aplicacoes": round(sum(float(r.aplicacoes or 0) for r in registros), 2),
         "rendimento_bruto": round(sum(float(r.rendimento_bruto or 0) for r in registros), 2),
+        "imposto_renda": round(sum(float(r.imposto_renda or 0) for r in registros), 2),
+        "iof": round(sum(float(r.iof or 0) for r in registros), 2),
         "impostos": round(sum(float(r.impostos or 0) for r in registros), 2),
+        "rendimento_liquido": round(sum(float(r.rendimento_liquido or 0) for r in registros), 2),
         "resgate": round(sum(float(r.resgate or 0) for r in registros), 2),
         "saldo_atual": round(sum(float(r.saldo_atual or 0) for r in registros), 2),
     }
@@ -1998,6 +2888,118 @@ def resumo_aplicacoes_financeiras(
     }
 
 
+@app.post("/api/aplicacoes-financeiras/importar-pdf-preview", response_model=schemas.AplicacaoFinanceiraImportPreview)
+async def preview_import_aplicacao_financeira_pdf(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    nome_arquivo = (file.filename or "").strip()
+    if not nome_arquivo.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Envie um arquivo PDF válido")
+
+    temp_upload = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            temp_upload = Path(tmp.name)
+            tmp.write(await file.read())
+
+        texto_pdf = _extrair_texto_pdf_investimento(temp_upload)
+        return _extrair_dados_pdf_investimento(texto_pdf, nome_arquivo, db)
+    finally:
+        if temp_upload and temp_upload.exists():
+            temp_upload.unlink(missing_ok=True)
+        await file.close()
+
+
+@app.post("/api/aplicacoes-financeiras/importar-pdf-confirmar", response_model=schemas.AplicacaoFinanceiraResponse)
+def confirm_import_aplicacao_financeira_pdf(
+    req: schemas.AplicacaoFinanceiraImportConfirmRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    existing = _find_existing_aplicacao_importada(
+        db,
+        mes_referencia=req.mes_referencia,
+        instituicao=f"%{(req.instituicao or '').strip()}%",
+        produto=(req.produto or '').strip() or "%",
+        conta_origem=req.conta_origem,
+        arquivo_origem=req.arquivo_origem,
+    )
+
+    if existing and not req.existing_id:
+        req.existing_id = existing.id
+
+    if existing and req.existing_id and existing.id != req.existing_id:
+        req.existing_id = existing.id
+
+    impostos = _calc_impostos_aplicacao(req.imposto_renda, req.iof, req.impostos)
+    rendimento_liquido = _calc_rendimento_liquido_aplicacao(req.rendimento_bruto, impostos, req.rendimento_liquido)
+    saldo_atual = req.saldo_atual
+    if saldo_atual is None:
+        saldo_atual = _calc_saldo_atual_aplicacao(
+            req.saldo_anterior,
+            req.aplicacoes,
+            req.rendimento_bruto,
+            impostos,
+            req.resgate
+        )
+
+    registro = None
+    if req.existing_id:
+        registro = db.query(models.AplicacaoFinanceira).filter(models.AplicacaoFinanceira.id == req.existing_id).first()
+
+    if registro:
+        registro.user_id = current_user.id
+        registro.mes_referencia = req.mes_referencia
+        registro.data_aplicacao = req.data_aplicacao
+        registro.instituicao = (req.instituicao or "").strip()
+        registro.produto = (req.produto or "").strip()
+        registro.origem_registro = req.origem_registro or registro.origem_registro or "manual"
+        registro.conta_origem = req.conta_origem
+        registro.arquivo_origem = req.arquivo_origem
+        registro.saldo_anterior = float(req.saldo_anterior or 0)
+        registro.aplicacoes = float(req.aplicacoes or 0)
+        registro.rendimento_bruto = float(req.rendimento_bruto or 0)
+        registro.imposto_renda = float(req.imposto_renda or 0)
+        registro.iof = float(req.iof or 0)
+        registro.impostos = float(impostos or 0)
+        registro.rendimento_liquido = float(rendimento_liquido or 0)
+        registro.resgate = float(req.resgate or 0)
+        registro.saldo_atual = float(saldo_atual or 0)
+        registro.observacoes = req.observacoes
+        registro.updated_at = datetime.utcnow()
+    else:
+        registro = models.AplicacaoFinanceira(
+            id=str(uuid.uuid4()),
+            user_id=current_user.id,
+            mes_referencia=req.mes_referencia,
+            data_aplicacao=req.data_aplicacao,
+            instituicao=(req.instituicao or "").strip(),
+            produto=(req.produto or "").strip(),
+            origem_registro=req.origem_registro or "manual",
+            conta_origem=req.conta_origem,
+            arquivo_origem=req.arquivo_origem,
+            saldo_anterior=float(req.saldo_anterior or 0),
+            aplicacoes=float(req.aplicacoes or 0),
+            rendimento_bruto=float(req.rendimento_bruto or 0),
+            imposto_renda=float(req.imposto_renda or 0),
+            iof=float(req.iof or 0),
+            impostos=float(impostos or 0),
+            rendimento_liquido=float(rendimento_liquido or 0),
+            resgate=float(req.resgate or 0),
+            saldo_atual=float(saldo_atual or 0),
+            observacoes=req.observacoes,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
+        )
+        db.add(registro)
+
+    db.commit()
+    db.refresh(registro)
+    return registro
+
+
 @app.post("/api/aplicacoes-financeiras", response_model=schemas.AplicacaoFinanceiraResponse)
 def create_aplicacao_financeira(
     req: schemas.AplicacaoFinanceiraCreate,
@@ -2005,23 +3007,32 @@ def create_aplicacao_financeira(
     current_user=Depends(get_current_user)
 ):
     mes_ref = req.mes_referencia or date.today().strftime("%Y-%m")
+    impostos = _calc_impostos_aplicacao(req.imposto_renda, req.iof, req.impostos)
+    rendimento_liquido = _calc_rendimento_liquido_aplicacao(req.rendimento_bruto, impostos, req.rendimento_liquido)
     saldo_atual = _calc_saldo_atual_aplicacao(
         req.saldo_anterior,
         req.aplicacoes,
         req.rendimento_bruto,
-        req.impostos,
+        impostos,
         req.resgate
     )
     registro = models.AplicacaoFinanceira(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
         mes_referencia=mes_ref,
+        data_aplicacao=req.data_aplicacao,
         instituicao=(req.instituicao or "").strip(),
         produto=(req.produto or "").strip(),
+        origem_registro=req.origem_registro or "manual",
+        conta_origem=req.conta_origem,
+        arquivo_origem=req.arquivo_origem,
         saldo_anterior=float(req.saldo_anterior or 0),
         aplicacoes=float(req.aplicacoes or 0),
         rendimento_bruto=float(req.rendimento_bruto or 0),
-        impostos=float(req.impostos or 0),
+        imposto_renda=float(req.imposto_renda or 0),
+        iof=float(req.iof or 0),
+        impostos=float(impostos or 0),
+        rendimento_liquido=float(rendimento_liquido or 0),
         resgate=float(req.resgate or 0),
         saldo_atual=saldo_atual,
         observacoes=req.observacoes,
@@ -2050,6 +3061,12 @@ def update_aplicacao_financeira(
             v = v.strip()
         setattr(registro, k, v)
 
+    registro.impostos = _calc_impostos_aplicacao(registro.imposto_renda, registro.iof, registro.impostos)
+    registro.rendimento_liquido = _calc_rendimento_liquido_aplicacao(
+        registro.rendimento_bruto,
+        registro.impostos,
+        registro.rendimento_liquido
+    )
     registro.saldo_atual = _calc_saldo_atual_aplicacao(
         registro.saldo_anterior,
         registro.aplicacoes,
@@ -3343,6 +4360,98 @@ def resumo_conciliacao(
     }
 
 
+def _montar_observacao_conciliacao_lancada(
+    conciliacao: models.Conciliacao,
+    observacoes_existentes: Optional[str],
+    observacoes_formulario: Optional[str],
+    tipo_lancamento: str,
+) -> str:
+    partes = []
+    texto_existente = (observacoes_existentes or "").strip()
+    if texto_existente:
+        partes.append(texto_existente)
+
+    marcador = (
+        f"Lancado via conciliacao bancaria em {conciliacao.data_extrato.strftime('%d/%m/%Y')}"
+        if conciliacao.data_extrato else
+        "Lancado via conciliacao bancaria"
+    )
+    partes.append(f"{marcador} ({tipo_lancamento})")
+
+    texto_formulario = (observacoes_formulario or "").strip()
+    if texto_formulario:
+        partes.append(texto_formulario)
+
+    return "\n".join(partes)
+
+
+def _get_conciliacao_or_404(db: Session, conc_id: str) -> models.Conciliacao:
+    conciliacao = db.query(models.Conciliacao).filter(models.Conciliacao.id == conc_id).first()
+    if not conciliacao:
+        raise HTTPException(status_code=404, detail="Lançamento não encontrado")
+    return conciliacao
+
+
+def _normalizar_nome_busca_mensalidade(valor: Optional[str]) -> str:
+    texto = unicodedata.normalize("NFKD", (valor or "")).encode("ascii", "ignore").decode().upper()
+    texto = re.sub(r"^\s*\d{2}/\d{2}(?:/\d{2,4})?\s+\d{2}:\d{2}\s*", "", texto)
+    texto = re.sub(r"^\s*\d+\s*", "", texto)
+    texto = re.sub(r"[^A-Z\s]", " ", texto)
+    texto = re.sub(r"\s+", " ", texto).strip()
+    return texto
+
+
+def _tokens_nome_busca_mensalidade(valor: Optional[str]) -> list[str]:
+    ignorar = {"DA", "DE", "DI", "DO", "DOS", "DAS", "E"}
+    tokens = []
+    for token in _normalizar_nome_busca_mensalidade(valor).split():
+        if len(token) <= 1 or token in ignorar:
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def _sugerir_membros_para_conciliacao_credito(db: Session, conciliacao: models.Conciliacao) -> dict:
+    tokens = _tokens_nome_busca_mensalidade(conciliacao.descricao_extrato)
+    termo_busca = " ".join(tokens[:3]).strip()
+    valor_conc = float(conciliacao.valor_extrato or 0)
+    if not tokens:
+        return {"termo_busca": "", "membros": []}
+
+    membros = db.query(models.Membro).filter(models.Membro.status == "ativo").all()
+    candidatos = []
+
+    for membro in membros:
+        nome_norm = _normalizar_nome_busca_mensalidade(membro.nome_completo)
+        hits = sum(1 for token in tokens if token in nome_norm)
+        if hits == 0:
+            continue
+
+        pagamentos = db.query(models.Pagamento).filter(
+            models.Pagamento.membro_id == membro.id,
+            models.Pagamento.status_pagamento.in_(["pendente", "atrasado"])
+        ).order_by(models.Pagamento.mes_referencia.asc()).all()
+
+        menor_diferenca = min(
+            [abs(valor_conc - float(p.valor_pago or 0)) for p in pagamentos] or [0.0]
+        )
+        score = (hits * 100) - menor_diferenca
+        candidatos.append({
+            "membro_id": membro.id,
+            "nome": membro.nome_completo,
+            "email": membro.email,
+            "cpf": membro.cpf,
+            "quantidade_pendente": len(pagamentos) or 1,
+            "total_pendente": round(sum(float(p.valor_pago or 0) for p in pagamentos), 2) or round(valor_conc, 2),
+            "menor_diferenca": round(menor_diferenca, 2),
+            "score": round(score, 2),
+            "hits_nome": hits,
+        })
+
+    candidatos.sort(key=lambda item: (-item["score"], item["menor_diferenca"], item["nome"] or ""))
+    return {"termo_busca": termo_busca, "membros": candidatos[:10]}
+
+
 @app.post("/api/conciliacao", response_model=schemas.ConciliacaoResponse)
 def create_conciliacao(
     req: schemas.ConciliacaoCreate,
@@ -3380,21 +4489,19 @@ def buscar_membros_com_pagamentos(
 
         resultado = []
         for membro in query:
-            # Busca pagamentos pendentes/atrasados
             pagamentos_pendentes = db.query(models.Pagamento).filter(
                 models.Pagamento.membro_id == membro.id,
                 models.Pagamento.status_pagamento.in_(["pendente", "atrasado"])
             ).all()
 
-            if pagamentos_pendentes:
-                resultado.append({
-                    "membro_id": membro.id,
-                    "nome": membro.nome_completo,
-                    "email": membro.email,
-                    "cpf": membro.cpf,
-                    "total_pendente": sum(float(p.valor_pago or 0) for p in pagamentos_pendentes),
-                    "quantidade_pendente": len(pagamentos_pendentes)
-                })
+            resultado.append({
+                "membro_id": membro.id,
+                "nome": membro.nome_completo,
+                "email": membro.email,
+                "cpf": membro.cpf,
+                "total_pendente": sum(float(p.valor_pago or 0) for p in pagamentos_pendentes) or float(membro.valor_mensalidade or 0),
+                "quantidade_pendente": len(pagamentos_pendentes) or 1
+            })
 
         return resultado[:20]  # Limita a 20 resultados
     except Exception as e:
@@ -3404,6 +4511,8 @@ def buscar_membros_com_pagamentos(
 @app.get("/api/conciliacao/membro/{membro_id}/pagamentos-pendentes")
 def listar_pagamentos_pendentes_membro(
     membro_id: str,
+    mes_referencia: Optional[str] = None,
+    valor: Optional[float] = None,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
@@ -3418,20 +4527,32 @@ def listar_pagamentos_pendentes_membro(
             models.Pagamento.status_pagamento.in_(["pendente", "atrasado"])
         ).order_by(models.Pagamento.mes_referencia.asc()).all()
 
+        pagamentos_payload = [
+            {
+                "pagamento_id": p.id,
+                "mes": p.mes_referencia,
+                "valor": float(p.valor_pago or 0),
+                "status": p.status_pagamento,
+                "data_previsto": str(p.data_pagamento) if p.data_pagamento else None
+            }
+            for p in pagamentos
+        ]
+
+        if not pagamentos_payload and mes_referencia:
+            pagamentos_payload.append({
+                "pagamento_id": None,
+                "mes": mes_referencia,
+                "valor": float(valor if valor is not None else (membro.valor_mensalidade or 0)),
+                "status": "nao_gerado",
+                "data_previsto": None,
+                "membro_id": membro.id,
+            })
+
         return {
             "membro_id": membro.id,
             "nome": membro.nome_completo,
             "email": membro.email,
-            "pagamentos": [
-                {
-                    "pagamento_id": p.id,
-                    "mes": p.mes_referencia,
-                    "valor": float(p.valor_pago or 0),
-                    "status": p.status_pagamento,
-                    "data_previsto": str(p.data_pagamento) if p.data_pagamento else None
-                }
-                for p in pagamentos
-            ]
+            "pagamentos": pagamentos_payload
         }
     except HTTPException:
         raise
@@ -3440,6 +4561,18 @@ def listar_pagamentos_pendentes_membro(
 
 
 # ⭐ ENDPOINTS COM PARÂMETRO {conc_id}
+@app.get("/api/conciliacao/{conc_id}/sugestoes-mensalidade")
+def sugerir_membros_para_mensalidade(
+    conc_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    conciliacao = _get_conciliacao_or_404(db, conc_id)
+    if conciliacao.tipo != "credito":
+        return {"termo_busca": "", "membros": []}
+    return _sugerir_membros_para_conciliacao_credito(db, conciliacao)
+
+
 @app.get("/api/conciliacao/{conc_id}/sugestoes")
 def sugerir_matching_pagamentos(
     conc_id: str,
@@ -3493,26 +4626,202 @@ def reconciliar_pagamento(
     if not c:
         raise HTTPException(status_code=404, detail="Lançamento não encontrado")
 
-    if not req.pagamento_id:
-        raise HTTPException(status_code=400, detail="pagamento_id obrigatório")
+    if req.pagamento_id:
+        pag = db.query(models.Pagamento).filter(models.Pagamento.id == req.pagamento_id).first()
+        if not pag:
+            raise HTTPException(status_code=404, detail="Pagamento não encontrado")
 
-    pag = db.query(models.Pagamento).filter(models.Pagamento.id == req.pagamento_id).first()
-    if not pag:
-        raise HTTPException(status_code=404, detail="Pagamento não encontrado")
+        # Vincula e marca como conciliado
+        c.pagamento_id = req.pagamento_id
+        c.conciliado = True
+        c.updated_at = datetime.utcnow()
 
-    # Vincula e marca como conciliado
-    c.pagamento_id = req.pagamento_id
-    c.conciliado = True
-    c.updated_at = datetime.utcnow()
-
-    # Atualiza pagamento
-    pag.status_pagamento = "pago"
-    pag.data_pagamento = c.data_extrato
-    pag.forma_pagamento = "transferencia"
-    pag.updated_at = datetime.utcnow()
+        # Atualiza pagamento
+        pag.status_pagamento = "pago"
+        pag.data_pagamento = c.data_extrato
+        pag.forma_pagamento = "transferencia"
+        pag.updated_at = datetime.utcnow()
+    elif req.membro_id:
+        membro = db.query(models.Membro).filter(models.Membro.id == req.membro_id).first()
+        if not membro:
+            raise HTTPException(status_code=404, detail="Membro não encontrado")
+        _baixar_pagamento_mensalidade_por_conciliacao(
+            db=db,
+            conciliacao=c,
+            membro=membro,
+            user_id=current_user.id,
+            observacao_origem="Baixa manual via conciliação OFX",
+        )
+    else:
+        raise HTTPException(status_code=400, detail="pagamento_id ou membro_id obrigatório")
 
     db.commit()
     return {"ok": True, "detail": "Pagamento reconciliado com sucesso"}
+
+
+@app.post("/api/conciliacao/{conc_id}/lancar-despesa", response_model=schemas.ConciliacaoResponse)
+def lancar_conciliacao_em_despesa(
+    conc_id: str,
+    req: schemas.ConciliacaoLancarDespesaRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    conciliacao = _get_conciliacao_or_404(db, conc_id)
+    if conciliacao.tipo != "debito":
+        raise HTTPException(status_code=400, detail="Apenas lançamentos de débito podem ser enviados para despesas")
+    if conciliacao.despesa_id:
+        raise HTTPException(status_code=400, detail="Este lançamento já foi enviado para despesas")
+
+    conta = _get_conta_or_400(db, req.conta_id, "saida")
+    categoria = (req.categoria or conta.nome or "Outros").strip()
+    mes_ref = conciliacao.mes_referencia or (
+        conciliacao.data_extrato.strftime("%Y-%m") if conciliacao.data_extrato else date.today().strftime("%Y-%m")
+    )
+    observacoes = _montar_observacao_conciliacao_lancada(
+        conciliacao,
+        conciliacao.observacoes,
+        req.observacoes,
+        "despesa",
+    )
+
+    despesa = models.Despesa(
+        id=str(uuid.uuid4()),
+        user_id=current_user.id,
+        descricao=(conciliacao.descricao_extrato or "Despesa importada do extrato").strip(),
+        categoria=categoria,
+        conta_id=conta.id,
+        conta_codigo=conta.codigo,
+        conta_nome=conta.nome,
+        valor=float(conciliacao.valor_extrato or 0),
+        data_despesa=conciliacao.data_extrato or date.today(),
+        mes_referencia=mes_ref,
+        forma_pagamento=(req.forma_pagamento or "extrato_bancario").strip() or "extrato_bancario",
+        fornecedor=(req.fornecedor or "").strip() or None,
+        nota_fiscal=(req.nota_fiscal or "").strip() or None,
+        observacoes=observacoes,
+        created_at=datetime.utcnow(),
+    )
+    db.add(despesa)
+    db.flush()
+    _sync_transacao_despesa(db, despesa, current_user.id)
+
+    conciliacao.despesa_id = despesa.id
+    conciliacao.conciliado = True
+    conciliacao.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(conciliacao)
+    return conciliacao
+
+
+@app.post("/api/conciliacao/{conc_id}/lancar-receita", response_model=schemas.ConciliacaoResponse)
+def lancar_conciliacao_em_receita(
+    conc_id: str,
+    req: schemas.ConciliacaoLancarReceitaRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    conciliacao = _get_conciliacao_or_404(db, conc_id)
+    if conciliacao.tipo != "credito":
+        raise HTTPException(status_code=400, detail="Apenas lançamentos de crédito podem ser enviados para receitas")
+    if conciliacao.outra_renda_id:
+        raise HTTPException(status_code=400, detail="Este lançamento já foi enviado para receitas")
+    if conciliacao.pagamento_id:
+        raise HTTPException(status_code=400, detail="Este crédito já está vinculado a uma mensalidade")
+
+    conta = _get_conta_or_400(db, req.conta_id, "entrada")
+    categoria = (req.categoria or conta.nome or "Outros").strip()
+    mes_ref = conciliacao.mes_referencia or (
+        conciliacao.data_extrato.strftime("%Y-%m") if conciliacao.data_extrato else date.today().strftime("%Y-%m")
+    )
+    observacoes = _montar_observacao_conciliacao_lancada(
+        conciliacao,
+        conciliacao.observacoes,
+        req.observacoes,
+        "receita",
+    )
+
+    renda = models.OutraRenda(
+        id=str(uuid.uuid4()),
+        user_id=current_user.id,
+        descricao=(conciliacao.descricao_extrato or "Receita importada do extrato").strip(),
+        categoria=categoria,
+        conta_id=conta.id,
+        conta_codigo=conta.codigo,
+        conta_nome=conta.nome,
+        valor=float(conciliacao.valor_extrato or 0),
+        data_recebimento=conciliacao.data_extrato or date.today(),
+        mes_referencia=mes_ref,
+        fonte=(req.fonte or conciliacao.banco or "Extrato bancario").strip(),
+        observacoes=observacoes,
+        created_at=datetime.utcnow(),
+    )
+    db.add(renda)
+    db.flush()
+    _sync_transacao_outra_renda(db, renda, current_user.id)
+
+    conciliacao.outra_renda_id = renda.id
+    conciliacao.conciliado = True
+    conciliacao.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(conciliacao)
+    return conciliacao
+
+
+@app.post("/api/conciliacao/processar-ofx/{mes_referencia}")
+def processar_conciliacao_ofx_mes(
+    mes_referencia: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    conciliacoes = db.query(models.Conciliacao).filter(
+        models.Conciliacao.mes_referencia == mes_referencia
+    ).order_by(models.Conciliacao.data_extrato.asc(), models.Conciliacao.created_at.asc()).all()
+
+    total_creditos_baixados = 0
+    total_debitos_lancados = 0
+    creditos_sem_match = 0
+    debitos_sem_conta = 0
+
+    for conciliacao in conciliacoes:
+        if conciliacao.tipo == "credito" and not conciliacao.pagamento_id and _descricao_credito_parece_mensalidade_ofx(conciliacao.descricao_extrato):
+            membro = _escolher_membro_para_credito_ofx(db, conciliacao)
+            if membro:
+                _baixar_pagamento_mensalidade_por_conciliacao(
+                    db=db,
+                    conciliacao=conciliacao,
+                    membro=membro,
+                    user_id=current_user.id,
+                    observacao_origem=f"Baixa automática via processamento OFX ({mes_referencia})",
+                )
+                total_creditos_baixados += 1
+            else:
+                creditos_sem_match += 1
+
+        if conciliacao.tipo == "debito" and not conciliacao.despesa_id:
+            conta = _inferir_conta_despesa_ofx(db, conciliacao.descricao_extrato)
+            if conta:
+                _lancar_despesa_por_conciliacao(
+                    db=db,
+                    conciliacao=conciliacao,
+                    conta=conta,
+                    current_user=current_user,
+                    fornecedor=conciliacao.descricao_extrato,
+                    forma_pagamento="extrato_bancario",
+                    observacoes_extra=f"Lançamento automático via processamento OFX ({mes_referencia})",
+                )
+                total_debitos_lancados += 1
+            else:
+                debitos_sem_conta += 1
+
+    db.commit()
+    return {
+        "ok": True,
+        "mes_referencia": mes_referencia,
+        "total_creditos_baixados": total_creditos_baixados,
+        "total_debitos_lancados": total_debitos_lancados,
+        "creditos_sem_match": creditos_sem_match,
+        "debitos_sem_conta": debitos_sem_conta,
+    }
 
 
 @app.put("/api/conciliacao/{conc_id}", response_model=schemas.ConciliacaoResponse)
@@ -3617,6 +4926,37 @@ def _parse_data_extrato(data_raw: str) -> date:
     raise ValueError("DATA invalida")
 
 
+def _extrair_data_valida_yyyymmdd(valor_raw: str) -> Optional[date]:
+    candidatos = re.findall(r"20\d{6}", valor_raw or "")
+    for candidato in candidatos:
+        try:
+            return datetime.strptime(candidato, "%Y%m%d").date()
+        except ValueError:
+            continue
+    return None
+
+
+def _extrair_data_header_dabb(texto: str) -> Optional[date]:
+    for raw_line in (texto or "").splitlines():
+        line = raw_line.rstrip("\r\n").lstrip("\ufeff ").rstrip()
+        if not line.startswith("A"):
+            continue
+
+        # Tenta primeiro datas YYYYMMDD do cabeçalho.
+        data_header = _extrair_data_valida_yyyymmdd(line)
+        if data_header:
+            return data_header
+
+        # Fallback para DDMMAAAA caso o banco use outro layout.
+        candidatos = re.findall(r"\d{8}", line)
+        for candidato in candidatos:
+            try:
+                return datetime.strptime(candidato, "%d%m%Y").date()
+            except ValueError:
+                continue
+    return None
+
+
 def _normalizar_header_csv(valor: str) -> str:
     norm = unicodedata.normalize("NFKD", (valor or "")).encode("ascii", "ignore").decode().lower().strip()
     norm = re.sub(r"\s+", " ", norm)
@@ -3678,6 +5018,14 @@ def _buscar_duplicado_conciliacao(
         models.Conciliacao.tipo == tipo_norm,
     )
 
+    # Para DABB, o mesmo recebimento pode aparecer em REM e RET com numero_documento
+    # diferente. Nesse caso a chave prática é descrição + data + valor + tipo + banco.
+    if descricao_norm.startswith("mensalidade dabb "):
+        candidatos_dabb = q.all()
+        for cand in candidatos_dabb:
+            if _normalizar_texto_chave(cand.descricao_extrato) == descricao_norm:
+                return cand
+
     if numero_doc_norm:
         return q.filter(models.Conciliacao.numero_documento == numero_doc_norm).first()
 
@@ -3722,6 +5070,397 @@ def _decode_uploaded_text(contents: bytes) -> str:
     return contents.decode("utf-8", errors="ignore")
 
 
+def _normalizar_codigo_dabb(valor: Optional[str]) -> str:
+    return re.sub(r"\D", "", (valor or "").strip())
+
+
+def _variantes_codigo_dabb(valor: Optional[str]) -> set[str]:
+    codigo = _normalizar_codigo_dabb(valor)
+    if not codigo:
+        return set()
+    sem_zeros = codigo.lstrip("0")
+    variantes = {codigo}
+    if sem_zeros:
+        variantes.add(sem_zeros)
+    return variantes
+
+
+def _extrair_codigo_dabb_das_observacoes(observacoes: Optional[str]) -> str:
+    texto = observacoes or ""
+    match = re.search(r"codigo_dabb=(\d+)", texto)
+    return _normalizar_codigo_dabb(match.group(1) if match else "")
+
+
+def _indexar_membros_por_codigo_dabb(db: Session) -> dict[str, list[models.Membro]]:
+    indice = defaultdict(list)
+    membros = db.query(models.Membro).filter(
+        models.Membro.status == "ativo",
+        models.Membro.codigo_dabb.isnot(None),
+        models.Membro.codigo_dabb != ""
+    ).all()
+    for membro in membros:
+        for variante in _variantes_codigo_dabb(membro.codigo_dabb):
+            indice[variante].append(membro)
+    return indice
+
+
+def _parse_valor_dabb(valor_raw: str) -> float:
+    digits = re.sub(r"\D", "", (valor_raw or "").strip())
+    if not digits:
+        raise ValueError("VALOR DABB invalido")
+    # Layout bancario costuma enviar 3 casas implicitas.
+    return round(int(digits) / 1000, 2)
+
+
+def _extrair_codigo_barras_dabb(payload: str, data_tx: date) -> Optional[str]:
+    payload = re.sub(r"\D", "", (payload or "").strip())
+    if not payload:
+        return None
+
+    data_token = data_tx.strftime("%Y%m%d")
+    data_idx = payload.find(data_token)
+    if data_idx <= 0:
+        return None
+
+    codigo_barras = payload[:data_idx]
+    return codigo_barras or None
+
+
+def _iterar_transacoes_dabb(texto: str):
+    for raw_line in texto.splitlines():
+        line = raw_line.rstrip("\r\n")
+        line_normalized = line.lstrip("\ufeff ").rstrip()
+        if not line_normalized or line_normalized[:1] not in {"E", "F"}:
+            continue
+
+        match = re.match(r"^(?P<tipo_registro>[EF])(?P<codigo>\d{8,20})\s+(?P<payload>\d+)\s*(?P<status>\d)?$", line_normalized)
+        if not match:
+            continue
+
+        codigo_dabb = _normalizar_codigo_dabb(match.group("codigo"))
+        payload = match.group("payload") or ""
+        data_tx = _extrair_data_dabb_payload(payload)
+        if not codigo_dabb or not data_tx:
+            continue
+
+        codigo_barras = _extrair_codigo_barras_dabb(payload, data_tx)
+        data_token = data_tx.strftime("%Y%m%d")
+        data_idx = payload.find(data_token)
+        if data_idx < 0:
+            continue
+
+        depois_data = payload[data_idx + len(data_token):]
+        # Nos arquivos DABB de mensalidade, o valor vem logo após a data
+        # com 16 dígitos implícitos e 3 casas decimais: 0000000000067000 -> 67,00.
+        if len(depois_data) < 16:
+            continue
+
+        valor_tx = _parse_valor_dabb(depois_data[:16])
+        numero_documento = depois_data[16:] or None
+
+        yield {
+            "data": data_tx,
+            "valor": valor_tx,
+            "tipo": "credito",
+            "descricao": f"Mensalidade DABB {codigo_dabb}",
+            "numero_documento": numero_documento,
+            "codigo_dabb": codigo_dabb,
+            "codigo_barras": codigo_barras,
+            "linha_original": line_normalized,
+            "tipo_registro": match.group("tipo_registro"),
+        }
+
+
+def _extrair_data_dabb_payload(payload: str, data_fallback: Optional[date] = None) -> Optional[date]:
+    # No layout observado, a data costuma iniciar na posição 18 do payload.
+    if len(payload) >= 26:
+        candidato_fixo = payload[18:26]
+        for formato in ("%Y%m%d", "%d%m%Y"):
+            try:
+                return datetime.strptime(candidato_fixo, formato).date()
+            except ValueError:
+                continue
+
+    candidatos = []
+
+    candidatos.extend(re.findall(r"20\d{6}", payload or ""))
+
+    # Alguns arquivos podem trazer DDMMAAAA.
+    candidatos.extend(re.findall(r"\d{8}", payload or ""))
+
+    vistos = set()
+    for candidato in candidatos:
+        if candidato in vistos:
+            continue
+        vistos.add(candidato)
+        for formato in ("%Y%m%d", "%d%m%Y"):
+            try:
+                return datetime.strptime(candidato, formato).date()
+            except ValueError:
+                continue
+
+    return data_fallback
+
+
+def _parse_linha_dabb(line: str, data_fallback: Optional[date] = None) -> dict:
+    line_normalized = (line or "").rstrip("\r\n").lstrip("\ufeff ").rstrip()
+    if not line_normalized or line_normalized[:1] not in {"E", "F"}:
+        raise ValueError("registro_nao_detalhe")
+
+    match = re.match(r"^(?P<tipo_registro>[EF])(?P<codigo>\d{8,20})\s+(?P<payload>\d+)\s*(?P<status>\d)?$", line_normalized)
+    if not match:
+        raise ValueError("layout_invalido")
+
+    codigo_dabb = _normalizar_codigo_dabb(match.group("codigo"))
+    if not codigo_dabb:
+        raise ValueError("codigo_dabb_invalido")
+
+    payload = match.group("payload") or ""
+    data_tx = _extrair_data_dabb_payload(payload, data_fallback=data_fallback)
+    if not data_tx:
+        raise ValueError("data_invalida")
+
+    codigo_barras = _extrair_codigo_barras_dabb(payload, data_tx)
+    data_token = data_tx.strftime("%Y%m%d")
+    data_idx = payload.find(data_token)
+    if data_idx < 0:
+        raise ValueError("data_nao_localizada")
+
+    depois_data = payload[data_idx + len(data_token):]
+    if len(depois_data) < 16:
+        raise ValueError("valor_invalido")
+
+    valor_tx = _parse_valor_dabb(depois_data[:16])
+    numero_documento = depois_data[16:] or None
+
+    return {
+        "data": data_tx,
+        "valor": valor_tx,
+        "tipo": "credito",
+        "descricao": f"Mensalidade DABB {codigo_dabb}",
+        "numero_documento": numero_documento,
+        "codigo_dabb": codigo_dabb,
+        "codigo_barras": codigo_barras,
+        "linha_original": line_normalized,
+        "tipo_registro": match.group("tipo_registro"),
+    }
+
+
+def _iterar_transacoes_pdf_bb(texto: str):
+    blocos = [
+        bloco for bloco in re.split(r"(?=Nome[. ]*:)", texto or "")
+        if bloco.strip().startswith("Nome")
+    ]
+
+    for bloco in blocos:
+        nome_match = re.search(r"Nome[. ]*:\s*(.*)", bloco, flags=re.IGNORECASE)
+        codigo_match = re.search(
+            r"Identifica(?:ç|c)ão P/d[ée]bito:\s*(\d+)",
+            bloco,
+            flags=re.IGNORECASE,
+        )
+        banco_match = re.search(r"Banco[. ]*:\s*(.*)", bloco, flags=re.IGNORECASE)
+        data_valor_match = re.search(
+            r"Data[. ]*:\s*(\d{2}/\d{2}/\d{4})\s+Valor:\s*([\d.,]+)",
+            bloco,
+            flags=re.IGNORECASE,
+        )
+
+        codigo_dabb = _normalizar_codigo_dabb(codigo_match.group(1) if codigo_match else None)
+        data_raw = (data_valor_match.group(1) if data_valor_match else "").strip()
+        valor_raw = (data_valor_match.group(2) if data_valor_match else "").strip()
+
+        try:
+            data_tx = datetime.strptime(data_raw, "%d/%m/%Y").date()
+            valor_tx = _parse_valor_extrato(valor_raw)
+        except Exception:
+            data_tx = None
+            valor_tx = None
+
+        yield {
+            "data": data_tx,
+            "valor": abs(float(valor_tx or 0)) if valor_tx is not None else None,
+            "tipo": "credito",
+            "descricao": f"Mensalidade DABB {codigo_dabb}" if codigo_dabb else "Mensalidade DABB",
+            "numero_documento": None,
+            "codigo_dabb": codigo_dabb,
+            "nome": (nome_match.group(1) if nome_match else "").strip(),
+            "banco_linha": (banco_match.group(1) if banco_match else "").strip(),
+            "bloco_original": bloco,
+            "tipo_registro": "PDF",
+        }
+
+
+def _baixar_pagamento_mensalidade_por_conciliacao(
+    db: Session,
+    conciliacao: models.Conciliacao,
+    membro: models.Membro,
+    user_id: str,
+    observacao_origem: str,
+):
+    mes_ref = conciliacao.mes_referencia or (
+        conciliacao.data_extrato.strftime("%Y-%m") if conciliacao.data_extrato else None
+    )
+    if not mes_ref:
+        raise ValueError("Mes de referencia nao identificado para a conciliacao")
+
+    pagamento = db.query(models.Pagamento).filter(
+        models.Pagamento.membro_id == membro.id,
+        models.Pagamento.mes_referencia == mes_ref
+    ).first()
+
+    observacao = observacao_origem.strip()
+    if pagamento:
+        pagamento.valor_pago = float(conciliacao.valor_extrato or 0)
+        pagamento.status_pagamento = "pago"
+        pagamento.data_pagamento = conciliacao.data_extrato
+        pagamento.forma_pagamento = "debito_automatico"
+        pagamento.observacoes = (
+            (pagamento.observacoes + "\n") if pagamento.observacoes else ""
+        ) + observacao
+        pagamento.updated_at = datetime.utcnow()
+    else:
+        pagamento = models.Pagamento(
+            id=str(uuid.uuid4()),
+            membro_id=membro.id,
+            valor_pago=float(conciliacao.valor_extrato or 0),
+            mes_referencia=mes_ref,
+            data_pagamento=conciliacao.data_extrato,
+            status_pagamento="pago",
+            forma_pagamento="debito_automatico",
+            observacoes=observacao,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
+        )
+        db.add(pagamento)
+        db.flush()
+
+    conciliacao.pagamento_id = pagamento.id
+    conciliacao.conciliado = True
+    conciliacao.updated_at = datetime.utcnow()
+
+    _register_transaction(db, pagamento, user_id)
+    return pagamento
+
+
+def _descricao_credito_parece_mensalidade_ofx(descricao: Optional[str]) -> bool:
+    texto = _normalizar_texto_chave(descricao)
+    if not texto:
+        return False
+
+    bloqueios = [
+        "bb rf",
+        "empresa agil",
+        "resgate",
+        "aplicacao",
+        "invest",
+        "cdb",
+        "rendimento",
+        "estorno",
+        "tarifa",
+        "juros",
+    ]
+    if any(item in texto for item in bloqueios):
+        return False
+
+    return len(_tokens_nome_busca_mensalidade(descricao)) >= 2
+
+
+def _escolher_membro_para_credito_ofx(db: Session, conciliacao: models.Conciliacao) -> Optional[models.Membro]:
+    sugestoes = _sugerir_membros_para_conciliacao_credito(db, conciliacao).get("membros", [])
+    if not sugestoes:
+        return None
+
+    melhor = sugestoes[0]
+    segundo = sugestoes[1] if len(sugestoes) > 1 else None
+    score_gap = (melhor.get("score") or 0) - ((segundo or {}).get("score") or 0)
+
+    if melhor.get("hits_nome", 0) < 2:
+        return None
+    if melhor.get("menor_diferenca", 9999) > 0.5:
+        return None
+    if segundo and score_gap < 80:
+        return None
+
+    return db.query(models.Membro).filter(models.Membro.id == melhor["membro_id"]).first()
+
+
+def _conta_por_codigo(db: Session, codigo: str, tipo: str) -> Optional[models.PlanoConta]:
+    codigo_norm = _normalizar_codigo_conta_seed(codigo)
+    tipo_norm = _validar_tipo_conta(tipo)
+    return db.query(models.PlanoConta).filter(
+        models.PlanoConta.codigo == codigo_norm,
+        models.PlanoConta.tipo == tipo_norm
+    ).first()
+
+
+def _inferir_conta_despesa_ofx(db: Session, descricao: Optional[str]) -> Optional[models.PlanoConta]:
+    texto = _normalizar_texto_chave(descricao)
+    mapa = [
+        (["cpfl", "energia"], "2.21"),
+        (["dae", "agua"], "2.22"),
+        (["vivo", "telefone", "internet", "claro", "tim", "oi"], "2.24"),
+        (["cobranca referente", "tarifa", "estorno solucao imediata", "solucao imediata", "iof", "juros", "taxa bancaria"], "2.23"),
+    ]
+    for termos, codigo in mapa:
+        if any(termo in texto for termo in termos):
+            conta = _conta_por_codigo(db, codigo, "saida")
+            if conta:
+                return conta
+    return None
+
+
+def _lancar_despesa_por_conciliacao(
+    db: Session,
+    conciliacao: models.Conciliacao,
+    conta: models.PlanoConta,
+    current_user: models.User,
+    fornecedor: Optional[str] = None,
+    forma_pagamento: Optional[str] = "extrato_bancario",
+    observacoes_extra: Optional[str] = None,
+):
+    if conciliacao.despesa_id:
+        existente = db.query(models.Despesa).filter(models.Despesa.id == conciliacao.despesa_id).first()
+        if existente:
+            return existente
+
+    categoria = (conta.nome or "Outros").strip()
+    mes_ref = conciliacao.mes_referencia or (
+        conciliacao.data_extrato.strftime("%Y-%m") if conciliacao.data_extrato else date.today().strftime("%Y-%m")
+    )
+    observacoes = _montar_observacao_conciliacao_lancada(
+        conciliacao,
+        conciliacao.observacoes,
+        observacoes_extra,
+        "despesa",
+    )
+
+    despesa = models.Despesa(
+        id=str(uuid.uuid4()),
+        user_id=current_user.id,
+        descricao=(conciliacao.descricao_extrato or "Despesa importada do extrato").strip(),
+        categoria=categoria,
+        conta_id=conta.id,
+        conta_codigo=conta.codigo,
+        conta_nome=conta.nome,
+        valor=float(conciliacao.valor_extrato or 0),
+        data_despesa=conciliacao.data_extrato or date.today(),
+        mes_referencia=mes_ref,
+        forma_pagamento=(forma_pagamento or "extrato_bancario").strip() or "extrato_bancario",
+        fornecedor=(fornecedor or "").strip() or None,
+        observacoes=observacoes,
+        created_at=datetime.utcnow(),
+    )
+    db.add(despesa)
+    db.flush()
+    _sync_transacao_despesa(db, despesa, current_user.id)
+
+    conciliacao.despesa_id = despesa.id
+    conciliacao.conciliado = True
+    conciliacao.updated_at = datetime.utcnow()
+    return despesa
+
+
 def _iterar_transacoes_ofx(texto: str):
     # Suporta OFX com e sem fechamento explicito de </STMTTRN>.
     padrao = r"<STMTTRN>(.*?)(?=(</STMTTRN>|<STMTTRN>|</BANKTRANLIST>|$))"
@@ -3764,10 +5503,13 @@ async def importar_extrato_arquivo(
     current_user=Depends(get_current_user)
 ):
     """
-    Importa extrato bancário em formato CSV ou OFX.
+    Importa extrato bancário em formato CSV, OFX, REM ou RET.
     CSV suportado:
     1. Simples: data, descricao, tipo (credito|debito), valor
     2. Banco Real: Data, Lançamento, Detalhes, Nº documento, Valor, Tipo Lançamento
+    REM/RET:
+    - Registros de mensalidade com codigo DABB na linha de detalhe "E"
+    - Faz baixa automática na mensalidade usando Membro.codigo_dabb
     """
     try:
         import csv
@@ -3782,14 +5524,26 @@ async def importar_extrato_arquivo(
         ext = Path((file.filename or "").strip().lower()).suffix
         is_ofx_content = "<OFX" in text.upper() or "<STMTTRN>" in text.upper()
 
-        if ext not in {".csv", ".ofx"} and not is_ofx_content:
-            raise HTTPException(status_code=400, detail="Arquivo deve ser CSV ou OFX")
+        if ext not in {".csv", ".ofx", ".ret", ".rem"} and not is_ofx_content:
+            raise HTTPException(status_code=400, detail="Arquivo deve ser CSV, OFX, RET ou REM")
 
         importados = []
         linhas_lidas = 0
         linhas_duplicadas = 0
         linhas_invalidas = 0
         meses_lidos = set()
+        total_baixas_automaticas = 0
+        total_despesas_automaticas = 0
+        total_sem_membro = 0
+        total_codigos_ambiguos = 0
+        codigos_sem_membro = {}
+        codigos_ambiguos = {}
+        diagnostico_dabb = {
+            "linhas_detalhe_encontradas": 0,
+            "linhas_detalhe_validas": 0,
+            "motivos_invalidos": {},
+            "exemplos_invalidos": [],
+        }
 
         if ext == ".ofx" or is_ofx_content:
             for tx in _iterar_transacoes_ofx(text):
@@ -3836,16 +5590,217 @@ async def importar_extrato_arquivo(
                         updated_at=datetime.utcnow()
                     )
                     db.add(c)
+                    db.flush()
+
+                    if tipo == "credito" and _descricao_credito_parece_mensalidade_ofx(descricao):
+                        membro = _escolher_membro_para_credito_ofx(db, c)
+                        if membro:
+                            _baixar_pagamento_mensalidade_por_conciliacao(
+                                db=db,
+                                conciliacao=c,
+                                membro=membro,
+                                user_id=current_user.id,
+                                observacao_origem=f"Baixa automática via arquivo OFX ({mes_ref})",
+                            )
+                            total_baixas_automaticas += 1
+                        else:
+                            total_sem_membro += 1
+
+                    if tipo == "debito":
+                        conta_despesa = _inferir_conta_despesa_ofx(db, descricao)
+                        if conta_despesa:
+                            _lancar_despesa_por_conciliacao(
+                                db=db,
+                                conciliacao=c,
+                                conta=conta_despesa,
+                                current_user=current_user,
+                                fornecedor=descricao,
+                                forma_pagamento="extrato_bancario",
+                                observacoes_extra=f"Lançamento automático via arquivo OFX ({mes_ref})",
+                            )
+                            total_despesas_automaticas += 1
+
                     importados.append({
                         "data": data.strftime("%Y-%m-%d"),
                         "descricao": descricao,
                         "valor": valor,
                         "tipo": tipo,
-                        "numero_doc": numero_doc
+                        "numero_doc": numero_doc,
+                        "conciliado": c.conciliado,
                     })
                 except Exception:
                     linhas_invalidas += 1
                     continue
+        elif ext in {".ret", ".rem"}:
+            membros_por_codigo_dabb = _indexar_membros_por_codigo_dabb(db)
+            data_header_dabb = _extrair_data_header_dabb(text)
+            encontrou_linha_detalhe = False
+
+            for numero_linha, raw_line in enumerate(text.splitlines(), start=1):
+                line = raw_line.rstrip("\r\n")
+                line_normalized = line.lstrip("\ufeff ").rstrip()
+                if not line:
+                    continue
+                if line_normalized[:1] not in {"E", "F"}:
+                    continue
+
+                encontrou_linha_detalhe = True
+                diagnostico_dabb["linhas_detalhe_encontradas"] += 1
+
+                try:
+                    tx = _parse_linha_dabb(line_normalized, data_fallback=data_header_dabb)
+                except ValueError as exc:
+                    motivo = str(exc)
+                    linhas_invalidas += 1
+                    diagnostico_dabb["motivos_invalidos"][motivo] = diagnostico_dabb["motivos_invalidos"].get(motivo, 0) + 1
+                    if len(diagnostico_dabb["exemplos_invalidos"]) < 5:
+                        diagnostico_dabb["exemplos_invalidos"].append({
+                            "linha": numero_linha,
+                            "motivo": motivo,
+                            "conteudo": line_normalized[:120],
+                        })
+                    continue
+
+                diagnostico_dabb["linhas_detalhe_validas"] += 1
+                linhas_lidas += 1
+                try:
+                    data = tx["data"]
+                    valor = tx["valor"]
+                    tipo = tx["tipo"]
+                    descricao = tx["descricao"]
+                    numero_doc = tx["numero_documento"]
+                    codigo_dabb = tx["codigo_dabb"]
+                    codigo_barras = tx.get("codigo_barras")
+                    linha_original = tx["linha_original"]
+                    mes_ref = data.strftime("%Y-%m")
+                    meses_lidos.add(mes_ref)
+
+                    existe = _buscar_duplicado_conciliacao(
+                        db=db,
+                        data_extrato=data,
+                        valor_extrato=valor,
+                        banco=banco,
+                        tipo=tipo,
+                        numero_documento=numero_doc,
+                        descricao_extrato=descricao,
+                    )
+
+                    if existe:
+                        linhas_duplicadas += 1
+                        continue
+
+                    observacoes_partes = [
+                        f"Arquivo DABB {ext.upper()}",
+                        f"codigo_dabb={codigo_dabb}",
+                    ]
+                    if codigo_barras:
+                        observacoes_partes.append(f"codigo_barras={codigo_barras}")
+                    observacoes_partes.append(f"linha={linha_original}")
+
+                    c = models.Conciliacao(
+                        id=str(uuid.uuid4()),
+                        user_id=current_user.id,
+                        data_extrato=data,
+                        descricao_extrato=descricao,
+                        valor_extrato=valor,
+                        tipo=tipo,
+                        mes_referencia=mes_ref,
+                        banco=banco,
+                        numero_documento=numero_doc,
+                        conciliado=False,
+                        observacoes=" | ".join(observacoes_partes),
+                        created_at=datetime.utcnow(),
+                        updated_at=datetime.utcnow()
+                    )
+                    db.add(c)
+                    db.flush()
+
+                    membros_match = {}
+                    for variante in _variantes_codigo_dabb(codigo_dabb):
+                        for membro in membros_por_codigo_dabb.get(variante, []):
+                            membros_match[membro.id] = membro
+
+                    if len(membros_match) == 1:
+                        membro = next(iter(membros_match.values()))
+                        _baixar_pagamento_mensalidade_por_conciliacao(
+                            db=db,
+                            conciliacao=c,
+                            membro=membro,
+                            user_id=current_user.id,
+                            observacao_origem=(
+                                f"Baixa automática via arquivo bancário DABB ({mes_ref}) - "
+                                f"codigo_dabb {codigo_dabb}"
+                            ),
+                        )
+                        total_baixas_automaticas += 1
+                    elif len(membros_match) > 1:
+                        total_codigos_ambiguos += 1
+                        item = codigos_ambiguos.setdefault(codigo_dabb, {
+                            "codigo_dabb": codigo_dabb,
+                            "quantidade": 0,
+                            "valores": set(),
+                            "meses": set(),
+                            "registros": set(),
+                        })
+                        item["quantidade"] += 1
+                        item["valores"].add(round(float(valor or 0), 2))
+                        item["meses"].add(mes_ref)
+                        item["registros"].add(tx.get("tipo_registro") or "?")
+                        c.observacoes = (
+                            (c.observacoes + "\n") if c.observacoes else ""
+                        ) + "Codigo DABB encontrado em mais de um membro ativo; baixa nao realizada automaticamente."
+                    else:
+                        total_sem_membro += 1
+                        item = codigos_sem_membro.setdefault(codigo_dabb, {
+                            "codigo_dabb": codigo_dabb,
+                            "quantidade": 0,
+                            "valores": set(),
+                            "meses": set(),
+                            "registros": set(),
+                        })
+                        item["quantidade"] += 1
+                        item["valores"].add(round(float(valor or 0), 2))
+                        item["meses"].add(mes_ref)
+                        item["registros"].add(tx.get("tipo_registro") or "?")
+                        c.observacoes = (
+                            (c.observacoes + "\n") if c.observacoes else ""
+                        ) + "Nenhum membro ativo encontrado para o codigo DABB; baixa nao realizada automaticamente."
+
+                    importados.append({
+                        "data": data.strftime("%Y-%m-%d"),
+                        "descricao": descricao,
+                        "valor": valor,
+                        "tipo": tipo,
+                        "numero_doc": numero_doc,
+                        "codigo_dabb": codigo_dabb,
+                        "codigo_barras": codigo_barras,
+                        "conciliado": c.conciliado,
+                    })
+                except Exception:
+                    linhas_invalidas += 1
+                    diagnostico_dabb["motivos_invalidos"]["erro_processamento"] = diagnostico_dabb["motivos_invalidos"].get("erro_processamento", 0) + 1
+                    continue
+
+            if not encontrou_linha_detalhe:
+                return {
+                    "ok": False,
+                    "total_importados": 0,
+                    "linhas_lidas": 0,
+                    "linhas_duplicadas": 0,
+                    "linhas_invalidas": 0,
+                    "total_baixas_automaticas": 0,
+                    "total_despesas_automaticas": 0,
+                    "total_sem_membro": 0,
+                    "total_codigos_ambiguos": 0,
+                    "diagnostico_dabb": {
+                        **diagnostico_dabb,
+                        "motivos_invalidos": {"nenhuma_linha_ef_encontrada": 1},
+                        "exemplos_invalidos": [],
+                    },
+                    "meses_importados": [],
+                    "meses_lidos": [],
+                    "registros": []
+                }
         else:
             all_lines = [ln for ln in text.splitlines() if ln.strip()]
             if not all_lines:
@@ -3938,12 +5893,39 @@ async def importar_extrato_arquivo(
 
         db.commit()
         meses_importados = sorted({item.get("data", "")[:7] for item in importados if item.get("data")})
+        codigos_sem_membro_lista = [
+            {
+                "codigo_dabb": item["codigo_dabb"],
+                "quantidade": item["quantidade"],
+                "valores": sorted(item["valores"]),
+                "meses": sorted(item["meses"]),
+                "registros": sorted(item["registros"]),
+            }
+            for item in sorted(codigos_sem_membro.values(), key=lambda x: (x["codigo_dabb"]))
+        ]
+        codigos_ambiguos_lista = [
+            {
+                "codigo_dabb": item["codigo_dabb"],
+                "quantidade": item["quantidade"],
+                "valores": sorted(item["valores"]),
+                "meses": sorted(item["meses"]),
+                "registros": sorted(item["registros"]),
+            }
+            for item in sorted(codigos_ambiguos.values(), key=lambda x: (x["codigo_dabb"]))
+        ]
         return {
             "ok": True,
             "total_importados": len(importados),
             "linhas_lidas": linhas_lidas,
             "linhas_duplicadas": linhas_duplicadas,
             "linhas_invalidas": linhas_invalidas,
+            "total_baixas_automaticas": total_baixas_automaticas,
+            "total_despesas_automaticas": total_despesas_automaticas,
+            "total_sem_membro": total_sem_membro,
+            "total_codigos_ambiguos": total_codigos_ambiguos,
+            "codigos_sem_membro": codigos_sem_membro_lista,
+            "codigos_ambiguos": codigos_ambiguos_lista,
+            "diagnostico_dabb": diagnostico_dabb if ext in {".ret", ".rem"} else None,
             "meses_importados": meses_importados,
             "meses_lidos": sorted(meses_lidos),
             "registros": importados
@@ -4137,6 +6119,14 @@ def _excel_autofit_columns(ws, min_width: int = 10, max_width: int = 48):
         ws.column_dimensions[column_letter].width = max(min_width, min(max_length + 2, max_width))
 
 
+def _excel_set_date_cell(ws, row: int, column: int, value, alignment: str = "center"):
+    cell = ws.cell(row=row, column=column, value=value if value else None)
+    if value:
+        cell.number_format = 'DD/MM/YYYY'
+    cell.alignment = Alignment(horizontal=alignment)
+    return cell
+
+
 @app.get("/api/relatorios/membros")
 def exportar_membros(
     status: Optional[str] = None,
@@ -4152,13 +6142,13 @@ def exportar_membros(
     ws = wb.active
     ws.title = "Membros"
 
-    ws.merge_cells("A1:P1")
+    ws.merge_cells("A1:Q1")
     ws["A1"] = "RELATÓRIO DE MEMBROS"
     ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
     ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
 
-    headers = ["Matrícula", "Nome", "CPF", "Email", "Telefone", "Celular",
+    headers = ["Matrícula", "Nome", "CPF", "Código DABB", "Email", "Telefone", "Celular",
                "Endereço", "Bairro", "Cidade", "Estado", "CEP",
                "Data Nascimento", "Data Associação", "Status", "Benefício", "Valor Mensalidade"]
 
@@ -4172,31 +6162,30 @@ def exportar_membros(
         ws.cell(row=row, column=1, value=m.matricula)
         ws.cell(row=row, column=2, value=m.nome_completo)
         ws.cell(row=row, column=3, value=m.cpf)
-        ws.cell(row=row, column=4, value=m.email)
-        ws.cell(row=row, column=5, value=m.telefone)
-        ws.cell(row=row, column=6, value=m.celular)
-        ws.cell(row=row, column=7, value=m.endereco)
-        ws.cell(row=row, column=8, value=m.bairro)
-        ws.cell(row=row, column=9, value=m.cidade)
-        ws.cell(row=row, column=10, value=m.estado)
-        ws.cell(row=row, column=11, value=m.cep)
-        ws.cell(row=row, column=12, value=str(m.data_nascimento) if m.data_nascimento else "")
-        ws.cell(row=row, column=13, value=str(m.data_associacao) if m.data_associacao else "")
-        ws.cell(row=row, column=14, value=m.status)
-        ws.cell(row=row, column=15, value=m.beneficio)
-        ws.cell(row=row, column=16, value=float(m.valor_mensalidade) if m.valor_mensalidade else 0)
-        ws.cell(row=row, column=16).number_format = 'R$ #,##0.00'
+        ws.cell(row=row, column=4, value=m.codigo_dabb)
+        ws.cell(row=row, column=5, value=m.email)
+        ws.cell(row=row, column=6, value=m.telefone)
+        ws.cell(row=row, column=7, value=m.celular)
+        ws.cell(row=row, column=8, value=m.endereco)
+        ws.cell(row=row, column=9, value=m.bairro)
+        ws.cell(row=row, column=10, value=m.cidade)
+        ws.cell(row=row, column=11, value=m.estado)
+        ws.cell(row=row, column=12, value=m.cep)
+        _excel_set_date_cell(ws, row, 13, m.data_nascimento)
+        _excel_set_date_cell(ws, row, 14, m.data_filiacao)
+        ws.cell(row=row, column=15, value=m.status)
+        ws.cell(row=row, column=16, value=m.beneficio)
+        ws.cell(row=row, column=17, value=float(m.valor_mensalidade) if m.valor_mensalidade else 0)
+        ws.cell(row=row, column=17).number_format = 'R$ #,##0.00'
 
     last_row = max(first_data_row, first_data_row + len(membros) - 1)
-    _excel_apply_zebra(ws, first_data_row, last_row, 1, 16)
-    _excel_apply_borders(ws, header_row, last_row, 1, 16)
+    _excel_apply_zebra(ws, first_data_row, last_row, 1, 17)
+    _excel_apply_borders(ws, header_row, last_row, 1, 17)
     ws.freeze_panes = f"A{first_data_row}"
-    ws.auto_filter.ref = f"A{header_row}:P{last_row}"
+    ws.auto_filter.ref = f"A{header_row}:Q{last_row}"
 
     for row in range(first_data_row, last_row + 1):
-        ws.cell(row=row, column=12).alignment = Alignment(horizontal="center")
-        ws.cell(row=row, column=13).alignment = Alignment(horizontal="center")
-        ws.cell(row=row, column=16).alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=17).alignment = Alignment(horizontal="right")
 
     _excel_autofit_columns(ws, min_width=12, max_width=44)
 
@@ -4222,10 +6211,10 @@ def exportar_pagamentos(
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = f"Pagamentos {mes_ref}"
+    ws.title = f"Mensalidades {mes_ref}"
 
     ws.merge_cells("A1:H1")
-    ws["A1"] = f"RELATÓRIO DE PAGAMENTOS - {mes_ref}"
+    ws["A1"] = f"RECEBIMENTO DE MENSALIDADES - {mes_ref}"
     ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
     ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
@@ -4254,17 +6243,18 @@ def exportar_pagamentos(
             m.matricula, m.nome_completo,
             float(m.valor_mensalidade) if m.valor_mensalidade else 0,
             float(p.valor_pago) if p and p.valor_pago else 0,
-            str(p.data_pagamento) if p and p.data_pagamento else "",
+            p.data_pagamento if p and p.data_pagamento else None,
             status,
             p.forma_pagamento if p else ""
         ]
         for col, val in enumerate(values, 1):
-            cell = ws.cell(row=row, column=col, value=val)
+            if col == 5:
+                cell = _excel_set_date_cell(ws, row, col, val)
+            else:
+                cell = ws.cell(row=row, column=col, value=val)
             if col in (3, 4):
                 cell.number_format = 'R$ #,##0.00'
                 cell.alignment = Alignment(horizontal="right")
-            elif col == 5:
-                cell.alignment = Alignment(horizontal="center")
             elif col == 6:
                 cell.alignment = Alignment(horizontal="center")
 
@@ -4299,7 +6289,7 @@ def exportar_pagamentos(
     buf.seek(0)
     return StreamingResponse(
         buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename=pagamentos_{mes_ref}.xlsx"}
+        headers={"Content-Disposition": f"attachment; filename=recebimento_mensalidades_{mes_ref}.xlsx"}
     )
 
 @app.get("/api/relatorios/aniversariantes")
@@ -4336,7 +6326,7 @@ def exportar_aniversariantes(
     for row, m in enumerate(membros, first_data_row):
         idade = today.year - m.data_nascimento.year
         ws.cell(row=row, column=1, value=m.nome_completo)
-        ws.cell(row=row, column=2, value=str(m.data_nascimento))
+        _excel_set_date_cell(ws, row, 2, m.data_nascimento)
         ws.cell(row=row, column=3, value=m.data_nascimento.day)
         ws.cell(row=row, column=4, value=idade)
         ws.cell(row=row, column=5, value=m.email)
@@ -4603,6 +6593,8 @@ def exportar_livro_diario(
     title_fill = PatternFill("solid", fgColor="1E3A5F")
     total_fill = PatternFill("solid", fgColor="FCE4D6")
     bold_font = Font(bold=True)
+    saida_font = Font(color="C00000")
+    saida_bold_font = Font(bold=True, color="C00000")
 
     ws.merge_cells("A1:H1")
     ws["A1"] = f"LIVRO DIÁRIO - {mes_ref}"
@@ -4641,6 +6633,11 @@ def exportar_livro_diario(
         ws.cell(row=row, column=6, value=round(entrada, 2))
         ws.cell(row=row, column=7, value=round(saida, 2))
         ws.cell(row=row, column=8, value=round(saldo_acumulado, 2))
+
+        if item["tipo"] == "saida":
+            for col in range(1, 9):
+                ws.cell(row=row, column=col).font = saida_font
+
         row += 1
 
     movimentos_end_row = row - 1
@@ -4648,7 +6645,7 @@ def exportar_livro_diario(
 
     ws.cell(row=row, column=4, value="TOTAL DO MÊS").font = bold_font
     ws.cell(row=row, column=6, value=round(total_entradas, 2)).font = bold_font
-    ws.cell(row=row, column=7, value=round(total_saidas, 2)).font = bold_font
+    ws.cell(row=row, column=7, value=round(total_saidas, 2)).font = saida_bold_font
     ws.cell(row=row, column=8, value=round(saldo_acumulado, 2)).font = bold_font
     for col in range(4, 9):
         ws.cell(row=row, column=col).fill = total_fill
@@ -4742,7 +6739,7 @@ def exportar_conciliacao(
 
     first_data_row = header_row + 1
     for row, c in enumerate(conciliacoes, first_data_row):
-        ws.cell(row=row, column=1, value=str(c.data_extrato) if c.data_extrato else "")
+        _excel_set_date_cell(ws, row, 1, c.data_extrato)
         ws.cell(row=row, column=2, value=c.descricao_extrato)
         ws.cell(row=row, column=3, value=float(c.valor_extrato) if c.valor_extrato else 0)
         ws.cell(row=row, column=4, value=c.tipo)
@@ -4755,7 +6752,6 @@ def exportar_conciliacao(
 
         ws.cell(row=row, column=3).number_format = 'R$ #,##0.00'
         ws.cell(row=row, column=3).alignment = Alignment(horizontal="right")
-        ws.cell(row=row, column=1).alignment = Alignment(horizontal="center")
         ws.cell(row=row, column=4).alignment = Alignment(horizontal="center")
         ws.cell(row=row, column=5).alignment = Alignment(horizontal="center")
 
@@ -4799,7 +6795,10 @@ def exportar_aplicacoes_financeiras(
         "saldo_anterior": round(sum(float(r.saldo_anterior or 0) for r in registros), 2),
         "aplicacoes": round(sum(float(r.aplicacoes or 0) for r in registros), 2),
         "rendimento_bruto": round(sum(float(r.rendimento_bruto or 0) for r in registros), 2),
+        "imposto_renda": round(sum(float(r.imposto_renda or 0) for r in registros), 2),
+        "iof": round(sum(float(r.iof or 0) for r in registros), 2),
         "impostos": round(sum(float(r.impostos or 0) for r in registros), 2),
+        "rendimento_liquido": round(sum(float(r.rendimento_liquido or 0) for r in registros), 2),
         "resgate": round(sum(float(r.resgate or 0) for r in registros), 2),
         "saldo_atual": round(sum(float(r.saldo_atual or 0) for r in registros), 2),
     }
@@ -4822,7 +6821,7 @@ def exportar_aplicacoes_financeiras(
     )
     money_fmt = 'R$ #,##0.00'
 
-    ws.merge_cells("A1:I1")
+    ws.merge_cells("A1:K1")
     ws["A1"] = f"RELATÓRIO DE APLICAÇÕES FINANCEIRAS - {mes_ref}"
     ws["A1"].fill = title_fill
     ws["A1"].font = title_font
@@ -4835,35 +6834,47 @@ def exportar_aplicacoes_financeiras(
 
     ws["A6"] = "Resumo Financeiro"
     ws["A6"].font = bold_font
-    ws["A7"] = "Saldo Anterior"
+    ws["A7"] = "SALDO ANTERIOR"
     ws["B7"] = totais["saldo_anterior"]
-    ws["A8"] = "Aplicações"
+    ws["A8"] = "APLICAÇÕES (+)"
     ws["B8"] = totais["aplicacoes"]
-    ws["A9"] = "Rendimento Bruto"
+    ws["A9"] = "RENDIMENTO BRUTO (+)"
     ws["B9"] = totais["rendimento_bruto"]
-    ws["A10"] = "Impostos (IR/IOF)"
-    ws["B10"] = totais["impostos"]
-    ws["A11"] = "Resgate"
-    ws["B11"] = totais["resgate"]
-    ws["A12"] = "Saldo Atual"
-    ws["B12"] = totais["saldo_atual"]
+    ws["A10"] = "IMPOSTO DE RENDA (-)"
+    ws["B10"] = totais["imposto_renda"]
+    ws["A11"] = "IOF (-)"
+    ws["B11"] = totais["iof"]
+    ws["A12"] = "IMPOSTOS TOTAIS"
+    ws["B12"] = totais["impostos"]
+    ws["A13"] = "RENDIMENTO LÍQUIDO"
+    ws["B13"] = totais["rendimento_liquido"]
+    ws["A14"] = "RESGATES (-)"
+    ws["B14"] = totais["resgate"]
+    ws["A15"] = "SALDO ATUAL"
+    ws["B15"] = totais["saldo_atual"]
 
-    for row in range(7, 13):
+    for row in range(7, 16):
         ws.cell(row=row, column=2).number_format = money_fmt
 
     headers = [
         "Instituição",
         "Produto",
-        "Saldo Anterior",
-        "Aplicações",
-        "Rendimento Bruto",
-        "Impostos (IR/IOF)",
-        "Resgate",
-        "Saldo Atual",
+        "Origem do Registro",
+        "Conta",
+        "Arquivo Importado",
+        "SALDO ANTERIOR",
+        "APLICAÇÕES (+)",
+        "RENDIMENTO BRUTO (+)",
+        "IMPOSTO DE RENDA (-)",
+        "IOF",
+        "IMPOSTOS TOTAIS",
+        "RENDIMENTO LÍQUIDO",
+        "RESGATES (-)",
+        "SALDO ATUAL",
         "Observações"
     ]
 
-    header_row = 14
+    header_row = 17
     for col, header in enumerate(headers, 1):
         cell = ws.cell(row=header_row, column=col, value=header)
         cell.fill = header_fill
@@ -4875,50 +6886,65 @@ def exportar_aplicacoes_financeiras(
     for row_idx, reg in enumerate(registros, first_data_row):
         ws.cell(row=row_idx, column=1, value=reg.instituicao or "")
         ws.cell(row=row_idx, column=2, value=reg.produto or "")
-        ws.cell(row=row_idx, column=3, value=float(reg.saldo_anterior or 0))
-        ws.cell(row=row_idx, column=4, value=float(reg.aplicacoes or 0))
-        ws.cell(row=row_idx, column=5, value=float(reg.rendimento_bruto or 0))
-        ws.cell(row=row_idx, column=6, value=float(reg.impostos or 0))
-        ws.cell(row=row_idx, column=7, value=float(reg.resgate or 0))
-        ws.cell(row=row_idx, column=8, value=float(reg.saldo_atual or 0))
-        ws.cell(row=row_idx, column=9, value=reg.observacoes or "")
+        ws.cell(row=row_idx, column=3, value=(reg.origem_registro or "manual").replace("_", " ").title())
+        ws.cell(row=row_idx, column=4, value=reg.conta_origem or "")
+        ws.cell(row=row_idx, column=5, value=reg.arquivo_origem or "")
+        ws.cell(row=row_idx, column=6, value=float(reg.saldo_anterior or 0))
+        ws.cell(row=row_idx, column=7, value=float(reg.aplicacoes or 0))
+        ws.cell(row=row_idx, column=8, value=float(reg.rendimento_bruto or 0))
+        ws.cell(row=row_idx, column=9, value=float(reg.imposto_renda or 0))
+        ws.cell(row=row_idx, column=10, value=float(reg.iof or 0))
+        ws.cell(row=row_idx, column=11, value=float(reg.impostos or 0))
+        ws.cell(row=row_idx, column=12, value=float(reg.rendimento_liquido or 0))
+        ws.cell(row=row_idx, column=13, value=float(reg.resgate or 0))
+        ws.cell(row=row_idx, column=14, value=float(reg.saldo_atual or 0))
+        ws.cell(row=row_idx, column=15, value=reg.observacoes or "")
 
-        for col in range(1, 10):
+        for col in range(1, 16):
             cell = ws.cell(row=row_idx, column=col)
             cell.border = thin_border
-            if col in [3, 4, 5, 6, 7, 8]:
+            if col in [6, 7, 8, 9, 10, 11, 12, 13, 14]:
                 cell.number_format = money_fmt
                 cell.alignment = Alignment(horizontal="right", vertical="center")
 
     total_row = first_data_row + len(registros)
-    _excel_apply_zebra(ws, first_data_row, total_row - 1, 1, 9)
+    _excel_apply_zebra(ws, first_data_row, total_row - 1, 1, 15)
     ws.cell(row=total_row, column=1, value="TOTAIS").font = bold_font
-    ws.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=2)
-    for col, key in zip([3, 4, 5, 6, 7, 8], ["saldo_anterior", "aplicacoes", "rendimento_bruto", "impostos", "resgate", "saldo_atual"]):
+    ws.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=5)
+    for col, key in zip(
+        [6, 7, 8, 9, 10, 11, 12, 13, 14],
+        ["saldo_anterior", "aplicacoes", "rendimento_bruto", "imposto_renda", "iof", "impostos", "rendimento_liquido", "resgate", "saldo_atual"]
+    ):
         cell = ws.cell(row=total_row, column=col, value=totais[key])
         cell.font = bold_font
         cell.number_format = money_fmt
         cell.alignment = Alignment(horizontal="right", vertical="center")
 
-    for col in range(1, 10):
+    for col in range(1, 16):
         cell = ws.cell(row=total_row, column=col)
         cell.fill = total_fill
         cell.border = thin_border
 
     ws.freeze_panes = f"A{first_data_row}"
-    ws.auto_filter.ref = f"A{header_row}:I{max(total_row, header_row + 1)}"
+    ws.auto_filter.ref = f"A{header_row}:O{max(total_row, header_row + 1)}"
 
     ws.column_dimensions["A"].width = 26
     ws.column_dimensions["B"].width = 24
-    ws.column_dimensions["C"].width = 16
-    ws.column_dimensions["D"].width = 14
-    ws.column_dimensions["E"].width = 18
-    ws.column_dimensions["F"].width = 18
+    ws.column_dimensions["C"].width = 18
+    ws.column_dimensions["D"].width = 18
+    ws.column_dimensions["E"].width = 26
+    ws.column_dimensions["F"].width = 16
     ws.column_dimensions["G"].width = 14
-    ws.column_dimensions["H"].width = 16
-    ws.column_dimensions["I"].width = 38
+    ws.column_dimensions["H"].width = 18
+    ws.column_dimensions["I"].width = 18
+    ws.column_dimensions["J"].width = 14
+    ws.column_dimensions["K"].width = 16
+    ws.column_dimensions["L"].width = 18
+    ws.column_dimensions["M"].width = 14
+    ws.column_dimensions["N"].width = 16
+    ws.column_dimensions["O"].width = 38
 
-    for row in [3, 4, 6, 7, 8, 9, 10, 11, 12]:
+    for row in [3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]:
         ws.cell(row=row, column=1).font = bold_font
 
     ws["A6"].fill = PatternFill("solid", fgColor="E2E8F0")
@@ -5300,6 +7326,7 @@ def listar_membros(
     nome: Optional[str] = None,
     cidade: Optional[str] = None,
     sexo: Optional[str] = None,
+    categoria: Optional[str] = None,
     sem_email: Optional[bool] = False,
     sem_whatsapp: Optional[bool] = False,
     db: Session = Depends(get_db),
@@ -5326,6 +7353,19 @@ def listar_membros(
             valores_sexo = [sexo_normalizado]
 
         q = q.filter(sql_func.lower(models.Membro.sexo).in_(valores_sexo))
+
+    if categoria:
+        categoria_normalizada = categoria.strip()
+        if categoria_normalizada.lower() == "outros":
+            q = q.filter(
+                or_(
+                    models.Membro.cat == None,
+                    models.Membro.cat == "",
+                    sql_func.lower(models.Membro.cat).notin_(["clt", "1711", "1712"])
+                )
+            )
+        else:
+            q = q.filter(sql_func.lower(models.Membro.cat) == categoria_normalizada.lower())
 
     if sem_email:
         q = q.filter(
@@ -5365,6 +7405,7 @@ def listar_membros(
 def gerar_etiquetas(
     status: Optional[str] = "ativo",
     ids: Optional[str] = None,
+    categoria: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
@@ -5379,6 +7420,18 @@ def gerar_etiquetas(
         q = q.filter(models.Membro.id.in_(id_list))
     elif status:
         q = q.filter(models.Membro.status == status)
+    if categoria:
+        categoria_normalizada = categoria.strip()
+        if categoria_normalizada.lower() == "outros":
+            q = q.filter(
+                or_(
+                    models.Membro.cat == None,
+                    models.Membro.cat == "",
+                    sql_func.lower(models.Membro.cat).notin_(["clt", "1711", "1712"])
+                )
+            )
+        else:
+            q = q.filter(sql_func.lower(models.Membro.cat) == categoria_normalizada.lower())
     membros = q.order_by(models.Membro.nome_completo).all()
 
     buf = io.BytesIO()

@@ -155,8 +155,8 @@ export default function OutrasRendas() {
                     <td>{r.fonte || '-'}</td>
                     <td>{r.conta_codigo ? `${r.conta_codigo} - ${r.conta_nome || ''}` : '-'}</td>
                     <td><strong style={{ color: '#38a169' }}>{fmt(r.valor)}</strong></td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 4 }}>
+                    <td className="table-actions-cell">
+                      <div className="table-actions">
                         <button className="btn btn-outline btn-icon btn-sm" onClick={() => openModal(r)}><Edit size={13} /></button>
                         <button className="btn btn-danger btn-icon btn-sm" onClick={() => handleDelete(r.id)}><Trash2 size={13} /></button>
                       </div>
@@ -169,7 +169,7 @@ export default function OutrasRendas() {
                   <tr>
                     <td colSpan={5} style={{ fontWeight: 700, textAlign: 'right', padding: '10px 12px' }}>Total</td>
                     <td style={{ fontWeight: 700, color: '#38a169', fontSize: 15 }}>{fmt(total)}</td>
-                    <td></td>
+                    <td className="table-actions-cell"></td>
                   </tr>
                 </tfoot>
               )}

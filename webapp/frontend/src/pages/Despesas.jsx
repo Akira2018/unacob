@@ -189,8 +189,8 @@ export default function Despesas() {
                       <td>{d.forma_pagamento || '-'}</td>
                       <td>{d.conta_codigo ? `${d.conta_codigo} - ${d.conta_nome || ''}` : '-'}</td>
                       <td><strong style={{ color: '#e53e3e' }}>{fmt(d.valor)}</strong></td>
-                      <td>
-                        <div style={{ display: 'flex', gap: 4 }}>
+                      <td className="table-actions-cell">
+                        <div className="table-actions">
                           <button className="btn btn-outline btn-icon btn-sm" onClick={() => openModal(d)}><Edit size={13} /></button>
                           <button className="btn btn-danger btn-icon btn-sm" onClick={() => handleDelete(d.id)}><Trash2 size={13} /></button>
                         </div>
@@ -203,7 +203,7 @@ export default function Despesas() {
                     <tr>
                       <td colSpan={6} style={{ fontWeight: 700, textAlign: 'right', padding: '10px 12px' }}>{searchTerm ? 'Total da busca' : 'Total'}</td>
                       <td style={{ fontWeight: 700, color: '#e53e3e', fontSize: 15 }}>{fmt(totalExibido)}</td>
-                      <td></td>
+                      <td className="table-actions-cell"></td>
                     </tr>
                   </tfoot>
                 )}

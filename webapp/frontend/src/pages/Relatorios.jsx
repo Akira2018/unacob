@@ -64,11 +64,11 @@ export default function Relatorios() {
     {
       key: 'pagamentos',
       icon: <CreditCard size={24} />,
-      title: 'Relatório de Pagamentos',
+      title: 'Recebimento de Mensalidades',
       desc: 'Situação de pagamentos dos membros com destaque para inadimplentes',
       color: '#38a169',
       isFinance: true,
-      action: () => download('pagamentos', '/relatorios/pagamentos', `pagamentos_${mes}.xlsx`, { mes_referencia: mes }),
+      action: () => download('pagamentos', '/relatorios/pagamentos', `recebimento_mensalidades_${mes}.xlsx`, { mes_referencia: mes }),
       extra: (
         <select className="search-input" value={mes} onChange={e => setMes(e.target.value)} style={{ width: '100%' }}>
           {getMeses().map(m => <option key={m} value={m}>{m}</option>)}

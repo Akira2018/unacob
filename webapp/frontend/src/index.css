@@ -125,6 +125,30 @@ tbody td { padding: 10px 12px; }
 .row-red { background: #fff5f5 !important; }
 .row-red:hover { background: #fed7d7 !important; }
 .row-green { background: #f0fff4 !important; }
+.table-actions-cell { white-space: nowrap; }
+.table-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+}
+.table-actions .btn-icon {
+  flex: 0 0 32px;
+}
+.conciliacao-acoes-cell { white-space: nowrap; }
+.conciliacao-acoes {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+}
+.conciliacao-acao-principal {
+  justify-content: center;
+  min-width: 106px;
+}
+.conciliacao-acao-icon {
+  flex: 0 0 32px;
+}
 
 /* Forms */
 .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
@@ -218,6 +242,15 @@ tbody td { padding: 10px 12px; }
   }
   .stats-grid { grid-template-columns: 1fr 1fr; }
   .charts-grid { grid-template-columns: 1fr; }
+  .table-actions {
+    min-width: 0;
+  }
+  .conciliacao-acoes {
+    min-width: 0;
+  }
+  .conciliacao-acao-principal {
+    min-width: 96px;
+  }
 
   .festas-grid {
     grid-template-columns: 1fr !important;

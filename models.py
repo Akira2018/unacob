@@ -26,6 +26,8 @@ class Membro(Base):
     inscricao: Mapped[str | None] = mapped_column(String(50))
     nome_completo: Mapped[str | None] = mapped_column(String(255))
     cpf: Mapped[str | None] = mapped_column(String(20))
+    cpf2: Mapped[str | None] = mapped_column(String(20))
+    codigo_dabb: Mapped[str | None] = mapped_column(String(50))
     email: Mapped[str | None] = mapped_column(String(255))
     telefone: Mapped[str | None] = mapped_column(String(30))
     celular: Mapped[str | None] = mapped_column(String(30))
@@ -39,7 +41,7 @@ class Membro(Base):
     cep: Mapped[str | None] = mapped_column(String(20))
     ect: Mapped[str | None] = mapped_column(String(50))
     data_nascimento: Mapped[Date | None] = mapped_column(Date)
-    data_associacao: Mapped[Date | None] = mapped_column(Date)
+    data_filiacao: Mapped[Date | None] = mapped_column("data_filiacao", Date)
     status: Mapped[str | None] = mapped_column(String(20), default='ativo')  # ativo, inativo, suspenso
     sexo: Mapped[str | None] = mapped_column(String(20))
     cat: Mapped[str | None] = mapped_column(String(50))

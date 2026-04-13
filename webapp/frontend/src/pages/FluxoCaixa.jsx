@@ -24,14 +24,25 @@ export default function FluxoCaixa() {
 
   const load = useCallback(() => {
     setLoading(true);
-    Promise.all([
+    Promise.allSettled([
       api.get('/fluxo-caixa', { params: { mes_referencia: mes } }),
       api.get('/saldo-inicial', { params: { mes_referencia: mes } })
     ])
       .then(([fluxoResp, saldoResp]) => {
-        setData({ ...fluxoResp.data, observacoes_saldo_inicial: saldoResp.data?.observacoes || '' });
+        if (fluxoResp.status !== 'fulfilled') {
+          throw fluxoResp.reason;
+        }
+
+        if (saldoResp.status !== 'fulfilled') {
+          toast.error('Saldo inicial indisponível no momento. Exibindo fluxo com dados principais.');
+        }
+
+        setData({
+          ...fluxoResp.value.data,
+          observacoes_saldo_inicial: saldoResp.status === 'fulfilled' ? saldoResp.value.data?.observacoes || '' : ''
+        });
       })
-        .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar fluxo de caixa')))
+      .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar fluxo de caixa')))
       .finally(() => setLoading(false));
   }, [mes]);
 

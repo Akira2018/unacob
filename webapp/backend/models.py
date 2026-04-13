@@ -17,6 +17,7 @@ class User(Base):
     created_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+
 class Membro(Base):
     __tablename__ = "membros"
 
@@ -26,6 +27,8 @@ class Membro(Base):
     inscricao: Mapped[str | None] = mapped_column(String(50))
     nome_completo: Mapped[str | None] = mapped_column(String(255))
     cpf: Mapped[str | None] = mapped_column(String(20))
+    cpf2: Mapped[str | None] = mapped_column(String(20))
+    codigo_dabb: Mapped[str | None] = mapped_column(String(50))
     email: Mapped[str | None] = mapped_column(String(255))
     telefone: Mapped[str | None] = mapped_column(String(30))
     celular: Mapped[str | None] = mapped_column(String(30))
@@ -39,7 +42,7 @@ class Membro(Base):
     cep: Mapped[str | None] = mapped_column(String(20))
     ect: Mapped[str | None] = mapped_column(String(50))
     data_nascimento: Mapped[Date | None] = mapped_column(Date)
-    data_associacao: Mapped[Date | None] = mapped_column(Date)
+    data_filiacao: Mapped[Date | None] = mapped_column("data_filiacao", Date)
     status: Mapped[str | None] = mapped_column(String(20), default='ativo')  # ativo, inativo, suspenso
     sexo: Mapped[str | None] = mapped_column(String(20))
     cat: Mapped[str | None] = mapped_column(String(50))
@@ -167,10 +170,16 @@ class AplicacaoFinanceira(Base):
     data_aplicacao: Mapped[Date | None] = mapped_column(Date, index=True)
     instituicao: Mapped[str | None] = mapped_column(String(150))
     produto: Mapped[str | None] = mapped_column(String(150))
+    origem_registro: Mapped[str | None] = mapped_column(String(50), default="manual")
+    conta_origem: Mapped[str | None] = mapped_column(String(150))
+    arquivo_origem: Mapped[str | None] = mapped_column(String(255))
     saldo_anterior: Mapped[float | None] = mapped_column(Float, default=0)
     aplicacoes: Mapped[float | None] = mapped_column(Float, default=0)
     rendimento_bruto: Mapped[float | None] = mapped_column(Float, default=0)
+    imposto_renda: Mapped[float | None] = mapped_column(Float, default=0)
+    iof: Mapped[float | None] = mapped_column(Float, default=0)
     impostos: Mapped[float | None] = mapped_column(Float, default=0)
+    rendimento_liquido: Mapped[float | None] = mapped_column(Float, default=0)
     resgate: Mapped[float | None] = mapped_column(Float, default=0)
     saldo_atual: Mapped[float | None] = mapped_column(Float, default=0)
     observacoes: Mapped[str | None] = mapped_column(Text)
@@ -236,6 +245,8 @@ class Conciliacao(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     pagamento_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("pagamentos.id"), nullable=True, index=True)
+    despesa_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    outra_renda_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     data_extrato: Mapped[Date | None] = mapped_column(Date, index=True, nullable=True)
     descricao_extrato: Mapped[str | None] = mapped_column(Text, nullable=True)
     valor_extrato: Mapped[Numeric] = mapped_column(Numeric(12, 2), nullable=True)

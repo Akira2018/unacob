@@ -16,15 +16,15 @@ const sections = [
   {
     label: 'Cadastros',
     items: [
-      { to: '/membros', icon: <Users size={16} />, label: 'Membros' },
+      { to: '/membros', icon: <Users size={16} />, label: 'Cadastro de Associados' },
     ]
   },
   {
     label: 'Financeiro',
     items: [
-      { to: '/pagamentos', icon: <CreditCard size={16} />, label: 'Pagamentos' },
+      { to: '/pagamentos', icon: <CreditCard size={16} />, label: 'Receitas de Mensalidades' },
       { to: '/despesas', icon: <Receipt size={16} />, label: 'Despesas' },
-      { to: '/outras-rendas', icon: <DollarSign size={16} />, label: 'Outras Rendas' },
+      { to: '/outras-rendas', icon: <DollarSign size={16} />, label: 'Outras Receitas' },
       { to: '/aplicacoes-financeiras', icon: <Landmark size={16} />, label: 'Aplicações Financeiras' },
       { to: '/plano-contas', icon: <FileSpreadsheet size={16} />, label: 'Código de Contas' },
       { to: '/previsao-orcamentaria', icon: <BarChart3 size={16} />, label: 'Previsão Orçamentária' },
