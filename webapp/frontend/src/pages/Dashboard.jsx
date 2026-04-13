@@ -27,13 +27,18 @@ const fmtMes = m => { if (!m) return ''; const [y, mo] = m.split('-'); const mon
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
-  const [mes, setMes] = useState(format(new Date(), 'yyyy-MM'));
+  const [mes, setMes] = useState('');
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(() => {
     setLoading(true);
-    api.get('/dashboard', { params: { mes_referencia: mes } })
-      .then(r => setData(r.data))
+    api.get('/dashboard', { params: mes ? { mes_referencia: mes } : undefined })
+      .then(r => {
+        setData(r.data);
+        if (!mes && r.data?.mes_atual) {
+          setMes(r.data.mes_atual);
+        }
+      })
       .catch((err) => {
         if (err.response?.status !== 401) {
           toast.error(getApiErrorMessage(err, 'Erro ao carregar dashboard'));

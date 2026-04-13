@@ -3345,7 +3345,37 @@ def dashboard(
     current_user=Depends(get_current_user)
 ):
     today = date.today()
-    mes_atual = mes_referencia or today.strftime("%Y-%m")
+    if mes_referencia:
+        mes_atual = mes_referencia
+    else:
+        meses_com_movimento = []
+
+        ultimo_pagamento = db.query(sql_func.max(models.Pagamento.mes_referencia)).filter(
+            models.Pagamento.mes_referencia.isnot(None),
+            models.Pagamento.status_pagamento == 'pago'
+        ).scalar()
+        if ultimo_pagamento:
+            meses_com_movimento.append(ultimo_pagamento)
+
+        ultimo_despesa = db.query(sql_func.max(models.Despesa.mes_referencia)).filter(
+            models.Despesa.mes_referencia.isnot(None)
+        ).scalar()
+        if ultimo_despesa:
+            meses_com_movimento.append(ultimo_despesa)
+
+        ultima_renda = db.query(sql_func.max(models.OutraRenda.mes_referencia)).filter(
+            models.OutraRenda.mes_referencia.isnot(None)
+        ).scalar()
+        if ultima_renda:
+            meses_com_movimento.append(ultima_renda)
+
+        ultima_aplicacao = db.query(sql_func.max(models.AplicacaoFinanceira.mes_referencia)).filter(
+            models.AplicacaoFinanceira.mes_referencia.isnot(None)
+        ).scalar()
+        if ultima_aplicacao:
+            meses_com_movimento.append(ultima_aplicacao)
+
+        mes_atual = max(meses_com_movimento) if meses_com_movimento else today.strftime("%Y-%m")
     ano, mes = mes_atual.split("-")
     ref_date = date(int(ano), int(mes), 1)
 
