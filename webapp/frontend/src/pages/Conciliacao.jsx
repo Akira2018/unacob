@@ -265,6 +265,81 @@ export default function Conciliacao() {
     }
   };
 
+  const processarResultadoImportacao = (data, fileName, origem = 'arquivo bancario') => {
+    const total = Number(data?.total_importados || 0);
+    const linhasLidas = Number(data?.linhas_lidas || 0);
+    const linhasDuplicadas = Number(data?.linhas_duplicadas || 0);
+    const linhasInvalidas = Number(data?.linhas_invalidas || 0);
+    const baixasAutomaticas = Number(data?.total_baixas_automaticas || 0);
+    const semMembro = Number(data?.total_sem_membro || 0);
+    const codigosAmbiguos = Number(data?.total_codigos_ambiguos || 0);
+    const codigosSemMembro = Array.isArray(data?.codigos_sem_membro) ? data.codigos_sem_membro : [];
+    const diagnosticoDabb = data?.diagnostico_dabb;
+    const mesesImportados = Array.isArray(data?.meses_importados) ? data.meses_importados : [];
+    const mesesLidos = Array.isArray(data?.meses_lidos) ? data.meses_lidos : [];
+
+    setUltimoResumoImportacao({
+      arquivo: fileName || 'arquivo_bancario',
+      total,
+      linhasLidas,
+      linhasDuplicadas,
+      linhasInvalidas,
+      baixasAutomaticas,
+      semMembro,
+      codigosAmbiguos,
+      codigosSemMembro,
+      mesesImportados,
+      mesesLidos,
+    });
+
+    if (total === 0) {
+      toast(
+        `Nenhum lancamento novo foi importado. Lidas: ${linhasLidas}, duplicadas: ${linhasDuplicadas}, invalidas: ${linhasInvalidas}.`
+      );
+    } else {
+      toast.success(`${total} lancamentos importados via ${origem}!`);
+    }
+
+    if (baixasAutomaticas > 0 || semMembro > 0 || codigosAmbiguos > 0) {
+      toast(
+        `DABB: ${baixasAutomaticas} baixa(s) automática(s), ${semMembro} sem membro, ${codigosAmbiguos} código(s) ambíguo(s).`
+      );
+    }
+
+    if (diagnosticoDabb?.linhas_detalhe_encontradas > 0) {
+      const motivos = diagnosticoDabb?.motivos_invalidos || {};
+      const resumoMotivos = Object.entries(motivos)
+        .map(([motivo, qtd]) => `${motivo}: ${qtd}`)
+        .join(', ');
+      toast(
+        `DABB: detalhes ${diagnosticoDabb.linhas_detalhe_encontradas}, válidas ${diagnosticoDabb.linhas_detalhe_validas}` +
+        (resumoMotivos ? `, inválidas por motivo -> ${resumoMotivos}` : '.')
+      );
+    }
+
+    if (codigosSemMembro.length > 0) {
+      const amostra = codigosSemMembro
+        .slice(0, 5)
+        .map(item => item.codigo_dabb)
+        .join(', ');
+      toast(
+        `Importacao concluida, mas ${codigosSemMembro.length} codigo(s) DABB ainda nao existem no cadastro de membros. Ex.: ${amostra}`
+      );
+    }
+
+    const mesDestino =
+      (mes && mesesImportados.length > 0 && !mesesImportados.includes(mes) && mesesImportados[0]) ||
+      (mes && total === 0 && linhasLidas > 0 && linhasDuplicadas > 0 && mesesLidos.length > 0 && !mesesLidos.includes(mes) && mesesLidos[0]) ||
+      null;
+
+    if (mesDestino) {
+      setMes(mesDestino);
+      toast('Ha lancamentos do arquivo em outro mes. Ajustei o filtro automaticamente.');
+    } else {
+      load();
+    }
+  };
+
   const handleImportExtrato = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -284,81 +359,34 @@ export default function Conciliacao() {
       const res = await api.post('/conciliacao/importar/extrato', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
-
-      const total = Number(res.data?.total_importados || 0);
-      const linhasLidas = Number(res.data?.linhas_lidas || 0);
-      const linhasDuplicadas = Number(res.data?.linhas_duplicadas || 0);
-      const linhasInvalidas = Number(res.data?.linhas_invalidas || 0);
-      const baixasAutomaticas = Number(res.data?.total_baixas_automaticas || 0);
-      const semMembro = Number(res.data?.total_sem_membro || 0);
-      const codigosAmbiguos = Number(res.data?.total_codigos_ambiguos || 0);
-      const codigosSemMembro = Array.isArray(res.data?.codigos_sem_membro) ? res.data.codigos_sem_membro : [];
-      const diagnosticoDabb = res.data?.diagnostico_dabb;
-      const mesesImportados = Array.isArray(res.data?.meses_importados) ? res.data.meses_importados : [];
-      const mesesLidos = Array.isArray(res.data?.meses_lidos) ? res.data.meses_lidos : [];
-
-      setUltimoResumoImportacao({
-        arquivo: file.name || 'arquivo_bancario',
-        total,
-        linhasLidas,
-        linhasDuplicadas,
-        linhasInvalidas,
-        baixasAutomaticas,
-        semMembro,
-        codigosAmbiguos,
-        codigosSemMembro,
-        mesesImportados,
-        mesesLidos,
-      });
-
-      if (total === 0) {
-        toast(
-          `Nenhum lancamento novo foi importado. Lidas: ${linhasLidas}, duplicadas: ${linhasDuplicadas}, invalidas: ${linhasInvalidas}.`
-        );
-      } else {
-        toast.success(`${total} lancamentos importados!`);
-      }
-
-      if (baixasAutomaticas > 0 || semMembro > 0 || codigosAmbiguos > 0) {
-        toast(
-          `DABB: ${baixasAutomaticas} baixa(s) automática(s), ${semMembro} sem membro, ${codigosAmbiguos} código(s) ambíguo(s).`
-        );
-      }
-
-      if (diagnosticoDabb?.linhas_detalhe_encontradas > 0) {
-        const motivos = diagnosticoDabb?.motivos_invalidos || {};
-        const resumoMotivos = Object.entries(motivos)
-          .map(([motivo, qtd]) => `${motivo}: ${qtd}`)
-          .join(', ');
-        toast(
-          `RET/REM: detalhes ${diagnosticoDabb.linhas_detalhe_encontradas}, válidas ${diagnosticoDabb.linhas_detalhe_validas}` +
-          (resumoMotivos ? `, inválidas por motivo -> ${resumoMotivos}` : '.')
-        );
-      }
-
-      if (codigosSemMembro.length > 0) {
-        const amostra = codigosSemMembro
-          .slice(0, 5)
-          .map(item => item.codigo_dabb)
-          .join(', ');
-        toast(
-          `Importacao concluida, mas ${codigosSemMembro.length} codigo(s) DABB ainda nao existem no cadastro de membros. Ex.: ${amostra}`
-        );
-      }
-
-      const mesDestino =
-        (mes && mesesImportados.length > 0 && !mesesImportados.includes(mes) && mesesImportados[0]) ||
-        (mes && total === 0 && linhasLidas > 0 && linhasDuplicadas > 0 && mesesLidos.length > 0 && !mesesLidos.includes(mes) && mesesLidos[0]) ||
-        null;
-
-      if (mesDestino) {
-        setMes(mesDestino);
-        toast('Ha lancamentos do arquivo em outro mes. Ajustei o filtro automaticamente.');
-      } else {
-        load();
-      }
+      processarResultadoImportacao(res.data, file.name || 'arquivo_bancario', 'arquivo bancario');
     } catch (err) {
       toast.error(getApiErrorMessage(err, 'Erro ao importar extrato'));
+    }
+    e.target.value = '';
+  };
+
+  const handleImportPdfBb = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const fileName = (file.name || '').toLowerCase();
+    if (!fileName.endsWith('.pdf')) {
+      toast.error('Selecione um arquivo PDF do Banco do Brasil');
+      e.target.value = '';
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await api.post('/conciliacao/importar/pdf-bb', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      processarResultadoImportacao(res.data, file.name || 'extrato_bb.pdf', 'PDF BB');
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao importar PDF do Banco do Brasil'));
     }
     e.target.value = '';
   };
@@ -956,6 +984,7 @@ export default function Conciliacao() {
                   '2. Escolha o formato igual ao arquivo recebido do banco.',
                   '3. CSV e OFX servem para extratos comuns.',
                   '4. RET e REM servem para retorno/remessa com codigo DABB.',
+                  '5. PDF BB serve para extrato em PDF do Banco do Brasil com DABB.',
                 ].map((item) => (
                   <div key={item} style={{ padding: '12px 14px', borderRadius: 12, background: '#ffffff', border: '1px solid #e2e8f0', fontSize: 13, color: '#334e68' }}>
                     {item}
@@ -1013,10 +1042,35 @@ export default function Conciliacao() {
                     />
                   </label>
                 </div>
+
+                <div style={{ display: 'grid', gap: 12, padding: 16, borderRadius: 14, background: '#ffffff', border: '1px solid #d9e2ec' }}>
+                  <div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: '#102a43', marginBottom: 4 }}>PDF Banco do Brasil</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: '#1d4ed8', textTransform: 'uppercase', letterSpacing: '0.04em' }}>PDF BB</div>
+                  </div>
+                  <div style={{ fontSize: 13, color: '#334e68', lineHeight: 1.6 }}>
+                    Use para extratos em PDF do Banco do Brasil que trazem os lançamentos DABB e devem entrar direto na conciliação.
+                  </div>
+                  <div style={{ padding: '10px 12px', borderRadius: 10, background: '#f8fafc', fontSize: 13, color: '#243b53' }}>
+                    <strong>Exemplo de uso:</strong> PDF exportado pelo BB com mensalidades DABB, código do associado e número do documento.
+                  </div>
+                  <label className="btn btn-primary btn-sm" style={{ width: 'fit-content' }}>
+                    <Upload size={14} /> Selecionar PDF BB
+                    <input
+                      type="file"
+                      accept=".pdf,application/pdf"
+                      onChange={(e) => {
+                        closeImportModal();
+                        handleImportPdfBb(e);
+                      }}
+                      style={{ display: 'none' }}
+                    />
+                  </label>
+                </div>
               </div>
 
               <div style={{ padding: '12px 14px', borderRadius: 12, background: '#fff8e8', border: '1px solid #f6d58c', color: '#7c5a12', fontSize: 13, lineHeight: 1.6 }}>
-                <strong>Em caso de duvida:</strong> tente primeiro o arquivo CSV ou OFX. Se o banco forneceu um arquivo tecnico de retorno ou remessa, use RET ou REM.
+                <strong>Em caso de duvida:</strong> use CSV/OFX para exportações bancárias comuns, RET/REM para arquivos técnicos e PDF BB quando o Banco do Brasil fornecer o extrato apenas em PDF.
               </div>
 
               <div className="modal-footer" style={{ padding: 0 }}>
