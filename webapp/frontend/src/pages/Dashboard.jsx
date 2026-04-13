@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import api from '../api';
 import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
@@ -7,10 +7,12 @@ import {
 import { Users, CreditCard, TrendingDown, TrendingUp, Cake, AlertCircle, CheckCircle, DollarSign } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { getApiErrorMessage } from '../utils/apiError';
+import { format, subMonths } from 'date-fns';
 
 const COLORS = ['#1e3a5f', '#c8a84b', '#38a169', '#e53e3e', '#805ad5', '#dd6b20'];
 const COMPACT_CURRENCY_THRESHOLD = 100000;
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
+const getMeses = () => { const r = []; for (let i = 0; i < 13; i++) r.push(format(subMonths(new Date(), i), 'yyyy-MM')); return r; };
 const fmtCompact = (v) => {
   const valor = Number(v || 0);
   const semCentavos = Math.abs(valor) >= COMPACT_CURRENCY_THRESHOLD;
@@ -25,10 +27,12 @@ const fmtMes = m => { if (!m) return ''; const [y, mo] = m.split('-'); const mon
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
+  const [mes, setMes] = useState(format(new Date(), 'yyyy-MM'));
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    api.get('/dashboard')
+  const load = useCallback(() => {
+    setLoading(true);
+    api.get('/dashboard', { params: { mes_referencia: mes } })
       .then(r => setData(r.data))
       .catch((err) => {
         if (err.response?.status !== 401) {
@@ -36,7 +40,12 @@ export default function Dashboard() {
         }
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [mes]);
+
+  useEffect(() => {
+    const timerId = setTimeout(load, 0);
+    return () => clearTimeout(timerId);
+  }, [load]);
 
   if (loading) return <div className="page-loading"><div className="spinner" /></div>;
   if (!data) return null;
@@ -45,7 +54,12 @@ export default function Dashboard() {
     <div>
       <div className="topbar">
         <h2>Painel Geral</h2>
-        <span style={{ fontSize: 13, color: '#718096' }}>Mês: {fmtMes(data.mes_atual)}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 13, color: '#718096' }}>Mês:</span>
+          <select className="search-input" value={mes} onChange={e => setMes(e.target.value)} style={{ minWidth: 110 }}>
+            {getMeses().map(m => <option key={m} value={m}>{fmtMes(m)}</option>)}
+          </select>
+        </div>
       </div>
 
       {/* Stats */}

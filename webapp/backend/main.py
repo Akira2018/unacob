@@ -3339,10 +3339,15 @@ def create_transacao(req: schemas.TransacaoCreate, db: Session = Depends(get_db)
 # DASHBOARD
 # ════════════════════════════════════════════════════════════════════════════════
 @app.get("/api/dashboard")
-def dashboard(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+def dashboard(
+    mes_referencia: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
     today = date.today()
-    mes_atual = today.strftime("%Y-%m")
+    mes_atual = mes_referencia or today.strftime("%Y-%m")
     ano, mes = mes_atual.split("-")
+    ref_date = date(int(ano), int(mes), 1)
 
     total_membros = db.query(models.Membro).filter(models.Membro.status == 'ativo').count()
     total_inativos = db.query(models.Membro).filter(models.Membro.status == 'inativo').count()
@@ -3376,8 +3381,8 @@ def dashboard(db: Session = Depends(get_db), current_user=Depends(get_current_us
     # Evolução últimos 6 meses
     evolucao = []
     for i in range(5, -1, -1):
-        ref_date = today.replace(day=1) - timedelta(days=i * 28)
-        mes_iter = ref_date.strftime("%Y-%m")
+        ref_iter = ref_date - timedelta(days=i * 28)
+        mes_iter = ref_iter.strftime("%Y-%m")
         pags_i = db.query(models.Pagamento).filter(
             models.Pagamento.mes_referencia == mes_iter,
             models.Pagamento.status_pagamento == 'pago'
