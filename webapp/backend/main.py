@@ -490,16 +490,34 @@ async def importar_pdf_bb(
 
                 if len(membros_match) == 1:
                     membro = next(iter(membros_match.values()))
-                    _baixar_pagamento_mensalidade_por_conciliacao(
+                    competencias_inferidas = _inferir_competencias_dabb_por_conciliacao(
                         db=db,
                         conciliacao=c,
                         membro=membro,
-                        user_id=current_user.id,
-                        observacao_origem=(
-                            f"Baixa automática via PDF Banco do Brasil ({mes_ref}) - "
-                            f"codigo_dabb {codigo_dabb}"
-                        ),
                     )
+                    if competencias_inferidas:
+                        _baixar_pagamentos_dabb_por_competencias_inferidas(
+                            db=db,
+                            conciliacao=c,
+                            membro=membro,
+                            competencias=competencias_inferidas,
+                            user_id=current_user.id,
+                            observacao_origem=(
+                                f"Baixa automática via PDF Banco do Brasil ({mes_ref}) - "
+                                f"codigo_dabb {codigo_dabb}"
+                            ),
+                        )
+                    else:
+                        _baixar_pagamento_mensalidade_por_conciliacao(
+                            db=db,
+                            conciliacao=c,
+                            membro=membro,
+                            user_id=current_user.id,
+                            observacao_origem=(
+                                f"Baixa automática via PDF Banco do Brasil ({mes_ref}) - "
+                                f"codigo_dabb {codigo_dabb}"
+                            ),
+                        )
                     total_baixas_automaticas += 1
                 elif len(membros_match) > 1:
                     total_codigos_ambiguos += 1
@@ -1692,7 +1710,7 @@ def _garantir_pagamento_pendente(db: Session, membro: models.Membro, mes_referen
     pagamento = db.query(models.Pagamento).filter(
         models.Pagamento.membro_id == membro.id,
         models.Pagamento.mes_referencia == mes_referencia
-    ).first()
+    ).order_by(models.Pagamento.updated_at.desc(), models.Pagamento.created_at.desc()).first()
     valor_mensalidade = _valor_mensalidade_dabb_membro(db, membro)
     if pagamento:
         if _status_pagamento_pendente_ou_atrasado(pagamento.status_pagamento):
@@ -2077,7 +2095,7 @@ def _baixar_pagamentos_por_remessa_item(
         pagamento = db.query(models.Pagamento).filter(
             models.Pagamento.membro_id == remessa_item.membro_id,
             models.Pagamento.mes_referencia == competencia
-        ).first()
+        ).order_by(models.Pagamento.updated_at.desc(), models.Pagamento.created_at.desc()).first()
 
         if not pagamento:
             pagamento = models.Pagamento(
@@ -2591,16 +2609,34 @@ def reprocessar_pendencias_dabb(
 
         if len(membros_match) == 1:
             membro = next(iter(membros_match.values()))
-            _baixar_pagamento_mensalidade_por_conciliacao(
+            competencias_inferidas = _inferir_competencias_dabb_por_conciliacao(
                 db=db,
                 conciliacao=conciliacao,
                 membro=membro,
-                user_id=current_user.id,
-                observacao_origem=(
-                    f"Baixa reprocessada via codigo DABB ({mes_referencia}) - "
-                    f"codigo_dabb {codigo_dabb}"
-                ),
             )
+            if competencias_inferidas:
+                _baixar_pagamentos_dabb_por_competencias_inferidas(
+                    db=db,
+                    conciliacao=conciliacao,
+                    membro=membro,
+                    competencias=competencias_inferidas,
+                    user_id=current_user.id,
+                    observacao_origem=(
+                        f"Baixa reprocessada via codigo DABB ({mes_referencia}) - "
+                        f"codigo_dabb {codigo_dabb}"
+                    ),
+                )
+            else:
+                _baixar_pagamento_mensalidade_por_conciliacao(
+                    db=db,
+                    conciliacao=conciliacao,
+                    membro=membro,
+                    user_id=current_user.id,
+                    observacao_origem=(
+                        f"Baixa reprocessada via codigo DABB ({mes_referencia}) - "
+                        f"codigo_dabb {codigo_dabb}"
+                    ),
+                )
             total_reprocessados += 1
             detalhes.append({
                 "conciliacao_id": conciliacao.id,
@@ -2624,6 +2660,98 @@ def reprocessar_pendencias_dabb(
         "total_reprocessados": total_reprocessados,
         "total_sem_match": total_sem_match,
         "total_ambiguos": total_ambiguos,
+        "detalhes": detalhes,
+    }
+
+
+@app.post("/api/pagamentos/reparar-dabb-bimestral")
+def reparar_pagamentos_dabb_bimestral(
+    mes_referencia: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    if not mes_referencia or not re.match(r"^\d{4}-\d{2}$", mes_referencia):
+        raise HTTPException(status_code=400, detail="mes_referencia deve estar no formato YYYY-MM")
+
+    membros_por_codigo_dabb = _indexar_membros_por_codigo_dabb(db)
+    conciliacoes_dabb = db.query(models.Conciliacao).filter(
+        models.Conciliacao.mes_referencia == mes_referencia,
+        models.Conciliacao.tipo == "credito",
+        models.Conciliacao.observacoes.isnot(None),
+        or_(
+            models.Conciliacao.observacoes.like("Arquivo DABB%"),
+            models.Conciliacao.observacoes.like("Arquivo PDF BB:%")
+        )
+    ).order_by(models.Conciliacao.data_extrato.asc()).all()
+
+    total_analisados = len(conciliacoes_dabb)
+    total_corrigidos = 0
+    total_sem_match = 0
+    total_ambiguos = 0
+    total_sem_necessidade = 0
+    detalhes = []
+
+    for conciliacao in conciliacoes_dabb:
+        codigo_dabb = _extrair_codigo_dabb_das_observacoes(conciliacao.observacoes)
+        if not codigo_dabb:
+            total_sem_match += 1
+            continue
+
+        membros_match = {}
+        for variante in _variantes_codigo_dabb(codigo_dabb):
+            for membro in membros_por_codigo_dabb.get(variante, []):
+                membros_match[membro.id] = membro
+
+        if len(membros_match) > 1:
+            total_ambiguos += 1
+            continue
+
+        if not membros_match:
+            total_sem_match += 1
+            continue
+
+        membro = next(iter(membros_match.values()))
+        competencias_inferidas = _inferir_competencias_dabb_por_conciliacao(
+            db=db,
+            conciliacao=conciliacao,
+            membro=membro,
+        )
+
+        if len(competencias_inferidas) <= 1:
+            total_sem_necessidade += 1
+            continue
+
+        _baixar_pagamentos_dabb_por_competencias_inferidas(
+            db=db,
+            conciliacao=conciliacao,
+            membro=membro,
+            competencias=competencias_inferidas,
+            user_id=current_user.id,
+            observacao_origem=(
+                f"Correcao de baixa DABB por competencias ({mes_referencia}) - "
+                f"codigo_dabb {codigo_dabb}"
+            ),
+        )
+        total_corrigidos += 1
+        detalhes.append({
+            "conciliacao_id": conciliacao.id,
+            "membro_id": membro.id,
+            "membro_nome": membro.nome_completo,
+            "codigo_dabb": codigo_dabb,
+            "valor": float(conciliacao.valor_extrato or 0),
+            "data_extrato": str(conciliacao.data_extrato) if conciliacao.data_extrato else None,
+            "competencias": competencias_inferidas,
+        })
+
+    db.commit()
+    return {
+        "ok": True,
+        "mes_referencia": mes_referencia,
+        "total_analisados": total_analisados,
+        "total_corrigidos": total_corrigidos,
+        "total_sem_match": total_sem_match,
+        "total_ambiguos": total_ambiguos,
+        "total_sem_necessidade": total_sem_necessidade,
         "detalhes": detalhes,
     }
 
@@ -2759,6 +2887,17 @@ def _register_transaction(db, pagamento, user_id):
             created_at=datetime.utcnow()
         )
         db.add(t)
+        db.commit()
+    else:
+        existing.user_id = user_id
+        existing.descricao = f"Mensalidade {nome} - {pagamento.mes_referencia}"
+        existing.valor = pagamento.valor_pago
+        existing.tipo = "entrada"
+        existing.categoria = f"Mensalidade {pagamento.mes_referencia}"
+        existing.data_transacao = pagamento.data_pagamento or date.today()
+        existing.origem = "mensalidade"
+        existing.membro_id = pagamento.membro_id
+        existing.updated_at = datetime.utcnow()
         db.commit()
 
 
@@ -6014,6 +6153,53 @@ def _extrair_codigo_dabb_das_observacoes(observacoes: Optional[str]) -> str:
     return _normalizar_codigo_dabb(match.group(1) if match else "")
 
 
+def _extrair_float_dabb_das_observacoes(observacoes: Optional[str], chave: str) -> Optional[float]:
+    texto = observacoes or ""
+    match = re.search(rf"{re.escape(chave)}=([0-9]+(?:\.[0-9]+)?)", texto)
+    if not match:
+        return None
+    try:
+        return round(float(match.group(1)), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _snapshot_dabb_da_conciliacao(
+    db: Session,
+    conciliacao: models.Conciliacao,
+    membro: models.Membro,
+) -> tuple[float, float]:
+    mensalidade_snapshot = _extrair_float_dabb_das_observacoes(conciliacao.observacoes, "mensalidade_snapshot")
+    taxa_snapshot = _extrair_float_dabb_das_observacoes(conciliacao.observacoes, "taxa_bancaria_snapshot")
+
+    if mensalidade_snapshot is None:
+        mensalidade_snapshot = round(_valor_mensalidade_dabb_membro(db, membro), 2)
+    if taxa_snapshot is None:
+        taxa_snapshot = round(_get_dabb_taxa_bimestral(db), 2)
+
+    return mensalidade_snapshot, taxa_snapshot
+
+
+def _anexar_snapshot_dabb_observacoes(
+    conciliacao: models.Conciliacao,
+    valor_mensalidade: float,
+    taxa_bancaria: float,
+    competencias: Optional[list[str]] = None,
+) -> None:
+    observacoes = conciliacao.observacoes or ""
+    complementos = []
+
+    if "mensalidade_snapshot=" not in observacoes:
+        complementos.append(f"mensalidade_snapshot={round(float(valor_mensalidade or 0), 2):.2f}")
+    if "taxa_bancaria_snapshot=" not in observacoes:
+        complementos.append(f"taxa_bancaria_snapshot={round(float(taxa_bancaria or 0), 2):.2f}")
+    if competencias and "competencias_snapshot=" not in observacoes:
+        complementos.append(f"competencias_snapshot={','.join(competencias)}")
+
+    if complementos:
+        conciliacao.observacoes = observacoes + ((" | " if observacoes else "")) + " | ".join(complementos)
+
+
 def _indexar_membros_por_codigo_dabb(db: Session) -> dict[str, list[models.Membro]]:
     indice = defaultdict(list)
     membros = db.query(models.Membro).filter(
@@ -6230,7 +6416,7 @@ def _baixar_pagamento_mensalidade_por_conciliacao(
     pagamento = db.query(models.Pagamento).filter(
         models.Pagamento.membro_id == membro.id,
         models.Pagamento.mes_referencia == mes_ref
-    ).first()
+    ).order_by(models.Pagamento.updated_at.desc(), models.Pagamento.created_at.desc()).first()
 
     observacao = observacao_origem.strip()
     if pagamento:
@@ -6264,6 +6450,122 @@ def _baixar_pagamento_mensalidade_por_conciliacao(
 
     _register_transaction(db, pagamento, user_id)
     return pagamento
+
+
+def _competencias_em_aberto_ate_mes(
+    db: Session,
+    membro: models.Membro,
+    mes_fim: str,
+) -> list[str]:
+    ano, _ = _parse_mes_referencia_or_400(mes_fim)
+    meses_considerados = _meses_entre(f"{ano}-01", mes_fim)
+    pagas = _competencias_pagamento_pagas_no_ano(db, membro.id, ano)
+    em_aberto = [mes for mes in meses_considerados if mes not in pagas]
+
+    if membro.data_filiacao:
+        limite_filiacao = membro.data_filiacao.strftime("%Y-%m")
+        em_aberto = [mes for mes in em_aberto if mes >= limite_filiacao]
+
+    return em_aberto
+
+
+def _inferir_competencias_dabb_por_conciliacao(
+    db: Session,
+    conciliacao: models.Conciliacao,
+    membro: models.Membro,
+) -> list[str]:
+    mes_ref = conciliacao.mes_referencia or (
+        conciliacao.data_extrato.strftime("%Y-%m") if conciliacao.data_extrato else None
+    )
+    if not mes_ref:
+        return []
+
+    valor_mensalidade, taxa_bancaria = _snapshot_dabb_da_conciliacao(db, conciliacao, membro)
+    valor_extrato = round(float(conciliacao.valor_extrato or 0), 2)
+    valor_competencias = round(valor_extrato - taxa_bancaria, 2)
+
+    if valor_mensalidade <= 0 or valor_competencias <= 0:
+        return []
+
+    quantidade_competencias = int(round(valor_competencias / valor_mensalidade))
+    if quantidade_competencias <= 0:
+        return []
+
+    valor_esperado = round(valor_mensalidade * quantidade_competencias, 2)
+    if abs(valor_competencias - valor_esperado) > 0.05:
+        return []
+
+    mes_inicio_bimestre, mes_fim_bimestre = _normalizar_inicio_bimestre(mes_ref)
+    competencias_bimestre = _meses_entre(mes_inicio_bimestre, mes_fim_bimestre)
+
+    if quantidade_competencias == len(competencias_bimestre) and quantidade_competencias > 0:
+        return competencias_bimestre
+
+    competencias_em_aberto = _competencias_em_aberto_ate_mes(db, membro, mes_ref)
+    if not competencias_em_aberto or len(competencias_em_aberto) < quantidade_competencias:
+        return []
+
+    return competencias_em_aberto[:quantidade_competencias]
+
+
+def _baixar_pagamentos_dabb_por_competencias_inferidas(
+    db: Session,
+    conciliacao: models.Conciliacao,
+    membro: models.Membro,
+    competencias: list[str],
+    user_id: str,
+    observacao_origem: str,
+):
+    if not competencias:
+        raise ValueError("Nenhuma competência DABB foi informada para a baixa")
+
+    valor_mensalidade, taxa_bancaria = _snapshot_dabb_da_conciliacao(db, conciliacao, membro)
+    pagamentos_processados = []
+    _anexar_snapshot_dabb_observacoes(conciliacao, valor_mensalidade, taxa_bancaria, competencias)
+
+    for competencia in competencias:
+        pagamento = db.query(models.Pagamento).filter(
+            models.Pagamento.membro_id == membro.id,
+            models.Pagamento.mes_referencia == competencia
+        ).order_by(models.Pagamento.updated_at.desc(), models.Pagamento.created_at.desc()).first()
+
+        observacao = (
+            f"{observacao_origem} | competências: {', '.join(competencias)} | "
+            f"taxa bancária: R$ {taxa_bancaria:.2f}"
+        )
+
+        if not pagamento:
+            pagamento = models.Pagamento(
+                id=str(uuid.uuid4()),
+                membro_id=membro.id,
+                valor_pago=valor_mensalidade,
+                mes_referencia=competencia,
+                data_pagamento=conciliacao.data_extrato,
+                status_pagamento="pago",
+                forma_pagamento="debito_automatico_bimestral",
+                observacoes=observacao,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+            db.add(pagamento)
+            db.flush()
+        else:
+            pagamento.valor_pago = valor_mensalidade
+            pagamento.data_pagamento = conciliacao.data_extrato
+            pagamento.status_pagamento = "pago"
+            pagamento.forma_pagamento = "debito_automatico_bimestral"
+            pagamento.observacoes = (
+                (pagamento.observacoes + "\n") if pagamento.observacoes else ""
+            ) + observacao
+            pagamento.updated_at = datetime.utcnow()
+
+        _register_transaction(db, pagamento, user_id)
+        pagamentos_processados.append(pagamento)
+
+    conciliacao.pagamento_id = pagamentos_processados[-1].id
+    conciliacao.conciliado = True
+    conciliacao.updated_at = datetime.utcnow()
+    return pagamentos_processados
 
 
 def _descricao_credito_parece_mensalidade_ofx(descricao: Optional[str]) -> bool:
@@ -6659,16 +6961,34 @@ async def importar_extrato_arquivo(
 
                         if len(membros_match) == 1:
                             membro = next(iter(membros_match.values()))
-                            _baixar_pagamento_mensalidade_por_conciliacao(
+                            competencias_inferidas = _inferir_competencias_dabb_por_conciliacao(
                                 db=db,
                                 conciliacao=c,
                                 membro=membro,
-                                user_id=current_user.id,
-                                observacao_origem=(
-                                    f"Baixa automática via arquivo bancário DABB ({mes_ref}) - "
-                                    f"codigo_dabb {codigo_dabb}"
-                                ),
                             )
+                            if competencias_inferidas:
+                                _baixar_pagamentos_dabb_por_competencias_inferidas(
+                                    db=db,
+                                    conciliacao=c,
+                                    membro=membro,
+                                    competencias=competencias_inferidas,
+                                    user_id=current_user.id,
+                                    observacao_origem=(
+                                        f"Baixa automática via arquivo bancário DABB ({mes_ref}) - "
+                                        f"codigo_dabb {codigo_dabb}"
+                                    ),
+                                )
+                            else:
+                                _baixar_pagamento_mensalidade_por_conciliacao(
+                                    db=db,
+                                    conciliacao=c,
+                                    membro=membro,
+                                    user_id=current_user.id,
+                                    observacao_origem=(
+                                        f"Baixa automática via arquivo bancário DABB ({mes_ref}) - "
+                                        f"codigo_dabb {codigo_dabb}"
+                                    ),
+                                )
                             total_baixas_automaticas += 1
                         elif len(membros_match) > 1:
                             total_codigos_ambiguos += 1

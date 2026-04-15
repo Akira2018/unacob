@@ -212,6 +212,7 @@ export default function Pagamentos() {
   const [confirmandoPendencia, setConfirmandoPendencia] = useState('');
   const [ultimoDiagnosticoDabb, setUltimoDiagnosticoDabb] = useState(null);
   const [historicoDabb, setHistoricoDabb] = useState([]);
+  const [reparandoDabb, setReparandoDabb] = useState(false);
   const valorPagoFormatado = Number(form.valor_pago || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
   const referenciaReciboTexto = referenteMeses.trim() || `${mesExtenso(mes)} de ${anoExtenso(mes)}`;
 
@@ -382,6 +383,30 @@ export default function Pagamentos() {
       toast.error(getApiErrorMessage(err, 'Erro na conciliação'));
     } finally {
       setConfirmandoPendencia('');
+    }
+  };
+
+  const repararDabbBimestral = async () => {
+    if (!mes) {
+      toast('Selecione um mês específico para reparar as baixas DABB.');
+      return;
+    }
+    if (!window.confirm(`Deseja reparar as baixas DABB bimestrais do mês ${mes}?`)) return;
+
+    setReparandoDabb(true);
+    try {
+      const { data } = await api.post('/pagamentos/reparar-dabb-bimestral', null, {
+        params: { mes_referencia: mes },
+      });
+      toast.success(
+        `Reparo concluído: ${data.total_corrigidos} correção(ões), ${data.total_sem_match} sem vínculo, ${data.total_ambiguos} ambíguo(s).`
+      );
+      load();
+      loadPendenciasConcil();
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao reparar baixas DABB'));
+    } finally {
+      setReparandoDabb(false);
     }
   };
 
@@ -581,6 +606,18 @@ export default function Pagamentos() {
           <button className={`btn btn-sm ${viewMode === 'cards' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('cards')}>Cartões</button>
           <button className={`btn btn-sm ${viewMode === 'table' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('table')}>Tabela</button>
         </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 20, padding: 16, display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#102a43', marginBottom: 4 }}>Correção de DABB bimestral</div>
+          <div style={{ fontSize: 13, color: '#486581' }}>
+            Use esta ação quando um débito do DABB, como `R$ 71,00`, tiver sido lançado só no mês atual e precisar ser redistribuído entre as competências do bimestre.
+          </div>
+        </div>
+        <button className="btn btn-outline btn-sm" onClick={repararDabbBimestral} disabled={reparandoDabb}>
+          {reparandoDabb ? 'Reparando DABB...' : 'Reparar DABB do mês'}
+        </button>
       </div>
 
       {/* Cards de Resumo */}
