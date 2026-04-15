@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
@@ -40,10 +40,41 @@ SQLALCHEMY_DATABASE_URL = _normalize_sqlite_url(
     os.getenv("DATABASE_URL", "sqlite:///./associacao.db")
 )
 
+SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "15000"))
+SQLITE_JOURNAL_MODE = (os.getenv("SQLITE_JOURNAL_MODE", "WAL").strip() or "WAL").upper()
+SQLITE_SYNCHRONOUS = (os.getenv("SQLITE_SYNCHRONOUS", "NORMAL").strip() or "NORMAL").upper()
+
+sqlite_connect_args = {}
+if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    sqlite_connect_args = {
+        "check_same_thread": False,
+        "timeout": max(1, SQLITE_BUSY_TIMEOUT_MS / 1000),
+    }
+
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}
+    connect_args=sqlite_connect_args,
+    pool_pre_ping=True,
 )
+
+if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def _sqlite_on_connect(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+        cursor.execute("PRAGMA foreign_keys = ON")
+        cursor.execute("PRAGMA temp_store = MEMORY")
+        try:
+            cursor.execute(f"PRAGMA journal_mode = {SQLITE_JOURNAL_MODE}")
+        except Exception:
+            # Some environments may open SQLite in read-only mode for health checks or tooling.
+            pass
+        try:
+            cursor.execute(f"PRAGMA synchronous = {SQLITE_SYNCHRONOUS}")
+        except Exception:
+            pass
+        cursor.close()
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

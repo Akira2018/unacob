@@ -19,6 +19,7 @@ import PlanoContas from './pages/PlanoContas';
 import PrevisaoOrcamentaria from './pages/PrevisaoOrcamentaria';
 import Etiquetas from './pages/Etiquetas';
 import Relatorios from './pages/Relatorios';
+import RemessaDabb from './pages/RemessaDabb';
 import Usuarios from './pages/Usuarios';
 import MeuCadastro from './pages/MeuCadastro';
 import AcessoNegado from './pages/AcessoNegado';
@@ -63,6 +64,7 @@ function ProtectedLayout() {
           <Route path="/previsao-orcamentaria" element={canAccessFinance ? <PrevisaoOrcamentaria /> : <Navigate to="/acesso-negado" replace />} />
           <Route path="/etiquetas" element={<Etiquetas />} />
           <Route path="/relatorios" element={<Relatorios />} />
+          <Route path="/remessa-dabb" element={canAccessFinance ? <RemessaDabb /> : <Navigate to="/acesso-negado" replace />} />
           <Route path="/meu-cadastro" element={<MeuCadastro />} />
           <Route path="/usuarios" element={<Usuarios />} />
           <Route path="/acesso-negado" element={<AcessoNegado />} />

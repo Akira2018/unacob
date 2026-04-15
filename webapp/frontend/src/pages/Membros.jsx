@@ -7,10 +7,10 @@ import { getApiErrorMessage } from '../utils/apiError';
 const ESTADOS = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 
 const emptyForm = {
-  matricula: '', inscricao: '', nome_completo: '', cpf: '', cpf2: '', codigo_dabb: '', email: '', telefone: '', celular: '', ddd: '',
+  matricula: '', inscricao: '', nome_completo: '', cpf: '', cpf2: '', codigo_dabb: '', codigo_barras_dabb: '', email: '', telefone: '', celular: '', ddd: '',
   endereco: '', numero: '', complemento: '', bairro: '', cidade: '', estado: '', cep: '', ect: '',
   data_nascimento: '', data_filiacao: '', status: 'ativo', sexo: '', cat: '', beneficio: '',
-  valor_mensalidade: '', observacoes: ''
+  valor_mensalidade: '', dabb_habilitado: true, dabb_valor_mensalidade: '', observacoes: ''
 };
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
@@ -25,6 +25,10 @@ export default function Membros() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [reajusteModal, setReajusteModal] = useState(false);
+  const [reajusteValor, setReajusteValor] = useState('');
+  const [reajusteSomenteDabb, setReajusteSomenteDabb] = useState(false);
+  const [reajustando, setReajustando] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -59,6 +63,9 @@ export default function Membros() {
       data_filiacao: m.data_filiacao || '',
       valor_mensalidade: m.valor_mensalidade || '',
       codigo_dabb: m.codigo_dabb || '',
+      codigo_barras_dabb: m.codigo_barras_dabb || '',
+      dabb_habilitado: m.dabb_habilitado !== false,
+      dabb_valor_mensalidade: m.dabb_valor_mensalidade || '',
       cpf2: m.cpf2 || ''
     } : emptyForm);
     setModal(true);
@@ -74,6 +81,7 @@ export default function Membros() {
       if (!payload.data_nascimento) delete payload.data_nascimento;
       if (!payload.data_filiacao) delete payload.data_filiacao;
       if (payload.valor_mensalidade === '') payload.valor_mensalidade = 0;
+      if (payload.dabb_valor_mensalidade === '') payload.dabb_valor_mensalidade = null;
       if (editing) {
         await api.put(`/membros/${editing.id}`, payload);
         toast.success('Membro atualizado!');
@@ -108,12 +116,38 @@ export default function Membros() {
 
   const setF = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
+  const aplicarReajusteEmLote = async () => {
+    if (!reajusteValor || Number(reajusteValor) <= 0) {
+      toast.error('Informe um valor válido para o reajuste.');
+      return;
+    }
+
+    setReajustando(true);
+    try {
+      await api.put('/configuracoes/dabb', {
+        valor_mensal_padrao: Number(reajusteValor),
+        aplicar_reajuste_todos: true,
+        somente_habilitados_dabb: reajusteSomenteDabb,
+      });
+      toast.success('Reajuste aplicado com sucesso.');
+      setReajusteModal(false);
+      setReajusteValor('');
+      setReajusteSomenteDabb(false);
+      load();
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao aplicar reajuste em lote'));
+    } finally {
+      setReajustando(false);
+    }
+  };
+
   return (
     <div>
       <div className="topbar">
         <h2>Cadastro de Associados</h2>
         <div className="topbar-right">
           <button className="btn btn-outline btn-sm" onClick={exportar}><Download size={14} /> Excel</button>
+          <button className="btn btn-outline btn-sm" onClick={() => setReajusteModal(true)}>Reajustar Mensalidade</button>
           <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Novo Associado</button>
         </div>
       </div>
@@ -207,6 +241,10 @@ export default function Membros() {
                   <input value={form.codigo_dabb} onChange={e => setF('codigo_dabb', e.target.value)} />
                 </div>
                 <div className="form-group">
+                  <label>Código Barras DABB</label>
+                  <input value={form.codigo_barras_dabb} onChange={e => setF('codigo_barras_dabb', e.target.value)} />
+                </div>
+                <div className="form-group">
                   <label>CPF2</label>
                   <input value={form.cpf2} onChange={e => setF('cpf2', e.target.value)} />
                 </div>
@@ -259,6 +297,21 @@ export default function Membros() {
                 <div className="form-group">
                   <label>ECT</label>
                   <input value={form.ect} onChange={e => setF('ect', e.target.value)} />
+                </div>
+              </div>
+
+              <div style={{ borderBottom: '1px solid #e2e8f0', paddingBottom: 12, marginBottom: 16, marginTop: 20, fontWeight: 600, fontSize: 13, color: '#1e3a5f' }}>Débito Automático BB</div>
+              <div className="form-grid">
+                <div className="form-group">
+                  <label>Habilitado na Remessa DABB</label>
+                  <select value={form.dabb_habilitado ? 'true' : 'false'} onChange={e => setF('dabb_habilitado', e.target.value === 'true')}>
+                    <option value="true">Sim</option>
+                    <option value="false">Não</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Valor Mensal DABB (R$)</label>
+                  <input type="number" step="0.01" value={form.dabb_valor_mensalidade} onChange={e => setF('dabb_valor_mensalidade', e.target.value)} placeholder="Se vazio, usa a mensalidade padrão" />
                 </div>
               </div>
 
@@ -327,6 +380,34 @@ export default function Membros() {
                 <button type="submit" className="btn btn-primary modal-btn-save" disabled={saving}>{saving ? 'Salvando...' : 'Salvar'}</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {reajusteModal && (
+        <div className="modal-overlay">
+          <div className="modal" style={{ maxWidth: 520 }}>
+            <div className="modal-header">
+              <div className="modal-title">Reajustar Mensalidade de Todos</div>
+              <button className="btn btn-outline btn-sm modal-close-btn" onClick={() => setReajusteModal(false)}>✕</button>
+            </div>
+            <div className="form-group">
+              <label>Novo valor da mensalidade (R$)</label>
+              <input type="number" step="0.01" value={reajusteValor} onChange={e => setReajusteValor(e.target.value)} />
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, color: '#4a5568', marginTop: 12 }}>
+              <input type="checkbox" checked={reajusteSomenteDabb} onChange={e => setReajusteSomenteDabb(e.target.checked)} />
+              Aplicar somente aos associados habilitados no DABB
+            </label>
+            <div style={{ fontSize: 13, color: '#718096', marginTop: 12 }}>
+              Esse ajuste atualiza a mensalidade dos associados em lote e também passa a valer como valor padrão do DABB.
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn btn-outline modal-btn-cancel" onClick={() => setReajusteModal(false)}>Cancelar</button>
+              <button type="button" className="btn btn-primary modal-btn-save" onClick={aplicarReajusteEmLote} disabled={reajustando}>
+                {reajustando ? 'Aplicando...' : 'Aplicar Reajuste'}
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -59,6 +59,9 @@ class MembroCreate(BaseModel):
     cpf: Optional[str] = None
     cpf2: Optional[str] = None
     codigo_dabb: Optional[str] = None
+    codigo_barras_dabb: Optional[str] = None
+    dabb_habilitado: Optional[bool] = True
+    dabb_valor_mensalidade: Optional[float] = None
     email: Optional[str] = None
     telefone: Optional[str] = None
     celular: Optional[str] = None
@@ -91,6 +94,9 @@ class MembroResponse(BaseModel):
     cpf: Optional[str]
     cpf2: Optional[str]
     codigo_dabb: Optional[str]
+    codigo_barras_dabb: Optional[str]
+    dabb_habilitado: Optional[bool]
+    dabb_valor_mensalidade: Optional[float]
     email: Optional[str]
     telefone: Optional[str]
     celular: Optional[str]

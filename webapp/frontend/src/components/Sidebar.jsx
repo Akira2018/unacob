@@ -31,6 +31,7 @@ const sections = [
       { to: '/fluxo-caixa', icon: <TrendingUp size={16} />, label: 'Fluxo de Caixa' },
       { to: '/financeiro', icon: <BarChart3 size={16} />, label: 'Balancete' },
       { to: '/conciliacao', icon: <GitMerge size={16} />, label: 'Conciliação' },
+      { to: '/remessa-dabb', icon: <CreditCard size={16} />, label: 'Remessa DABB' },
     ]
   },
   {
@@ -80,7 +81,7 @@ export default function Sidebar({ open, onNavigate }) {
           const visibleItems = sec.items.filter((item) => {
             const financePaths = new Set([
               '/pagamentos', '/despesas', '/outras-rendas', '/aplicacoes-financeiras',
-              '/plano-contas', '/previsao-orcamentaria', '/fluxo-caixa', '/financeiro', '/conciliacao'
+              '/plano-contas', '/previsao-orcamentaria', '/fluxo-caixa', '/financeiro', '/conciliacao', '/remessa-dabb'
             ]);
             if (financePaths.has(item.to) && isAssistant) return false;
             return true;

@@ -6,6 +6,8 @@ __pycache__/
 *.sqlite3
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 .venv/
 venv/
 */venv/
@@ -23,6 +25,10 @@ env/
 # Node
 node_modules/
 webapp/frontend/dist/
+webapp/backend/data/
+webapp/backend/backups/
+*.rem
+*.rar
 
 # IDE / OS
 .vscode/

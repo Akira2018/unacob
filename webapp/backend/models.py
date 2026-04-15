@@ -18,6 +18,31 @@ class User(Base):
 
 
 
+class ConfiguracaoSistema(Base):
+    __tablename__ = "configuracoes_sistema"
+
+    chave: Mapped[str] = mapped_column(String(100), primary_key=True)
+    valor: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class HistoricoConfiguracaoDabb(Base):
+    __tablename__ = "historico_configuracao_dabb"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    tipo_evento: Mapped[str | None] = mapped_column(String(50), index=True)
+    valor_mensal_anterior: Mapped[Numeric | None] = mapped_column(Numeric(12, 2), nullable=True)
+    valor_mensal_novo: Mapped[Numeric | None] = mapped_column(Numeric(12, 2), nullable=True)
+    taxa_anterior: Mapped[Numeric | None] = mapped_column(Numeric(12, 2), nullable=True)
+    taxa_nova: Mapped[Numeric | None] = mapped_column(Numeric(12, 2), nullable=True)
+    aplicar_reajuste_todos: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    somente_habilitados_dabb: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    quantidade_membros_afetados: Mapped[int | None] = mapped_column(Integer, default=0)
+    observacoes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+
+
 class Membro(Base):
     __tablename__ = "membros"
 
@@ -29,6 +54,9 @@ class Membro(Base):
     cpf: Mapped[str | None] = mapped_column(String(20))
     cpf2: Mapped[str | None] = mapped_column(String(20))
     codigo_dabb: Mapped[str | None] = mapped_column(String(50))
+    codigo_barras_dabb: Mapped[str | None] = mapped_column(String(50))
+    dabb_habilitado: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    dabb_valor_mensalidade: Mapped[Numeric | None] = mapped_column(Numeric(12, 2), nullable=True)
     email: Mapped[str | None] = mapped_column(String(255))
     telefone: Mapped[str | None] = mapped_column(String(30))
     celular: Mapped[str | None] = mapped_column(String(30))
@@ -55,6 +83,7 @@ class Membro(Base):
 
     pagamentos = relationship("Pagamento", backref="membro", lazy="dynamic")
     participacoes = relationship("ParticipacaoFesta", backref="membro", lazy="dynamic")
+    remessas_dabb = relationship("DabbRemessaItem", backref="membro", lazy="dynamic")
 
 
 Index("ix_membros_status", Membro.status)
@@ -75,6 +104,46 @@ class Pagamento(Base):
     observacoes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, nullable=True)
     updated_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, nullable=True)
+
+
+class DabbRemessa(Base):
+    __tablename__ = "dabb_remessas"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    arquivo_nome: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
+    sequencial_arquivo: Mapped[int | None] = mapped_column(Integer, index=True)
+    mes_inicio: Mapped[str | None] = mapped_column(String(7), index=True)
+    mes_fim: Mapped[str | None] = mapped_column(String(7), index=True)
+    data_debito: Mapped[Date | None] = mapped_column(Date, index=True)
+    incluir_atrasados: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    valor_total: Mapped[Numeric | None] = mapped_column(Numeric(12, 2), nullable=True)
+    quantidade_registros: Mapped[int | None] = mapped_column(Integer, default=0)
+    observacoes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    itens = relationship("DabbRemessaItem", backref="remessa", lazy="dynamic")
+
+
+class DabbRemessaItem(Base):
+    __tablename__ = "dabb_remessa_itens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    remessa_id: Mapped[str] = mapped_column(String(36), ForeignKey("dabb_remessas.id"), index=True)
+    membro_id: Mapped[str] = mapped_column(String(36), ForeignKey("membros.id"), index=True)
+    conciliacao_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("conciliacoes.id"), index=True, nullable=True)
+    codigo_dabb: Mapped[str | None] = mapped_column(String(50), index=True)
+    codigo_barras: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    numero_documento: Mapped[str | None] = mapped_column(String(50), index=True)
+    valor_competencias: Mapped[Numeric | None] = mapped_column(Numeric(12, 2), nullable=True)
+    taxa_bancaria: Mapped[Numeric | None] = mapped_column(Numeric(12, 2), nullable=True)
+    valor_total: Mapped[Numeric | None] = mapped_column(Numeric(12, 2), nullable=True)
+    quantidade_competencias: Mapped[int | None] = mapped_column(Integer, default=0)
+    competencias_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str | None] = mapped_column(String(30), default="gerada", index=True)
+    created_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class Transacao(Base):

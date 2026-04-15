@@ -40,6 +40,7 @@ export default function Usuarios() {
   const [users, setUsers] = useState([]);
   const [backups, setBackups] = useState([]);
   const [backupDirectory, setBackupDirectory] = useState('');
+  const [sqliteStatus, setSqliteStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -73,10 +74,23 @@ export default function Usuarios() {
     }
   }, [isAdmin]);
 
+  const loadSqliteStatus = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const { data } = await api.get('/admin/system/sqlite-status');
+      setSqliteStatus(data || null);
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao carregar diagnostico do banco'));
+    }
+  }, [isAdmin]);
+
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    if (isAdmin) loadBackups();
-  }, [isAdmin, loadBackups]);
+    if (isAdmin) {
+      loadBackups();
+      loadSqliteStatus();
+    }
+  }, [isAdmin, loadBackups, loadSqliteStatus]);
 
   const openModal = (u = null) => {
     setEditing(u);
@@ -331,6 +345,28 @@ export default function Usuarios() {
             </button>
           </div>
           <div style={{ marginTop: 16 }}>
+            {sqliteStatus?.is_sqlite && (
+              <div style={{ marginBottom: 16, padding: 14, border: '1px solid #dbeafe', borderRadius: 10, background: '#eff6ff' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+                  <strong>Diagnóstico do SQLite</strong>
+                  <button className="btn btn-outline btn-sm" onClick={loadSqliteStatus} disabled={backupListLoading || backupLoading || restoreLoading}>
+                    Atualizar diagnóstico
+                  </button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, fontSize: 13, color: '#334155' }}>
+                  <div><strong>Modo journal:</strong> {String(sqliteStatus.journal_mode || '-').toUpperCase()}</div>
+                  <div><strong>Synchronous:</strong> {sqliteStatus.synchronous ?? '-'}</div>
+                  <div><strong>Foreign keys:</strong> {sqliteStatus.foreign_keys ? 'Ativo' : 'Inativo'}</div>
+                  <div><strong>Busy timeout:</strong> {sqliteStatus.busy_timeout ?? 0} ms</div>
+                  <div><strong>Integridade:</strong> {sqliteStatus.integrity_check || '-'}</div>
+                  <div><strong>Tamanho:</strong> {formatBackupSize(sqliteStatus.database_size_bytes)}</div>
+                </div>
+                <div style={{ marginTop: 10, fontSize: 12, color: '#64748b', wordBreak: 'break-all' }}>
+                  <strong>Arquivo:</strong> {sqliteStatus.database_path || '-'}
+                </div>
+              </div>
+            )}
+
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 10 }}>
               <strong>Backups salvos no sistema</strong>
               <button className="btn btn-outline btn-sm" onClick={loadBackups} disabled={backupListLoading || backupLoading || restoreLoading}>

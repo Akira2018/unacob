@@ -1,23 +1,29 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import api from '../api';
 import toast from 'react-hot-toast';
 import { Download, FileSpreadsheet, Users, CreditCard, Cake, BarChart3, PartyPopper, GitMerge, PiggyBank, BookText } from 'lucide-react';
 import { format, subMonths } from 'date-fns';
-import { useEffect } from 'react';
 import { useAuth } from '../context/useAuth';
 import { getApiErrorMessage } from '../utils/apiError';
 
-const getMeses = () => { const r = []; for (let i = 0; i < 13; i++) r.push(format(subMonths(new Date(), i), 'yyyy-MM')); return r; };
+const getMeses = () => {
+  const r = [];
+  for (let i = 0; i < 13; i += 1) r.push(format(subMonths(new Date(), i), 'yyyy-MM'));
+  return r;
+};
+
 const getAnos = () => {
   const anoAtual = new Date().getFullYear();
   return [anoAtual - 2, anoAtual - 1, anoAtual, anoAtual + 1];
 };
-const MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+
+const MESES = ['Janeiro', 'Fevereiro', 'Marco', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 
 export default function Relatorios() {
   const { user } = useAuth();
   const role = user?.role;
   const isAssistant = role === 'assistente';
+
   const [busca, setBusca] = useState('');
   const [mes, setMes] = useState(format(new Date(), 'yyyy-MM'));
   const [mesAniv, setMesAniv] = useState(new Date().getMonth() + 1);
@@ -29,135 +35,141 @@ export default function Relatorios() {
 
   useEffect(() => {
     api.get('/festas')
-      .then(r => setFestas(r.data))
-      .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao carregar festas')));
+      .then((r) => setFestas(r.data))
+      .catch((err) => toast.error(getApiErrorMessage(err, 'Erro ao carregar festas')));
   }, []);
 
   const download = async (key, url, filename, params = {}) => {
-    setLoading(prev => ({ ...prev, [key]: true }));
+    setLoading((prev) => ({ ...prev, [key]: true }));
     try {
       const r = await api.get(url, { params, responseType: 'blob' });
       const blobUrl = URL.createObjectURL(r.data);
-      const a = document.createElement('a'); a.href = blobUrl; a.download = filename; a.click();
-      toast.success('Relatório gerado!');
-    } catch (err) { toast.error(getApiErrorMessage(err, 'Erro ao gerar relatório')); }
-    finally { setLoading(prev => ({ ...prev, [key]: false })); }
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      a.click();
+      toast.success('Relatorio gerado!');
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao gerar relatorio'));
+    } finally {
+      setLoading((prev) => ({ ...prev, [key]: false }));
+    }
   };
 
   const reports = [
     {
       key: 'membros',
       icon: <Users size={24} />,
-      title: 'Relatório de Membros',
+      title: 'Relatorio de Membros',
       desc: 'Lista completa com todos os dados cadastrais dos membros',
       color: '#1e3a5f',
       isFinance: false,
-      action: () => download('membros', '/relatorios/membros', `membros${statusMembro ? '_' + statusMembro : ''}.xlsx`, statusMembro ? { status: statusMembro } : {}),
+      action: () => download('membros', '/relatorios/membros', `membros${statusMembro ? `_${statusMembro}` : ''}.xlsx`, statusMembro ? { status: statusMembro } : {}),
       extra: (
-        <select className="search-input" value={statusMembro} onChange={e => setStatusMembro(e.target.value)} style={{ width: '100%' }}>
+        <select className="search-input" value={statusMembro} onChange={(e) => setStatusMembro(e.target.value)} style={{ width: '100%' }}>
           <option value="">Todos os status</option>
           <option value="ativo">Apenas Ativos</option>
           <option value="inativo">Apenas Inativos</option>
         </select>
-      )
+      ),
     },
     {
       key: 'pagamentos',
       icon: <CreditCard size={24} />,
       title: 'Recebimento de Mensalidades',
-      desc: 'Situação de pagamentos dos membros com destaque para inadimplentes',
+      desc: 'Situacao de pagamentos dos membros com destaque para inadimplentes',
       color: '#38a169',
       isFinance: true,
       action: () => download('pagamentos', '/relatorios/pagamentos', `recebimento_mensalidades_${mes}.xlsx`, { mes_referencia: mes }),
       extra: (
-        <select className="search-input" value={mes} onChange={e => setMes(e.target.value)} style={{ width: '100%' }}>
-          {getMeses().map(m => <option key={m} value={m}>{m}</option>)}
+        <select className="search-input" value={mes} onChange={(e) => setMes(e.target.value)} style={{ width: '100%' }}>
+          {getMeses().map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
-      )
+      ),
     },
     {
       key: 'aniversariantes',
       icon: <Cake size={24} />,
-      title: 'Relatório de Aniversariantes',
-      desc: 'Lista de aniversariantes do mês selecionado',
+      title: 'Relatorio de Aniversariantes',
+      desc: 'Lista de aniversariantes do mes selecionado',
       color: '#c8a84b',
       isFinance: false,
       action: () => download('aniversariantes', '/relatorios/aniversariantes', `aniversariantes_mes_${mesAniv}.xlsx`, { mes: mesAniv }),
       extra: (
-        <select className="search-input" value={mesAniv} onChange={e => setMesAniv(parseInt(e.target.value))} style={{ width: '100%' }}>
-          {MESES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+        <select className="search-input" value={mesAniv} onChange={(e) => setMesAniv(parseInt(e.target.value, 10))} style={{ width: '100%' }}>
+          {MESES.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
         </select>
-      )
+      ),
     },
     {
       key: 'balancete',
       icon: <BarChart3 size={24} />,
       title: 'Balancete Mensal',
-      desc: 'Resumo financeiro completo: saldo anterior, entradas, saídas e saldo final',
+      desc: 'Resumo financeiro completo: saldo anterior, entradas, saidas e saldo final',
       color: '#805ad5',
       isFinance: true,
       action: () => download('balancete', '/relatorios/balancete', `balancete_${mes}.xlsx`, { mes_referencia: mes }),
       extra: (
-        <select className="search-input" value={mes} onChange={e => setMes(e.target.value)} style={{ width: '100%' }}>
-          {getMeses().map(m => <option key={m} value={m}>{m}</option>)}
+        <select className="search-input" value={mes} onChange={(e) => setMes(e.target.value)} style={{ width: '100%' }}>
+          {getMeses().map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
-      )
+      ),
     },
     {
       key: 'livro_diario',
       icon: <BookText size={24} />,
-      title: 'Livro Diário Mensal',
-      desc: 'Lançamentos cronológicos com conta, histórico, entradas, saídas e saldo acumulado',
+      title: 'Livro Diario Mensal',
+      desc: 'Lancamentos cronologicos com conta, historico, entradas, saidas e saldo acumulado',
       color: '#6b46c1',
       isFinance: true,
       action: () => download('livro_diario', '/relatorios/livro-diario', `livro_diario_${mes}.xlsx`, { mes_referencia: mes }),
       extra: (
-        <select className="search-input" value={mes} onChange={e => setMes(e.target.value)} style={{ width: '100%' }}>
-          {getMeses().map(m => <option key={m} value={m}>{m}</option>)}
+        <select className="search-input" value={mes} onChange={(e) => setMes(e.target.value)} style={{ width: '100%' }}>
+          {getMeses().map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
-      )
+      ),
     },
     {
       key: 'conciliacao',
       icon: <GitMerge size={24} />,
-      title: 'Relatório de Conciliação',
-      desc: 'Detalhamento de lançamentos bancários com saldo anterior e saldo final',
+      title: 'Relatorio de Conciliacao',
+      desc: 'Detalhamento de lancamentos bancarios com saldo anterior e saldo final',
       color: '#0891b2',
       isFinance: true,
       action: () => download('conciliacao', '/relatorios/conciliacao', `conciliacao_${mes}.xlsx`, { mes_referencia: mes }),
       extra: (
-        <select className="search-input" value={mes} onChange={e => setMes(e.target.value)} style={{ width: '100%' }}>
-          {getMeses().map(m => <option key={m} value={m}>{m}</option>)}
+        <select className="search-input" value={mes} onChange={(e) => setMes(e.target.value)} style={{ width: '100%' }}>
+          {getMeses().map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
-      )
+      ),
     },
     {
       key: 'aplicacoes_financeiras',
       icon: <PiggyBank size={24} />,
-      title: 'Relatório de Aplicações Financeiras',
-      desc: 'Extrato consolidado por instituição/produto com totais e saldo atual',
+      title: 'Relatorio de Aplicacoes Financeiras',
+      desc: 'Extrato consolidado por instituicao/produto com totais e saldo atual',
       color: '#2f855a',
       isFinance: true,
       action: () => download('aplicacoes_financeiras', '/relatorios/aplicacoes-financeiras', `aplicacoes_financeiras_${mes}.xlsx`, { mes_referencia: mes }),
       extra: (
-        <select className="search-input" value={mes} onChange={e => setMes(e.target.value)} style={{ width: '100%' }}>
-          {getMeses().map(m => <option key={m} value={m}>{m}</option>)}
+        <select className="search-input" value={mes} onChange={(e) => setMes(e.target.value)} style={{ width: '100%' }}>
+          {getMeses().map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
-      )
+      ),
     },
     {
       key: 'consolidado_financeiro',
       icon: <BarChart3 size={24} />,
-      title: 'Consolidado Entradas/Saídas/Aplicações',
-      desc: 'Relatório anual mês a mês com totais de entradas, saídas, aplicações e saldo líquido',
+      title: 'Consolidado Entradas/Saidas/Aplicacoes',
+      desc: 'Relatorio anual mes a mes com totais de entradas, saidas, aplicacoes e saldo liquido',
       color: '#2b6cb0',
       isFinance: true,
       action: () => download('consolidado_financeiro', '/relatorios/consolidado-financeiro', `consolidado_financeiro_${anoConsolidado}.xlsx`, { ano: anoConsolidado }),
       extra: (
-        <select className="search-input" value={anoConsolidado} onChange={e => setAnoConsolidado(parseInt(e.target.value, 10))} style={{ width: '100%' }}>
-          {getAnos().map(ano => <option key={ano} value={ano}>{ano}</option>)}
+        <select className="search-input" value={anoConsolidado} onChange={(e) => setAnoConsolidado(parseInt(e.target.value, 10))} style={{ width: '100%' }}>
+          {getAnos().map((ano) => <option key={ano} value={ano}>{ano}</option>)}
         </select>
-      )
+      ),
     },
   ];
 
@@ -166,36 +178,39 @@ export default function Relatorios() {
       key: 'festa',
       icon: <PartyPopper size={24} />,
       title: 'Lista de Participantes de Festa',
-      desc: 'Relação de participantes e dependentes de uma festa',
+      desc: 'Relacao de participantes e dependentes de uma festa',
       color: '#dd6b20',
       isFinance: false,
       action: () => {
-        if (!festaId) { toast.error('Selecione uma festa'); return; }
-        const festa = festas.find(f => f.id === festaId);
+        if (!festaId) {
+          toast.error('Selecione uma festa');
+          return;
+        }
+        const festa = festas.find((f) => f.id === festaId);
         download('festa', `/relatorios/festas/${festaId}`, `participantes_${festa?.nome_festa || festaId}.xlsx`);
       },
       extra: (
-        <select className="search-input" value={festaId} onChange={e => setFestaId(e.target.value)} style={{ width: '100%' }}>
+        <select className="search-input" value={festaId} onChange={(e) => setFestaId(e.target.value)} style={{ width: '100%' }}>
           <option value="">Selecione uma festa...</option>
-          {festas.map(f => <option key={f.id} value={f.id}>{f.nome_festa} — {f.data_festa}</option>)}
+          {festas.map((f) => <option key={f.id} value={f.id}>{f.nome_festa} - {f.data_festa}</option>)}
         </select>
-      )
+      ),
     });
   }
 
-  const reportsByRole = isAssistant ? reports.filter(r => !r.isFinance) : reports;
-
+  const reportsByRole = isAssistant ? reports.filter((r) => !r.isFinance) : reports;
   const termoBusca = busca.trim().toLowerCase();
   const reportsFiltrados = termoBusca
-    ? reportsByRole.filter(r => [r.title, r.desc].some(campo => String(campo).toLowerCase().includes(termoBusca)))
+    ? reportsByRole.filter((r) => [r.title, r.desc].some((campo) => String(campo).toLowerCase().includes(termoBusca)))
     : reportsByRole;
-  const labelRelatorio = (qtd) => `${qtd} ${qtd === 1 ? 'relatório' : 'relatórios'}`;
+
+  const labelRelatorio = (qtd) => `${qtd} ${qtd === 1 ? 'relatorio' : 'relatorios'}`;
 
   return (
     <div>
       <div className="topbar">
-        <h2>Relatórios</h2>
-        <span style={{ fontSize: 13, color: '#718096' }}>Exportação em Excel (.xlsx)</span>
+        <h2>Relatorios</h2>
+        <span style={{ fontSize: 13, color: '#718096' }}>Exportacao em Excel (.xlsx)</span>
       </div>
 
       <div className="filters" style={{ marginBottom: 16 }}>
@@ -204,8 +219,8 @@ export default function Relatorios() {
           <input
             className="search-input"
             value={busca}
-            onChange={e => setBusca(e.target.value)}
-            placeholder="Nome ou descrição do relatório..."
+            onChange={(e) => setBusca(e.target.value)}
+            placeholder="Nome ou descricao do relatorio..."
           />
         </div>
         <div style={{ fontSize: 13, color: '#4a5568', alignSelf: 'flex-end', paddingBottom: 8 }}>
@@ -215,11 +230,23 @@ export default function Relatorios() {
         </div>
       </div>
 
+      <div className="card" style={{ marginBottom: 20, borderLeft: '4px solid #b45309', background: '#fffaf0' }}>
+        <div className="card-title"><FileSpreadsheet size={16} /> Remessa DABB</div>
+        <div style={{ fontSize: 14, color: '#7c2d12', lineHeight: 1.7 }}>
+          A geracao e o historico dos arquivos <code>.rem</code> do Banco do Brasil agora ficam em uma pagina propria.
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <a href="#/remessa-dabb" className="btn btn-primary" style={{ background: '#b45309' }}>
+            <CreditCard size={15} /> Abrir Remessa DABB
+          </a>
+        </div>
+      </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 20 }}>
-        {reportsFiltrados.map(r => (
+        {reportsFiltrados.map((r) => (
           <div key={r.key} className="card" style={{ borderTop: `4px solid ${r.color}` }}>
             <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', marginBottom: 16 }}>
-              <div style={{ width: 48, height: 48, borderRadius: 12, background: r.color + '15', display: 'flex', alignItems: 'center', justifyContent: 'center', color: r.color, flexShrink: 0 }}>
+              <div style={{ width: 48, height: 48, borderRadius: 12, background: `${r.color}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: r.color, flexShrink: 0 }}>
                 {r.icon}
               </div>
               <div>
@@ -243,19 +270,9 @@ export default function Relatorios() {
 
       {reportsFiltrados.length === 0 && (
         <div className="card" style={{ marginTop: 16, textAlign: 'center', color: '#718096' }}>
-          Nenhum relatório encontrado para a busca informada.
+          Nenhum relatorio encontrado para a busca informada.
         </div>
       )}
-
-      <div className="card" style={{ marginTop: 24, background: 'linear-gradient(135deg, #f7f8fc, #edf2f7)' }}>
-        <div className="card-title"><FileSpreadsheet size={16} /> Sobre os Relatórios</div>
-        <ul style={{ fontSize: 13, color: '#718096', paddingLeft: 16, lineHeight: 2 }}>
-          <li>Todos os relatórios são gerados no formato Excel (.xlsx)</li>
-          <li>Os relatórios de pagamentos destacam inadimplentes em vermelho e adimplentes em verde</li>
-          <li>O balancete inclui saldo anterior, saldo do mês e saldo final</li>
-          <li>Os relatórios são gerados com dados em tempo real do banco de dados</li>
-        </ul>
-      </div>
     </div>
   );
 }

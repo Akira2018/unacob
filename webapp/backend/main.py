@@ -47,6 +47,13 @@ SCHEDULED_BACKUP_ENABLED = os.getenv("SCHEDULED_BACKUP_ENABLED", "true").strip()
 SCHEDULED_BACKUP_HOUR = min(23, max(0, int(os.getenv("SCHEDULED_BACKUP_HOUR", "20"))))
 SCHEDULED_BACKUP_INTERVAL_SECONDS = max(300, int(os.getenv("SCHEDULED_BACKUP_INTERVAL_SECONDS", "900")))
 BACKUP_TIMEZONE = os.getenv("BACKUP_TIMEZONE", "America/Sao_Paulo").strip() or "America/Sao_Paulo"
+DABB_TAXA_BIMESTRAL = round(float(os.getenv("DABB_TAXA_BIMESTRAL", "1.00")), 2)
+DABB_VALOR_MENSAL_PADRAO = round(float(os.getenv("DABB_VALOR_MENSAL_PADRAO", "35.00")), 2)
+DABB_EMPRESA = (os.getenv("DABB_EMPRESA", "UNIAO DOS APOSENTADO").strip() or "UNIAO DOS APOSENTADO")[:18]
+DABB_CONVENIO = re.sub(r"\D", "", os.getenv("DABB_CONVENIO", "112339"))[:6].rjust(6, "0")
+DABB_ARQUIVO_PREFIXO = (os.getenv("DABB_ARQUIVO_PREFIXO", "DBT").strip() or "DBT")[:3].upper()
+DABB_LAYOUT = (os.getenv("DABB_LAYOUT", "10006").strip() or "10006")[:5].rjust(5, "0")
+DABB_ARQUIVO_CONVENIO_NOME = re.sub(r"\D", "", os.getenv("DABB_ARQUIVO_CONVENIO_NOME", DABB_CONVENIO[-5:])) or DABB_CONVENIO[-5:]
 
 try:
     BACKUP_TZINFO = ZoneInfo(BACKUP_TIMEZONE)
@@ -161,6 +168,25 @@ def _ensure_financeiro_columns_and_seed_contas():
             conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl_type}"))
 
     with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS configuracoes_sistema (chave VARCHAR(100) PRIMARY KEY, valor TEXT, updated_at TIMESTAMP)"))
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS historico_configuracao_dabb ("
+            "id VARCHAR(36) PRIMARY KEY, "
+            "user_id VARCHAR(36), "
+            "tipo_evento VARCHAR(50), "
+            "valor_mensal_anterior NUMERIC(12,2), "
+            "valor_mensal_novo NUMERIC(12,2), "
+            "taxa_anterior NUMERIC(12,2), "
+            "taxa_nova NUMERIC(12,2), "
+            "aplicar_reajuste_todos BOOLEAN, "
+            "somente_habilitados_dabb BOOLEAN, "
+            "quantidade_membros_afetados INTEGER, "
+            "observacoes TEXT, "
+            "created_at TIMESTAMP)"
+        ))
+        _ensure_column("membros", "codigo_barras_dabb", "VARCHAR(50)")
+        _ensure_column("membros", "dabb_habilitado", "BOOLEAN")
+        _ensure_column("membros", "dabb_valor_mensalidade", "NUMERIC(12,2)")
         _ensure_column("despesas", "conta_id", "VARCHAR(36)")
         _ensure_column("despesas", "conta_codigo", "VARCHAR(20)")
         _ensure_column("despesas", "conta_nome", "VARCHAR(255)")
@@ -254,6 +280,8 @@ def _ensure_financeiro_columns_and_seed_contas():
 
         membros = db.query(models.Membro).all()
         for membro in membros:
+            if membro.dabb_habilitado is None:
+                membro.dabb_habilitado = True
             cidade_atual = (membro.cidade or "").strip()
             if not cidade_atual:
                 continue
@@ -271,6 +299,60 @@ def _ensure_financeiro_columns_and_seed_contas():
 
 
 _ensure_financeiro_columns_and_seed_contas()
+
+
+def _get_config(db: Session, chave: str, default: Optional[str] = None) -> Optional[str]:
+    item = db.query(models.ConfiguracaoSistema).filter(models.ConfiguracaoSistema.chave == chave).first()
+    if not item or item.valor in (None, ""):
+        return default
+    return item.valor
+
+
+def _set_config(db: Session, chave: str, valor: Optional[str]) -> None:
+    item = db.query(models.ConfiguracaoSistema).filter(models.ConfiguracaoSistema.chave == chave).first()
+    if not item:
+        item = models.ConfiguracaoSistema(chave=chave, valor=valor, updated_at=datetime.utcnow())
+        db.add(item)
+    else:
+        item.valor = valor
+        item.updated_at = datetime.utcnow()
+
+
+def _get_dabb_taxa_bimestral(db: Session) -> float:
+    return round(float(_get_config(db, "dabb_taxa_bimestral", str(DABB_TAXA_BIMESTRAL)) or DABB_TAXA_BIMESTRAL), 2)
+
+
+def _get_dabb_valor_mensal_padrao(db: Session) -> float:
+    return round(float(_get_config(db, "dabb_valor_mensal_padrao", str(DABB_VALOR_MENSAL_PADRAO)) or DABB_VALOR_MENSAL_PADRAO), 2)
+
+
+def _registrar_historico_configuracao_dabb(
+    db: Session,
+    current_user,
+    tipo_evento: str,
+    valor_mensal_anterior: Optional[float],
+    valor_mensal_novo: Optional[float],
+    taxa_anterior: Optional[float],
+    taxa_nova: Optional[float],
+    aplicar_reajuste_todos: bool,
+    somente_habilitados_dabb: bool,
+    quantidade_membros_afetados: int,
+    observacoes: Optional[str] = None,
+):
+    db.add(models.HistoricoConfiguracaoDabb(
+        id=str(uuid.uuid4()),
+        user_id=getattr(current_user, "id", None),
+        tipo_evento=tipo_evento,
+        valor_mensal_anterior=valor_mensal_anterior,
+        valor_mensal_novo=valor_mensal_novo,
+        taxa_anterior=taxa_anterior,
+        taxa_nova=taxa_nova,
+        aplicar_reajuste_todos=aplicar_reajuste_todos,
+        somente_habilitados_dabb=somente_habilitados_dabb,
+        quantidade_membros_afetados=quantidade_membros_afetados,
+        observacoes=observacoes,
+        created_at=datetime.utcnow(),
+    ))
 
 
 app = FastAPI(title="UNACOB - União dos aposentados dos correios em Bauru - SP API", version="1.0.0")
@@ -387,17 +469,12 @@ async def importar_pdf_bb(
             db.add(c)
             db.flush()
 
-            membros_match = {}
-            for variante in _variantes_codigo_dabb(codigo_dabb):
-                for membro in membros_por_codigo_dabb.get(variante, []):
-                    membros_match[membro.id] = membro
-
-            if len(membros_match) == 1:
-                membro = next(iter(membros_match.values()))
-                _baixar_pagamento_mensalidade_por_conciliacao(
+            remessa_item = _localizar_item_remessa_dabb(db, codigo_dabb, valor, data)
+            if remessa_item:
+                _baixar_pagamentos_por_remessa_item(
                     db=db,
                     conciliacao=c,
-                    membro=membro,
+                    remessa_item=remessa_item,
                     user_id=current_user.id,
                     observacao_origem=(
                         f"Baixa automática via PDF Banco do Brasil ({mes_ref}) - "
@@ -405,38 +482,57 @@ async def importar_pdf_bb(
                     ),
                 )
                 total_baixas_automaticas += 1
-            elif len(membros_match) > 1:
-                total_codigos_ambiguos += 1
-                item = codigos_ambiguos.setdefault(codigo_dabb, {
-                    "codigo_dabb": codigo_dabb,
-                    "quantidade": 0,
-                    "valores": set(),
-                    "meses": set(),
-                    "registros": set(),
-                })
-                item["quantidade"] += 1
-                item["valores"].add(round(float(valor or 0), 2))
-                item["meses"].add(mes_ref)
-                item["registros"].add("PDF")
-                c.observacoes = (
-                    (c.observacoes + "\n") if c.observacoes else ""
-                ) + "Codigo DABB encontrado em mais de um membro ativo; baixa nao realizada automaticamente."
             else:
-                total_sem_membro += 1
-                item = codigos_sem_membro.setdefault(codigo_dabb, {
-                    "codigo_dabb": codigo_dabb,
-                    "quantidade": 0,
-                    "valores": set(),
-                    "meses": set(),
-                    "registros": set(),
-                })
-                item["quantidade"] += 1
-                item["valores"].add(round(float(valor or 0), 2))
-                item["meses"].add(mes_ref)
-                item["registros"].add("PDF")
-                c.observacoes = (
-                    (c.observacoes + "\n") if c.observacoes else ""
-                ) + "Nenhum membro ativo encontrado para o codigo DABB; baixa nao realizada automaticamente."
+                membros_match = {}
+                for variante in _variantes_codigo_dabb(codigo_dabb):
+                    for membro in membros_por_codigo_dabb.get(variante, []):
+                        membros_match[membro.id] = membro
+
+                if len(membros_match) == 1:
+                    membro = next(iter(membros_match.values()))
+                    _baixar_pagamento_mensalidade_por_conciliacao(
+                        db=db,
+                        conciliacao=c,
+                        membro=membro,
+                        user_id=current_user.id,
+                        observacao_origem=(
+                            f"Baixa automática via PDF Banco do Brasil ({mes_ref}) - "
+                            f"codigo_dabb {codigo_dabb}"
+                        ),
+                    )
+                    total_baixas_automaticas += 1
+                elif len(membros_match) > 1:
+                    total_codigos_ambiguos += 1
+                    item = codigos_ambiguos.setdefault(codigo_dabb, {
+                        "codigo_dabb": codigo_dabb,
+                        "quantidade": 0,
+                        "valores": set(),
+                        "meses": set(),
+                        "registros": set(),
+                    })
+                    item["quantidade"] += 1
+                    item["valores"].add(round(float(valor or 0), 2))
+                    item["meses"].add(mes_ref)
+                    item["registros"].add("PDF")
+                    c.observacoes = (
+                        (c.observacoes + "\n") if c.observacoes else ""
+                    ) + "Codigo DABB encontrado em mais de um membro ativo; baixa nao realizada automaticamente."
+                else:
+                    total_sem_membro += 1
+                    item = codigos_sem_membro.setdefault(codigo_dabb, {
+                        "codigo_dabb": codigo_dabb,
+                        "quantidade": 0,
+                        "valores": set(),
+                        "meses": set(),
+                        "registros": set(),
+                    })
+                    item["quantidade"] += 1
+                    item["valores"].add(round(float(valor or 0), 2))
+                    item["meses"].add(mes_ref)
+                    item["registros"].add("PDF")
+                    c.observacoes = (
+                        (c.observacoes + "\n") if c.observacoes else ""
+                    ) + "Nenhum membro ativo encontrado para o codigo DABB; baixa nao realizada automaticamente."
 
             importados.append({
                 "data": data.strftime("%Y-%m-%d"),
@@ -920,6 +1016,40 @@ def list_backups(current_user=Depends(get_current_user)):
     }
 
 
+@app.get("/api/admin/system/sqlite-status")
+def get_sqlite_status(current_user=Depends(get_current_user)):
+    _assert_admin(current_user)
+
+    db_backend = engine.url.get_backend_name()
+    if db_backend != "sqlite":
+        return {
+            "backend": db_backend,
+            "is_sqlite": False,
+        }
+
+    db_path = _sqlite_db_path_or_400()
+    info = {
+        "backend": db_backend,
+        "is_sqlite": True,
+        "database_path": str(db_path),
+        "database_exists": db_path.exists(),
+        "database_size_bytes": db_path.stat().st_size if db_path.exists() else 0,
+    }
+
+    with engine.connect() as conn:
+        info["journal_mode"] = conn.exec_driver_sql("PRAGMA journal_mode").scalar()
+        info["synchronous"] = conn.exec_driver_sql("PRAGMA synchronous").scalar()
+        info["foreign_keys"] = bool(conn.exec_driver_sql("PRAGMA foreign_keys").scalar())
+        info["busy_timeout"] = int(conn.exec_driver_sql("PRAGMA busy_timeout").scalar() or 0)
+        info["page_size"] = int(conn.exec_driver_sql("PRAGMA page_size").scalar() or 0)
+        info["page_count"] = int(conn.exec_driver_sql("PRAGMA page_count").scalar() or 0)
+        info["freelist_count"] = int(conn.exec_driver_sql("PRAGMA freelist_count").scalar() or 0)
+        integrity = conn.exec_driver_sql("PRAGMA integrity_check").scalar()
+        info["integrity_check"] = str(integrity or "")
+
+    return info
+
+
 @app.get("/api/admin/system/backups/{filename}")
 def download_saved_backup(filename: str, current_user=Depends(get_current_user)):
     _assert_admin(current_user)
@@ -1212,6 +1342,117 @@ def delete_membro(membro_id: str, db: Session = Depends(get_db), current_user=De
     return {"ok": True}
 
 
+@app.get("/api/configuracoes/dabb")
+def obter_configuracoes_dabb(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    return {
+        "valor_mensal_padrao": _get_dabb_valor_mensal_padrao(db),
+        "taxa_bancaria_bimestral": _get_dabb_taxa_bimestral(db),
+    }
+
+
+@app.get("/api/configuracoes/dabb/historico")
+def obter_historico_configuracoes_dabb(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    itens = db.query(models.HistoricoConfiguracaoDabb).order_by(
+        models.HistoricoConfiguracaoDabb.created_at.desc()
+    ).limit(max(1, min(limit, 200))).all()
+
+    return [
+        {
+            "id": item.id,
+            "user_id": item.user_id,
+            "tipo_evento": item.tipo_evento,
+            "valor_mensal_anterior": float(item.valor_mensal_anterior) if item.valor_mensal_anterior is not None else None,
+            "valor_mensal_novo": float(item.valor_mensal_novo) if item.valor_mensal_novo is not None else None,
+            "taxa_anterior": float(item.taxa_anterior) if item.taxa_anterior is not None else None,
+            "taxa_nova": float(item.taxa_nova) if item.taxa_nova is not None else None,
+            "aplicar_reajuste_todos": bool(item.aplicar_reajuste_todos),
+            "somente_habilitados_dabb": bool(item.somente_habilitados_dabb),
+            "quantidade_membros_afetados": int(item.quantidade_membros_afetados or 0),
+            "observacoes": item.observacoes,
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+        }
+        for item in itens
+    ]
+
+
+@app.delete("/api/configuracoes/dabb/historico")
+def limpar_historico_configuracoes_dabb(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    db.query(models.HistoricoConfiguracaoDabb).delete(synchronize_session=False)
+    db.commit()
+    return {"ok": True}
+
+
+@app.put("/api/configuracoes/dabb")
+def atualizar_configuracoes_dabb(payload: dict = Body(...), db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    valor_mensal_padrao = payload.get("valor_mensal_padrao")
+    taxa_bancaria_bimestral = payload.get("taxa_bancaria_bimestral")
+    aplicar_reajuste_todos = bool(payload.get("aplicar_reajuste_todos"))
+    somente_habilitados_dabb = bool(payload.get("somente_habilitados_dabb"))
+    valor_anterior = _get_dabb_valor_mensal_padrao(db)
+    taxa_anterior = _get_dabb_taxa_bimestral(db)
+    quantidade_membros_afetados = 0
+
+    if valor_mensal_padrao is not None:
+        valor_mensal_padrao = round(float(valor_mensal_padrao), 2)
+        if valor_mensal_padrao <= 0:
+            raise HTTPException(status_code=400, detail="valor_mensal_padrao deve ser maior que zero")
+        _set_config(db, "dabb_valor_mensal_padrao", f"{valor_mensal_padrao:.2f}")
+
+        if aplicar_reajuste_todos:
+            q = db.query(models.Membro).filter(models.Membro.status == "ativo")
+            if somente_habilitados_dabb:
+                q = q.filter(models.Membro.dabb_habilitado != False)
+            membros = q.all()
+            quantidade_membros_afetados = len(membros)
+            for membro in membros:
+                membro.valor_mensalidade = valor_mensal_padrao
+                membro.updated_at = datetime.utcnow()
+
+    if taxa_bancaria_bimestral is not None:
+        taxa_bancaria_bimestral = round(float(taxa_bancaria_bimestral), 2)
+        if taxa_bancaria_bimestral < 0:
+            raise HTTPException(status_code=400, detail="taxa_bancaria_bimestral não pode ser negativa")
+        _set_config(db, "dabb_taxa_bimestral", f"{taxa_bancaria_bimestral:.2f}")
+
+    valor_novo = _get_dabb_valor_mensal_padrao(db)
+    taxa_nova = _get_dabb_taxa_bimestral(db)
+
+    if (
+        valor_novo != valor_anterior
+        or taxa_nova != taxa_anterior
+        or aplicar_reajuste_todos
+    ):
+        _registrar_historico_configuracao_dabb(
+            db=db,
+            current_user=current_user,
+            tipo_evento="reajuste_dabb" if aplicar_reajuste_todos else "configuracao_dabb",
+            valor_mensal_anterior=valor_anterior,
+            valor_mensal_novo=valor_novo,
+            taxa_anterior=taxa_anterior,
+            taxa_nova=taxa_nova,
+            aplicar_reajuste_todos=aplicar_reajuste_todos,
+            somente_habilitados_dabb=somente_habilitados_dabb,
+            quantidade_membros_afetados=quantidade_membros_afetados,
+            observacoes="Atualização de configuração DABB",
+        )
+
+    db.commit()
+    return {
+        "ok": True,
+        "valor_mensal_padrao": valor_novo,
+        "taxa_bancaria_bimestral": taxa_nova,
+        "reajuste_aplicado": aplicar_reajuste_todos,
+        "quantidade_membros_afetados": quantidade_membros_afetados,
+    }
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # PAGAMENTOS
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1248,6 +1489,653 @@ def _pagamentos_pagos_membros_ativos_no_mes(db: Session, mes_referencia: str):
         for membro_id, pagamento in pagamentos_mes.items()
         if membro_id in membros_ativos_ids and pagamento.status_pagamento == 'pago'
     ]
+
+
+def _parse_mes_referencia_or_400(mes_referencia: str) -> tuple[int, int]:
+    if not mes_referencia or not re.match(r"^\d{4}-\d{2}$", mes_referencia):
+        raise HTTPException(status_code=400, detail="mes_referencia deve estar no formato YYYY-MM")
+
+    ano, mes = mes_referencia.split("-")
+    ano_int = int(ano)
+    mes_int = int(mes)
+    if mes_int < 1 or mes_int > 12:
+        raise HTTPException(status_code=400, detail="Mês de referência inválido")
+    return ano_int, mes_int
+
+
+def _primeiro_dia_mes(ano: int, mes: int) -> date:
+    return date(ano, mes, 1)
+
+
+def _ultimo_dia_mes(ano: int, mes: int) -> date:
+    return date(ano, mes, calendar.monthrange(ano, mes)[1])
+
+
+def _parse_data_query_or_400(valor: Optional[str], campo: str = "data_debito") -> Optional[date]:
+    texto = (valor or "").strip()
+    if not texto:
+        return None
+
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(texto, fmt).date()
+        except ValueError:
+            continue
+
+    raise HTTPException(status_code=400, detail=f"{campo} deve estar no formato YYYY-MM-DD ou DD/MM/YYYY")
+
+
+def _meses_entre(inicio: str, fim: str) -> list[str]:
+    ano_inicio, mes_inicio = _parse_mes_referencia_or_400(inicio)
+    ano_fim, mes_fim = _parse_mes_referencia_or_400(fim)
+
+    cursor = _primeiro_dia_mes(ano_inicio, mes_inicio)
+    limite = _primeiro_dia_mes(ano_fim, mes_fim)
+    meses = []
+    while cursor <= limite:
+        meses.append(cursor.strftime("%Y-%m"))
+        if cursor.month == 12:
+            cursor = date(cursor.year + 1, 1, 1)
+        else:
+            cursor = date(cursor.year, cursor.month + 1, 1)
+    return meses
+
+
+def _normalizar_inicio_bimestre(mes_referencia: str) -> tuple[str, str]:
+    ano, mes = _parse_mes_referencia_or_400(mes_referencia)
+    mes_inicio = mes if mes % 2 == 1 else mes - 1
+    if mes_inicio < 1:
+        mes_inicio = 1
+    mes_fim = min(mes_inicio + 1, 12)
+    return f"{ano}-{mes_inicio:02d}", f"{ano}-{mes_fim:02d}"
+
+
+def _descricao_periodo_compacto(mes_inicio: str, mes_fim: str) -> str:
+    nomes = [
+        "jan", "fev", "mar", "abr", "mai", "jun",
+        "jul", "ago", "set", "out", "nov", "dez",
+    ]
+    _, mes_i = _parse_mes_referencia_or_400(mes_inicio)
+    ano_f, mes_f = _parse_mes_referencia_or_400(mes_fim)
+    return f"{nomes[mes_i - 1]}-{nomes[mes_f - 1]}/{ano_f}"
+
+
+def _somente_digitos_ou_none(valor: Optional[str]) -> Optional[str]:
+    digits = re.sub(r"\D", "", (valor or "").strip())
+    return digits or None
+
+
+def _valor_mensalidade_dabb_membro(db: Session, membro: models.Membro) -> float:
+    if membro.dabb_valor_mensalidade is not None:
+        valor_personalizado = round(float(membro.dabb_valor_mensalidade or 0), 2)
+        if valor_personalizado > 0:
+            return valor_personalizado
+
+    valor_cadastro = round(float(membro.valor_mensalidade or 0), 2)
+    if valor_cadastro > 0:
+        return valor_cadastro
+
+    return _get_dabb_valor_mensal_padrao(db)
+
+
+def _gerar_numero_documento_dabb(data_debito: date, sequencial_arquivo: int, sequencial_item: int) -> str:
+    return f"{data_debito.strftime('%Y%m%d')}{sequencial_arquivo:06d}{sequencial_item:012d}"
+
+
+def _formatar_valor_dabb_layout(valor: float) -> str:
+    return f"{int(round(float(valor or 0) * 1000)):016d}"
+
+
+def _montar_linha_dabb_detalhe(
+    codigo_dabb: str,
+    codigo_barras: str,
+    data_debito: date,
+    valor_total: float,
+    numero_documento: str,
+) -> str:
+    codigo = re.sub(r"\D", "", codigo_dabb or "").zfill(8)[:8]
+    barras = re.sub(r"\D", "", codigo_barras or "").zfill(18)[:18]
+    numero_documento_digits = re.sub(r"\D", "", numero_documento or "")[:26].ljust(26, "0")
+    payload = f"{barras}{data_debito.strftime('%Y%m%d')}{_formatar_valor_dabb_layout(valor_total)}{numero_documento_digits}"
+    line = f"E{codigo}{' ' * 17}{payload}"
+    return line.ljust(149) + "0"
+
+
+def _montar_linha_dabb_header(data_geracao: date, sequencial_arquivo: int) -> str:
+    line = (
+        f"A{DABB_CONVENIO}"
+        f"{' ' * 15}"
+        f"{DABB_EMPRESA.ljust(18)}"
+        f"001"
+        f"{'BANCO DO BRASIL'.ljust(16)}"
+        f"{' ' * 5}"
+        f"{data_geracao.strftime('%Y%m%d')}"
+        f"{sequencial_arquivo:08d}"
+        f"{DABB_ARQUIVO_PREFIXO}{DABB_LAYOUT}"
+    )
+    return line.ljust(150)
+
+
+def _montar_linha_dabb_trailer(total_linhas: int, valor_total: float) -> str:
+    amount = f"{int(round(float(valor_total or 0) * 100)):016d}"
+    return f"Z{total_linhas:06d}{amount}".ljust(150)
+
+
+def _renderizar_arquivo_remessa_dabb(remessa: models.DabbRemessa) -> str:
+    itens = remessa.itens.order_by(
+        models.DabbRemessaItem.created_at.asc(),
+        models.DabbRemessaItem.numero_documento.asc(),
+    ).all()
+    linhas_detalhe = [
+        _montar_linha_dabb_detalhe(
+            codigo_dabb=item.codigo_dabb or "",
+            codigo_barras=item.codigo_barras or "",
+            data_debito=remessa.data_debito,
+            valor_total=float(item.valor_total or 0),
+            numero_documento=item.numero_documento or "",
+        )
+        for item in itens
+    ]
+    data_geracao = remessa.created_at.date() if remessa.created_at else date.today()
+    cabecalho = _montar_linha_dabb_header(data_geracao, int(remessa.sequencial_arquivo or 0))
+    trailer = _montar_linha_dabb_trailer(len(linhas_detalhe) + 2, float(remessa.valor_total or 0))
+    return "\n".join([cabecalho, *linhas_detalhe, trailer]) + "\n"
+
+
+def _renderizar_arquivo_remessa_dabb_recalculada(db: Session, remessa: models.DabbRemessa) -> tuple[str, float, int]:
+    itens = remessa.itens.order_by(
+        models.DabbRemessaItem.created_at.asc(),
+        models.DabbRemessaItem.numero_documento.asc(),
+    ).all()
+    linhas_detalhe = []
+    valor_total_geral = 0.0
+
+    for item in itens:
+        membro = db.query(models.Membro).filter(models.Membro.id == item.membro_id).first()
+        try:
+            competencias = json.loads(item.competencias_json or "[]")
+        except Exception:
+            competencias = []
+        valor_mensalidade = _valor_mensalidade_dabb_membro(db, membro) if membro else round(float(item.valor_competencias or 0) / max(1, len(competencias)), 2)
+        valor_competencias = round(len(competencias) * valor_mensalidade, 2)
+        taxa_bancaria = _get_dabb_taxa_bimestral(db)
+        valor_total = round(valor_competencias + taxa_bancaria, 2)
+        valor_total_geral += valor_total
+        linhas_detalhe.append(
+            _montar_linha_dabb_detalhe(
+                codigo_dabb=item.codigo_dabb or "",
+                codigo_barras=item.codigo_barras or "",
+                data_debito=remessa.data_debito,
+                valor_total=valor_total,
+                numero_documento=item.numero_documento or "",
+            )
+        )
+
+    data_geracao = remessa.created_at.date() if remessa.created_at else date.today()
+    cabecalho = _montar_linha_dabb_header(data_geracao, int(remessa.sequencial_arquivo or 0))
+    trailer = _montar_linha_dabb_trailer(len(linhas_detalhe) + 2, valor_total_geral)
+    return "\n".join([cabecalho, *linhas_detalhe, trailer]) + "\n", round(valor_total_geral, 2), len(linhas_detalhe)
+
+
+def _competencias_pagamento_pagas_no_ano(db: Session, membro_id: str, ano: int) -> set[str]:
+    pagamentos = db.query(models.Pagamento).filter(
+        models.Pagamento.membro_id == membro_id,
+        models.Pagamento.status_pagamento == "pago",
+        models.Pagamento.mes_referencia.isnot(None),
+        models.Pagamento.mes_referencia >= f"{ano}-01",
+        models.Pagamento.mes_referencia <= f"{ano}-12",
+    ).all()
+    return {p.mes_referencia for p in pagamentos if p.mes_referencia}
+
+
+def _garantir_pagamento_pendente(db: Session, membro: models.Membro, mes_referencia: str) -> models.Pagamento:
+    pagamento = db.query(models.Pagamento).filter(
+        models.Pagamento.membro_id == membro.id,
+        models.Pagamento.mes_referencia == mes_referencia
+    ).first()
+    valor_mensalidade = _valor_mensalidade_dabb_membro(db, membro)
+    if pagamento:
+        if _status_pagamento_pendente_ou_atrasado(pagamento.status_pagamento):
+            pagamento.valor_pago = valor_mensalidade
+            pagamento.updated_at = datetime.utcnow()
+        return pagamento
+
+    pagamento = models.Pagamento(
+        id=str(uuid.uuid4()),
+        membro_id=membro.id,
+        valor_pago=valor_mensalidade,
+        mes_referencia=mes_referencia,
+        status_pagamento="pendente",
+        forma_pagamento="debito_automatico_bimestral",
+        observacoes=f"Cobrança prevista para remessa DABB ({mes_referencia})",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(pagamento)
+    db.flush()
+    return pagamento
+
+
+def _competencias_em_aberto_para_remessa(
+    db: Session,
+    membro: models.Membro,
+    mes_inicio_bimestre: str,
+    mes_fim_bimestre: str,
+    incluir_atrasados: bool,
+) -> list[str]:
+    ano, _ = _parse_mes_referencia_or_400(mes_inicio_bimestre)
+    todas_ate_fim = _meses_entre(f"{ano}-01", mes_fim_bimestre)
+    somente_bimestre = _meses_entre(mes_inicio_bimestre, mes_fim_bimestre)
+    meses_considerados = todas_ate_fim if incluir_atrasados else somente_bimestre
+    pagas = _competencias_pagamento_pagas_no_ano(db, membro.id, ano)
+    em_aberto = [mes for mes in meses_considerados if mes not in pagas]
+
+    if membro.data_filiacao:
+        limite_filiacao = membro.data_filiacao.strftime("%Y-%m")
+        em_aberto = [mes for mes in em_aberto if mes >= limite_filiacao]
+
+    return em_aberto
+
+
+def _sequencial_arquivo_dabb(db: Session) -> int:
+    ultimo_db = int(db.query(sql_func.max(models.DabbRemessa.sequencial_arquivo)).scalar() or 0)
+    ultimo_arquivo = 0
+
+    padrao = re.compile(
+        rf"^{re.escape(DABB_ARQUIVO_PREFIXO)}_{re.escape(DABB_ARQUIVO_CONVENIO_NOME)}_(\d{{6}})\.rem$",
+        re.IGNORECASE,
+    )
+
+    candidatos_dir = [
+        Path(__file__).resolve().parent,
+        Path.cwd(),
+    ]
+    vistos = set()
+
+    for base_dir in candidatos_dir:
+        if not base_dir or not base_dir.exists():
+            continue
+        base_key = str(base_dir.resolve()).lower()
+        if base_key in vistos:
+            continue
+        vistos.add(base_key)
+
+        for arquivo in base_dir.glob(f"{DABB_ARQUIVO_PREFIXO}_{DABB_ARQUIVO_CONVENIO_NOME}_*.rem"):
+            match = padrao.match(arquivo.name)
+            if not match:
+                continue
+            ultimo_arquivo = max(ultimo_arquivo, int(match.group(1)))
+
+    return max(ultimo_db, ultimo_arquivo) + 1
+
+
+def _arquivo_nome_dabb(sequencial_arquivo: int) -> str:
+    return f"{DABB_ARQUIVO_PREFIXO}_{DABB_ARQUIVO_CONVENIO_NOME}_{sequencial_arquivo:06d}.rem"
+
+
+def _registrar_remessa_dabb(
+    db: Session,
+    current_user,
+    mes_referencia: str,
+    data_debito: date,
+    incluir_atrasados: bool,
+) -> tuple[models.DabbRemessa, str, list[dict]]:
+    mes_inicio_bimestre, mes_fim_bimestre = _normalizar_inicio_bimestre(mes_referencia)
+    membros = db.query(models.Membro).filter(
+        models.Membro.status == "ativo",
+        models.Membro.codigo_dabb.isnot(None),
+        models.Membro.codigo_dabb != "",
+    ).order_by(models.Membro.nome_completo.asc()).all()
+
+    sequencial_arquivo = _sequencial_arquivo_dabb(db)
+    arquivo_nome = _arquivo_nome_dabb(sequencial_arquivo)
+    remessa = models.DabbRemessa(
+        id=str(uuid.uuid4()),
+        user_id=current_user.id,
+        arquivo_nome=arquivo_nome,
+        sequencial_arquivo=sequencial_arquivo,
+        mes_inicio=mes_inicio_bimestre,
+        mes_fim=mes_fim_bimestre,
+        data_debito=data_debito,
+        incluir_atrasados=incluir_atrasados,
+        valor_total=0,
+        quantidade_registros=0,
+        observacoes=f"Remessa bimestral DABB {_descricao_periodo_compacto(mes_inicio_bimestre, mes_fim_bimestre)}",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(remessa)
+    db.flush()
+
+    detalhes = []
+    linhas_detalhe = []
+    valor_total_geral = 0.0
+
+    for sequencial_item, membro in enumerate(membros, start=1):
+        if membro.dabb_habilitado is False:
+            continue
+
+        valor_mensalidade = _valor_mensalidade_dabb_membro(db, membro)
+        if valor_mensalidade <= 0:
+            continue
+
+        competencias = _competencias_em_aberto_para_remessa(
+            db=db,
+            membro=membro,
+            mes_inicio_bimestre=mes_inicio_bimestre,
+            mes_fim_bimestre=mes_fim_bimestre,
+            incluir_atrasados=incluir_atrasados,
+        )
+        if not competencias:
+            continue
+
+        for competencia in competencias:
+            _garantir_pagamento_pendente(db, membro, competencia)
+
+        valor_competencias = round(len(competencias) * valor_mensalidade, 2)
+        taxa_bancaria = _get_dabb_taxa_bimestral(db)
+        valor_total_item = round(valor_competencias + taxa_bancaria, 2)
+        numero_documento = _gerar_numero_documento_dabb(data_debito, sequencial_arquivo, sequencial_item)
+        codigo_barras = _somente_digitos_ou_none(membro.codigo_barras_dabb) or f"0000{_normalizar_codigo_dabb(membro.codigo_dabb).zfill(14)}"
+
+        item = models.DabbRemessaItem(
+            id=str(uuid.uuid4()),
+            remessa_id=remessa.id,
+            membro_id=membro.id,
+            codigo_dabb=_normalizar_codigo_dabb(membro.codigo_dabb),
+            codigo_barras=codigo_barras,
+            numero_documento=numero_documento,
+            valor_competencias=valor_competencias,
+            taxa_bancaria=taxa_bancaria,
+            valor_total=valor_total_item,
+            quantidade_competencias=len(competencias),
+            competencias_json=json.dumps(competencias, ensure_ascii=True),
+            status="gerada",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(item)
+        db.flush()
+
+        linhas_detalhe.append(
+            _montar_linha_dabb_detalhe(
+                codigo_dabb=item.codigo_dabb or "",
+                codigo_barras=item.codigo_barras or "",
+                data_debito=data_debito,
+                valor_total=valor_total_item,
+                numero_documento=numero_documento,
+            )
+        )
+        valor_total_geral += valor_total_item
+        detalhes.append({
+            "membro_id": membro.id,
+            "nome": membro.nome_completo,
+            "codigo_dabb": item.codigo_dabb,
+            "valor_mensalidade": valor_mensalidade,
+            "valor_competencias": valor_competencias,
+            "taxa_bancaria": taxa_bancaria,
+            "valor_total": valor_total_item,
+            "competencias": competencias,
+            "numero_documento": numero_documento,
+        })
+
+    remessa.quantidade_registros = len(linhas_detalhe)
+    remessa.valor_total = round(valor_total_geral, 2)
+    remessa.updated_at = datetime.utcnow()
+
+    cabecalho = _montar_linha_dabb_header(date.today(), sequencial_arquivo)
+    trailer = _montar_linha_dabb_trailer(len(linhas_detalhe) + 2, valor_total_geral)
+    conteudo = "\n".join([cabecalho, *linhas_detalhe, trailer]) + "\n"
+    return remessa, conteudo, detalhes
+
+
+def _obter_ultima_remessa_dabb(
+    db: Session,
+    mes_referencia: str,
+    data_debito: Optional[date] = None,
+) -> Optional[models.DabbRemessa]:
+    mes_inicio_bimestre, mes_fim_bimestre = _normalizar_inicio_bimestre(mes_referencia)
+    q = db.query(models.DabbRemessa).filter(
+        models.DabbRemessa.mes_inicio == mes_inicio_bimestre,
+        models.DabbRemessa.mes_fim == mes_fim_bimestre,
+    )
+    if data_debito:
+        q = q.filter(models.DabbRemessa.data_debito == data_debito)
+    return q.order_by(
+        models.DabbRemessa.created_at.desc(),
+        models.DabbRemessa.sequencial_arquivo.desc(),
+    ).first()
+
+
+def _listar_remessas_dabb(
+    db: Session,
+    mes_referencia: str,
+) -> list[models.DabbRemessa]:
+    mes_inicio_bimestre, mes_fim_bimestre = _normalizar_inicio_bimestre(mes_referencia)
+    return db.query(models.DabbRemessa).filter(
+        models.DabbRemessa.mes_inicio == mes_inicio_bimestre,
+        models.DabbRemessa.mes_fim == mes_fim_bimestre,
+    ).order_by(
+        models.DabbRemessa.created_at.desc(),
+        models.DabbRemessa.sequencial_arquivo.desc(),
+    ).all()
+
+
+def _preview_remessa_dabb(
+    db: Session,
+    mes_referencia: str,
+    data_debito: date,
+    incluir_atrasados: bool,
+) -> dict:
+    mes_inicio_bimestre, mes_fim_bimestre = _normalizar_inicio_bimestre(mes_referencia)
+    membros = db.query(models.Membro).filter(
+        models.Membro.status == "ativo",
+        models.Membro.codigo_dabb.isnot(None),
+        models.Membro.codigo_dabb != "",
+    ).order_by(models.Membro.nome_completo.asc()).all()
+
+    itens = []
+    total_geral = 0.0
+    total_competencias = 0
+
+    for membro in membros:
+        if membro.dabb_habilitado is False:
+            continue
+
+        valor_mensalidade = _valor_mensalidade_dabb_membro(db, membro)
+        if valor_mensalidade <= 0:
+            continue
+
+        competencias = _competencias_em_aberto_para_remessa(
+            db=db,
+            membro=membro,
+            mes_inicio_bimestre=mes_inicio_bimestre,
+            mes_fim_bimestre=mes_fim_bimestre,
+            incluir_atrasados=incluir_atrasados,
+        )
+        if not competencias:
+            continue
+
+        valor_competencias = round(len(competencias) * valor_mensalidade, 2)
+        taxa_bancaria = _get_dabb_taxa_bimestral(db)
+        valor_total = round(valor_competencias + taxa_bancaria, 2)
+        total_geral += valor_total
+        total_competencias += len(competencias)
+
+        itens.append({
+            "membro_id": membro.id,
+            "nome": membro.nome_completo,
+            "matricula": membro.matricula,
+            "codigo_dabb": membro.codigo_dabb,
+            "dabb_habilitado": membro.dabb_habilitado is not False,
+            "valor_mensalidade_base": round(float(membro.valor_mensalidade or 0), 2),
+            "valor_mensalidade_dabb": valor_mensalidade,
+            "usa_valor_personalizado": membro.dabb_valor_mensalidade is not None,
+            "competencias": competencias,
+            "quantidade_competencias": len(competencias),
+            "valor_competencias": valor_competencias,
+            "taxa_bancaria": taxa_bancaria,
+            "valor_total": valor_total,
+        })
+
+    return {
+        "mes_inicio": mes_inicio_bimestre,
+        "mes_fim": mes_fim_bimestre,
+        "data_debito": data_debito.isoformat(),
+        "incluir_atrasados": incluir_atrasados,
+        "quantidade_associados": len(itens),
+        "quantidade_competencias": total_competencias,
+        "valor_total": round(total_geral, 2),
+        "itens": itens,
+    }
+
+
+def _preview_remessa_dabb_salva(db: Session, remessa: models.DabbRemessa, recalcular: bool = True) -> dict:
+    itens = []
+    total_competencias = 0
+    total_geral = 0.0
+
+    for item in remessa.itens.order_by(
+        models.DabbRemessaItem.created_at.asc(),
+        models.DabbRemessaItem.numero_documento.asc(),
+    ).all():
+        membro = db.query(models.Membro).filter(models.Membro.id == item.membro_id).first()
+        try:
+            competencias = json.loads(item.competencias_json or "[]")
+        except Exception:
+            competencias = []
+
+        total_competencias += len(competencias)
+        if recalcular and membro:
+            valor_mensalidade = _valor_mensalidade_dabb_membro(db, membro)
+            valor_competencias = round(len(competencias) * valor_mensalidade, 2)
+            taxa_bancaria = _get_dabb_taxa_bimestral(db)
+            valor_total = round(valor_competencias + taxa_bancaria, 2)
+        else:
+            valor_competencias = round(float(item.valor_competencias or 0), 2)
+            taxa_bancaria = round(float(item.taxa_bancaria or 0), 2)
+            valor_total = round(float(item.valor_total or 0), 2)
+            valor_mensalidade = round(valor_competencias / len(competencias), 2) if competencias else 0.0
+        total_geral += valor_total
+
+        itens.append({
+            "membro_id": item.membro_id,
+            "nome": getattr(membro, "nome_completo", None),
+            "matricula": getattr(membro, "matricula", None),
+            "codigo_dabb": item.codigo_dabb,
+            "dabb_habilitado": getattr(membro, "dabb_habilitado", True) is not False,
+            "valor_mensalidade_base": round(float(getattr(membro, "valor_mensalidade", 0) or 0), 2) if membro else valor_mensalidade,
+            "valor_mensalidade_dabb": valor_mensalidade,
+            "usa_valor_personalizado": bool(membro and membro.dabb_valor_mensalidade is not None),
+            "competencias": competencias,
+            "quantidade_competencias": len(competencias),
+            "valor_competencias": valor_competencias,
+            "taxa_bancaria": taxa_bancaria,
+            "valor_total": valor_total,
+            "numero_documento": item.numero_documento,
+            "status_remessa": item.status,
+        })
+
+    return {
+        "mes_inicio": remessa.mes_inicio,
+        "mes_fim": remessa.mes_fim,
+        "data_debito": remessa.data_debito.isoformat() if remessa.data_debito else None,
+        "incluir_atrasados": bool(remessa.incluir_atrasados),
+        "quantidade_associados": len(itens),
+        "quantidade_competencias": total_competencias,
+        "valor_total": round(total_geral if recalcular else float(remessa.valor_total or 0), 2),
+        "itens": itens,
+        "arquivo_nome": remessa.arquivo_nome,
+        "created_at": remessa.created_at.isoformat() if remessa.created_at else None,
+        "origem": "remessa_salva",
+        "remessa_id": remessa.id,
+        "recalculada": recalcular,
+    }
+
+
+def _baixar_pagamentos_por_remessa_item(
+    db: Session,
+    conciliacao: models.Conciliacao,
+    remessa_item: models.DabbRemessaItem,
+    user_id: str,
+    observacao_origem: str,
+):
+    competencias = []
+    try:
+        competencias = json.loads(remessa_item.competencias_json or "[]")
+    except Exception:
+        competencias = []
+
+    if not competencias:
+        raise ValueError("Item da remessa sem competências vinculadas")
+
+    valor_competencias = round(float(remessa_item.valor_competencias or 0), 2)
+    valor_por_competencia = round(valor_competencias / max(1, len(competencias)), 2)
+
+    pagamentos_processados = []
+    for idx, competencia in enumerate(competencias):
+        pagamento = db.query(models.Pagamento).filter(
+            models.Pagamento.membro_id == remessa_item.membro_id,
+            models.Pagamento.mes_referencia == competencia
+        ).first()
+
+        if not pagamento:
+            pagamento = models.Pagamento(
+                id=str(uuid.uuid4()),
+                membro_id=remessa_item.membro_id,
+                valor_pago=valor_por_competencia,
+                mes_referencia=competencia,
+                data_pagamento=conciliacao.data_extrato,
+                status_pagamento="pago",
+                forma_pagamento="debito_automatico_bimestral",
+                observacoes=observacao_origem,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+            db.add(pagamento)
+            db.flush()
+        else:
+            if idx == len(competencias) - 1:
+                pagamento.valor_pago = round(valor_competencias - (valor_por_competencia * (len(competencias) - 1)), 2)
+            else:
+                pagamento.valor_pago = valor_por_competencia
+            pagamento.data_pagamento = conciliacao.data_extrato
+            pagamento.status_pagamento = "pago"
+            pagamento.forma_pagamento = "debito_automatico_bimestral"
+            pagamento.observacoes = ((pagamento.observacoes + "\n") if pagamento.observacoes else "") + observacao_origem
+            pagamento.updated_at = datetime.utcnow()
+
+        _register_transaction(db, pagamento, user_id)
+        pagamentos_processados.append(pagamento)
+
+    conciliacao.conciliado = True
+    conciliacao.pagamento_id = pagamentos_processados[-1].id
+    conciliacao.updated_at = datetime.utcnow()
+
+    remessa_item.conciliacao_id = conciliacao.id
+    remessa_item.status = "baixada"
+    remessa_item.updated_at = datetime.utcnow()
+    return pagamentos_processados
+
+
+def _localizar_item_remessa_dabb(db: Session, codigo_dabb: str, valor: float, data_tx: Optional[date]) -> Optional[models.DabbRemessaItem]:
+    q = db.query(models.DabbRemessaItem).join(
+        models.DabbRemessa,
+        models.DabbRemessa.id == models.DabbRemessaItem.remessa_id,
+    ).filter(
+        models.DabbRemessaItem.codigo_dabb == _normalizar_codigo_dabb(codigo_dabb),
+        models.DabbRemessaItem.status == "gerada",
+    )
+    itens = []
+    for item in q.all():
+        if abs(float(item.valor_total or 0) - float(valor or 0)) > 0.01:
+            continue
+        if data_tx and item.remessa and item.remessa.data_debito and item.remessa.data_debito != data_tx:
+            continue
+        itens.append(item)
+    if len(itens) == 1:
+        return itens[0]
+    return None
 
 
 def _normalizar_texto(texto: Optional[str]) -> str:
@@ -5750,17 +6638,12 @@ async def importar_extrato_arquivo(
                     db.add(c)
                     db.flush()
 
-                    membros_match = {}
-                    for variante in _variantes_codigo_dabb(codigo_dabb):
-                        for membro in membros_por_codigo_dabb.get(variante, []):
-                            membros_match[membro.id] = membro
-
-                    if len(membros_match) == 1:
-                        membro = next(iter(membros_match.values()))
-                        _baixar_pagamento_mensalidade_por_conciliacao(
+                    remessa_item = _localizar_item_remessa_dabb(db, codigo_dabb, valor, data)
+                    if remessa_item:
+                        _baixar_pagamentos_por_remessa_item(
                             db=db,
                             conciliacao=c,
-                            membro=membro,
+                            remessa_item=remessa_item,
                             user_id=current_user.id,
                             observacao_origem=(
                                 f"Baixa automática via arquivo bancário DABB ({mes_ref}) - "
@@ -5768,38 +6651,57 @@ async def importar_extrato_arquivo(
                             ),
                         )
                         total_baixas_automaticas += 1
-                    elif len(membros_match) > 1:
-                        total_codigos_ambiguos += 1
-                        item = codigos_ambiguos.setdefault(codigo_dabb, {
-                            "codigo_dabb": codigo_dabb,
-                            "quantidade": 0,
-                            "valores": set(),
-                            "meses": set(),
-                            "registros": set(),
-                        })
-                        item["quantidade"] += 1
-                        item["valores"].add(round(float(valor or 0), 2))
-                        item["meses"].add(mes_ref)
-                        item["registros"].add(tx.get("tipo_registro") or "?")
-                        c.observacoes = (
-                            (c.observacoes + "\n") if c.observacoes else ""
-                        ) + "Codigo DABB encontrado em mais de um membro ativo; baixa nao realizada automaticamente."
                     else:
-                        total_sem_membro += 1
-                        item = codigos_sem_membro.setdefault(codigo_dabb, {
-                            "codigo_dabb": codigo_dabb,
-                            "quantidade": 0,
-                            "valores": set(),
-                            "meses": set(),
-                            "registros": set(),
-                        })
-                        item["quantidade"] += 1
-                        item["valores"].add(round(float(valor or 0), 2))
-                        item["meses"].add(mes_ref)
-                        item["registros"].add(tx.get("tipo_registro") or "?")
-                        c.observacoes = (
-                            (c.observacoes + "\n") if c.observacoes else ""
-                        ) + "Nenhum membro ativo encontrado para o codigo DABB; baixa nao realizada automaticamente."
+                        membros_match = {}
+                        for variante in _variantes_codigo_dabb(codigo_dabb):
+                            for membro in membros_por_codigo_dabb.get(variante, []):
+                                membros_match[membro.id] = membro
+
+                        if len(membros_match) == 1:
+                            membro = next(iter(membros_match.values()))
+                            _baixar_pagamento_mensalidade_por_conciliacao(
+                                db=db,
+                                conciliacao=c,
+                                membro=membro,
+                                user_id=current_user.id,
+                                observacao_origem=(
+                                    f"Baixa automática via arquivo bancário DABB ({mes_ref}) - "
+                                    f"codigo_dabb {codigo_dabb}"
+                                ),
+                            )
+                            total_baixas_automaticas += 1
+                        elif len(membros_match) > 1:
+                            total_codigos_ambiguos += 1
+                            item = codigos_ambiguos.setdefault(codigo_dabb, {
+                                "codigo_dabb": codigo_dabb,
+                                "quantidade": 0,
+                                "valores": set(),
+                                "meses": set(),
+                                "registros": set(),
+                            })
+                            item["quantidade"] += 1
+                            item["valores"].add(round(float(valor or 0), 2))
+                            item["meses"].add(mes_ref)
+                            item["registros"].add(tx.get("tipo_registro") or "?")
+                            c.observacoes = (
+                                (c.observacoes + "\n") if c.observacoes else ""
+                            ) + "Codigo DABB encontrado em mais de um membro ativo; baixa nao realizada automaticamente."
+                        else:
+                            total_sem_membro += 1
+                            item = codigos_sem_membro.setdefault(codigo_dabb, {
+                                "codigo_dabb": codigo_dabb,
+                                "quantidade": 0,
+                                "valores": set(),
+                                "meses": set(),
+                                "registros": set(),
+                            })
+                            item["quantidade"] += 1
+                            item["valores"].add(round(float(valor or 0), 2))
+                            item["meses"].add(mes_ref)
+                            item["registros"].add(tx.get("tipo_registro") or "?")
+                            c.observacoes = (
+                                (c.observacoes + "\n") if c.observacoes else ""
+                            ) + "Nenhum membro ativo encontrado para o codigo DABB; baixa nao realizada automaticamente."
 
                     importados.append({
                         "data": data.strftime("%Y-%m-%d"),
@@ -6160,6 +7062,305 @@ def _excel_set_date_cell(ws, row: int, column: int, value, alignment: str = "cen
         cell.number_format = 'DD/MM/YYYY'
     cell.alignment = Alignment(horizontal=alignment)
     return cell
+
+
+@app.get("/api/relatorios/dabb-remessa-bimestral")
+def exportar_remessa_dabb_bimestral(
+    mes_referencia: str,
+    data_debito: Optional[str] = None,
+    incluir_atrasados: bool = True,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    mes_inicio_bimestre, mes_fim_bimestre = _normalizar_inicio_bimestre(mes_referencia)
+    _, mes_fim_num = _parse_mes_referencia_or_400(mes_fim_bimestre)
+    ano_ref, _ = _parse_mes_referencia_or_400(mes_inicio_bimestre)
+
+    data_debito_ref = _parse_data_query_or_400(data_debito, "data_debito") or _ultimo_dia_mes(ano_ref, mes_fim_num)
+
+    remessa_existente = _obter_ultima_remessa_dabb(
+        db=db,
+        mes_referencia=mes_referencia,
+        data_debito=data_debito_ref,
+    )
+    if remessa_existente:
+        conteudo_existente = _renderizar_arquivo_remessa_dabb(remessa_existente)
+        return StreamingResponse(
+            io.BytesIO(conteudo_existente.encode("utf-8")),
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": f"attachment; filename={remessa_existente.arquivo_nome}",
+                "X-Remessa-Mes-Inicio": remessa_existente.mes_inicio or mes_inicio_bimestre,
+                "X-Remessa-Mes-Fim": remessa_existente.mes_fim or mes_fim_bimestre,
+                "X-Remessa-Valor-Total": f"{float(remessa_existente.valor_total or 0):.2f}",
+                "X-Remessa-Quantidade": str(remessa_existente.quantidade_registros or 0),
+                "X-Remessa-Recuperada": "true",
+                "X-Remessa-Gerada-Em": remessa_existente.created_at.isoformat() if remessa_existente.created_at else "",
+            },
+        )
+
+    remessa, conteudo, detalhes = _registrar_remessa_dabb(
+        db=db,
+        current_user=current_user,
+        mes_referencia=mes_referencia,
+        data_debito=data_debito_ref,
+        incluir_atrasados=incluir_atrasados,
+    )
+
+    if not detalhes:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Nenhum associado com codigo_dabb e competências em aberto foi encontrado para este bimestre."
+        )
+
+    db.commit()
+    return StreamingResponse(
+        io.BytesIO(conteudo.encode("utf-8")),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename={remessa.arquivo_nome}",
+            "X-Remessa-Mes-Inicio": mes_inicio_bimestre,
+            "X-Remessa-Mes-Fim": mes_fim_bimestre,
+            "X-Remessa-Valor-Total": f"{float(remessa.valor_total or 0):.2f}",
+            "X-Remessa-Quantidade": str(remessa.quantidade_registros or 0),
+            "X-Remessa-Recuperada": "false",
+            "X-Remessa-Gerada-Em": remessa.created_at.isoformat() if remessa.created_at else "",
+        },
+    )
+
+
+@app.get("/api/relatorios/dabb-remessa-bimestral/previa")
+def previa_remessa_dabb_bimestral(
+    mes_referencia: str,
+    data_debito: Optional[str] = None,
+    incluir_atrasados: bool = True,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    mes_inicio_bimestre, mes_fim_bimestre = _normalizar_inicio_bimestre(mes_referencia)
+    _, mes_fim_num = _parse_mes_referencia_or_400(mes_fim_bimestre)
+    ano_ref, _ = _parse_mes_referencia_or_400(mes_inicio_bimestre)
+
+    data_debito_ref = _parse_data_query_or_400(data_debito, "data_debito") or _ultimo_dia_mes(ano_ref, mes_fim_num)
+
+    return _preview_remessa_dabb(
+        db=db,
+        mes_referencia=mes_referencia,
+        data_debito=data_debito_ref,
+        incluir_atrasados=incluir_atrasados,
+    )
+
+
+@app.get("/api/relatorios/dabb-remessa-bimestral/previa.xlsx")
+def exportar_previa_remessa_dabb_bimestral_excel(
+    mes_referencia: str,
+    data_debito: Optional[str] = None,
+    incluir_atrasados: bool = True,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    mes_inicio_bimestre, mes_fim_bimestre = _normalizar_inicio_bimestre(mes_referencia)
+    _, mes_fim_num = _parse_mes_referencia_or_400(mes_fim_bimestre)
+    ano_ref, _ = _parse_mes_referencia_or_400(mes_inicio_bimestre)
+
+    data_debito_ref = _parse_data_query_or_400(data_debito, "data_debito") or _ultimo_dia_mes(ano_ref, mes_fim_num)
+
+    previa = _preview_remessa_dabb(
+        db=db,
+        mes_referencia=mes_referencia,
+        data_debito=data_debito_ref,
+        incluir_atrasados=incluir_atrasados,
+    )
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Previa DABB"
+
+    ws.merge_cells("A1:H1")
+    ws["A1"] = f"PREVIA REMESSA DABB - {previa['mes_inicio']} a {previa['mes_fim']}"
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
+    ws["A1"].fill = PatternFill("solid", fgColor="B45309")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    meta_rows = [
+        ("Data débito", previa["data_debito"]),
+        ("Associados", previa["quantidade_associados"]),
+        ("Competências", previa["quantidade_competencias"]),
+        ("Valor total", previa["valor_total"]),
+        ("Inclui atrasados", "Sim" if previa["incluir_atrasados"] else "Não"),
+    ]
+    for idx, (label, value) in enumerate(meta_rows, start=3):
+        ws.cell(row=idx, column=1, value=label).font = Font(bold=True)
+        ws.cell(row=idx, column=2, value=value)
+        if label == "Valor total":
+            ws.cell(row=idx, column=2).number_format = 'R$ #,##0.00'
+
+    header_row = 10
+    headers = ["Nome", "Matrícula", "Código DABB", "Habilitado", "Competências", "Valor Mensal DABB", "Taxa Bancária", "Valor Total"]
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=header_row, column=col, value=header)
+        _excel_header_style(cell)
+
+    first_data_row = header_row + 1
+    itens = previa.get("itens", [])
+    for row, item in enumerate(itens, first_data_row):
+        ws.cell(row=row, column=1, value=item.get("nome"))
+        ws.cell(row=row, column=2, value=item.get("matricula"))
+        ws.cell(row=row, column=3, value=item.get("codigo_dabb"))
+        ws.cell(row=row, column=4, value="Sim" if item.get("dabb_habilitado") else "Não")
+        ws.cell(row=row, column=5, value=", ".join(item.get("competencias") or []))
+        ws.cell(row=row, column=6, value=float(item.get("valor_mensalidade_dabb") or 0))
+        ws.cell(row=row, column=7, value=float(item.get("taxa_bancaria") or 0))
+        ws.cell(row=row, column=8, value=float(item.get("valor_total") or 0))
+        for col in (6, 7, 8):
+            ws.cell(row=row, column=col).number_format = 'R$ #,##0.00'
+            ws.cell(row=row, column=col).alignment = Alignment(horizontal="right")
+
+    last_row = max(first_data_row, first_data_row + len(itens) - 1)
+    _excel_apply_zebra(ws, first_data_row, last_row, 1, 8)
+    _excel_apply_borders(ws, header_row, last_row, 1, 8)
+    ws.freeze_panes = f"A{first_data_row}"
+    ws.auto_filter.ref = f"A{header_row}:H{last_row}"
+    _excel_autofit_columns(ws, min_width=12, max_width=40)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=previa_dabb_{mes_inicio_bimestre}_{mes_fim_bimestre}.xlsx"}
+    )
+
+
+@app.get("/api/relatorios/dabb-remessa-bimestral/ultima")
+def baixar_ultima_remessa_dabb_bimestral(
+    mes_referencia: str,
+    data_debito: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    data_debito_ref = _parse_data_query_or_400(data_debito, "data_debito") if data_debito else None
+    remessa = _obter_ultima_remessa_dabb(db=db, mes_referencia=mes_referencia, data_debito=data_debito_ref)
+
+    if not remessa:
+        raise HTTPException(status_code=404, detail="Nenhuma remessa DABB salva foi encontrada para este período.")
+
+    conteudo = _renderizar_arquivo_remessa_dabb(remessa)
+    return StreamingResponse(
+        io.BytesIO(conteudo.encode("utf-8")),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename={remessa.arquivo_nome}",
+            "X-Remessa-Mes-Inicio": remessa.mes_inicio or "",
+            "X-Remessa-Mes-Fim": remessa.mes_fim or "",
+            "X-Remessa-Valor-Total": f"{float(remessa.valor_total or 0):.2f}",
+            "X-Remessa-Quantidade": str(remessa.quantidade_registros or 0),
+            "X-Remessa-Recuperada": "true",
+        },
+    )
+
+
+@app.get("/api/relatorios/dabb-remessa-bimestral/ultima/previa")
+def obter_previa_ultima_remessa_dabb_bimestral(
+    mes_referencia: str,
+    data_debito: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    data_debito_ref = _parse_data_query_or_400(data_debito, "data_debito") if data_debito else None
+    remessa = _obter_ultima_remessa_dabb(db=db, mes_referencia=mes_referencia, data_debito=data_debito_ref)
+
+    if not remessa:
+        raise HTTPException(status_code=404, detail="Nenhuma remessa DABB salva foi encontrada para este período.")
+
+    return _preview_remessa_dabb_salva(db, remessa)
+
+
+@app.get("/api/relatorios/dabb-remessa-bimestral/remessas")
+def listar_remessas_dabb_bimestral(
+    mes_referencia: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    remessas = _listar_remessas_dabb(db=db, mes_referencia=mes_referencia)
+    return [
+        {
+            "id": remessa.id,
+            "arquivo_nome": remessa.arquivo_nome,
+            "mes_inicio": remessa.mes_inicio,
+            "mes_fim": remessa.mes_fim,
+            "data_debito": remessa.data_debito.isoformat() if remessa.data_debito else None,
+            "quantidade_registros": int(remessa.quantidade_registros or 0),
+            "valor_total": round(float(remessa.valor_total or 0), 2),
+            "created_at": remessa.created_at.isoformat() if remessa.created_at else None,
+        }
+        for remessa in remessas
+    ]
+
+
+@app.get("/api/relatorios/dabb-remessa-bimestral/remessas/{remessa_id}/previa")
+def obter_previa_remessa_dabb_por_id(
+    remessa_id: str,
+    recalcular: bool = True,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    remessa = db.query(models.DabbRemessa).filter(models.DabbRemessa.id == remessa_id).first()
+    if not remessa:
+        raise HTTPException(status_code=404, detail="Remessa DABB não encontrada.")
+    return _preview_remessa_dabb_salva(db, remessa, recalcular=recalcular)
+
+
+@app.get("/api/relatorios/dabb-remessa-bimestral/remessas/{remessa_id}/arquivo")
+def baixar_remessa_dabb_por_id(
+    remessa_id: str,
+    recalcular: bool = False,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    remessa = db.query(models.DabbRemessa).filter(models.DabbRemessa.id == remessa_id).first()
+    if not remessa:
+        raise HTTPException(status_code=404, detail="Remessa DABB não encontrada.")
+
+    if recalcular:
+        conteudo, valor_total, quantidade_registros = _renderizar_arquivo_remessa_dabb_recalculada(db, remessa)
+    else:
+        conteudo = _renderizar_arquivo_remessa_dabb(remessa)
+        valor_total = float(remessa.valor_total or 0)
+        quantidade_registros = int(remessa.quantidade_registros or 0)
+
+    return StreamingResponse(
+        io.BytesIO(conteudo.encode("utf-8")),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename={remessa.arquivo_nome}",
+            "X-Remessa-Mes-Inicio": remessa.mes_inicio or "",
+            "X-Remessa-Mes-Fim": remessa.mes_fim or "",
+            "X-Remessa-Valor-Total": f"{float(valor_total or 0):.2f}",
+            "X-Remessa-Quantidade": str(quantidade_registros or 0),
+            "X-Remessa-Recuperada": "true",
+            "X-Remessa-Gerada-Em": remessa.created_at.isoformat() if remessa.created_at else "",
+            "X-Remessa-Recalculada": "true" if recalcular else "false",
+        },
+    )
+
+
+@app.delete("/api/relatorios/dabb-remessa-bimestral/remessas/{remessa_id}")
+def excluir_remessa_dabb_por_id(
+    remessa_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    remessa = db.query(models.DabbRemessa).filter(models.DabbRemessa.id == remessa_id).first()
+    if not remessa:
+        raise HTTPException(status_code=404, detail="Remessa DABB não encontrada.")
+
+    db.query(models.DabbRemessaItem).filter(models.DabbRemessaItem.remessa_id == remessa.id).delete(synchronize_session=False)
+    db.delete(remessa)
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/relatorios/membros")

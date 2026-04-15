@@ -374,12 +374,12 @@ export default function Pagamentos() {
     const opId = `${conciliacaoId}:${membroId}`;
     setConfirmandoPendencia(opId);
     try {
-      await api.post('/pagamentos/conciliar-manual', { conciliacao_id: conciliacaoId, membro_id: membroId });
+      await api.post('/pagamentos/pendencias-conciliacao-manual/confirmar', { conciliacao_id: conciliacaoId, membro_id: membroId });
       toast.success('Conciliação realizada!');
       load();
       loadPendenciasConcil();
-    } catch {
-      toast.error('Erro na conciliação');
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro na conciliação'));
     } finally {
       setConfirmandoPendencia('');
     }
