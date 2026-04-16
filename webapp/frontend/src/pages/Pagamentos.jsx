@@ -399,7 +399,7 @@ export default function Pagamentos() {
         params: { mes_referencia: mes },
       });
       toast.success(
-        `Reparo concluído: ${data.total_corrigidos} correção(ões), ${data.total_sem_match} sem vínculo, ${data.total_ambiguos} ambíguo(s).`
+        `Reparo concluído: ${data.total_corrigidos} correção(ões) com redistribuição bimestral, ${data.total_sem_match} sem vínculo, ${data.total_ambiguos} ambíguo(s).`
       );
       load();
       loadPendenciasConcil();
@@ -612,7 +612,7 @@ export default function Pagamentos() {
         <div>
           <div style={{ fontSize: 16, fontWeight: 700, color: '#102a43', marginBottom: 4 }}>Correção de DABB bimestral</div>
           <div style={{ fontSize: 13, color: '#486581' }}>
-            Use esta ação quando um débito do DABB, como `R$ 71,00`, tiver sido lançado só no mês atual e precisar ser redistribuído entre as competências do bimestre.
+            Use esta ação quando um débito bimestral do DABB tiver sido lançado inteiro no mês atual. O sistema redistribui o valor líquido entre os 2 meses do bimestre, incluindo casos como `R$ 67,00` (`33,00 + 33,00 + 1,00`), `R$ 71,00` (`35,00 + 35,00 + 1,00`) e reajustes futuros no mesmo formato.
           </div>
         </div>
         <button className="btn btn-outline btn-sm" onClick={repararDabbBimestral} disabled={reparandoDabb}>

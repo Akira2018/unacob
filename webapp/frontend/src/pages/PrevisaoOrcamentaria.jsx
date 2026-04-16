@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import api from '../api';
 import toast from 'react-hot-toast';
-import { Save, Search, Trash2 } from 'lucide-react';
+import { Download, Save, Search, Trash2 } from 'lucide-react';
 import { getApiErrorMessage } from '../utils/apiError';
 
 const MESES = [
@@ -29,6 +29,22 @@ const createEmptyCell = () => ({
 
 const isCellDirty = (cell) => normalizeNumber(cell?.value) !== normalizeNumber(cell?.originalValue);
 
+const STATUS_LABELS = {
+  acima_do_previsto: 'Acima do previsto',
+  abaixo_do_previsto: 'Abaixo do previsto',
+  no_previsto: 'Dentro do previsto',
+  sem_previsao: 'Sem previsão',
+  sem_movimento: 'Sem movimento',
+};
+
+const STATUS_BADGE_STYLES = {
+  acima_do_previsto: { background: '#fed7d7', color: '#9b2c2c' },
+  abaixo_do_previsto: { background: '#fef3c7', color: '#92400e' },
+  no_previsto: { background: '#c6f6d5', color: '#276749' },
+  sem_previsao: { background: '#bee3f8', color: '#2c5282' },
+  sem_movimento: { background: '#e2e8f0', color: '#4a5568' },
+};
+
 export default function PrevisaoOrcamentaria() {
   const [anoInput, setAnoInput] = useState(new Date().getFullYear());
   const [tipoInput, setTipoInput] = useState('saida');
@@ -45,6 +61,9 @@ export default function PrevisaoOrcamentaria() {
   const [savingRows, setSavingRows] = useState({});
   const [deletingRows, setDeletingRows] = useState({});
   const [loading, setLoading] = useState(true);
+  const [analise, setAnalise] = useState({ resumo: null, itens: [] });
+  const [loadingAnalise, setLoadingAnalise] = useState(true);
+  const [exporting, setExporting] = useState(false);
 
   const anos = useMemo(() => {
     const y = new Date().getFullYear();
@@ -92,6 +111,29 @@ export default function PrevisaoOrcamentaria() {
     const t = setTimeout(load, 0);
     return () => clearTimeout(t);
   }, [load]);
+
+  const loadAnalise = useCallback(async () => {
+    setLoadingAnalise(true);
+    try {
+      const { data } = await api.get('/previsoes-orcamentarias/analise', {
+        params: { ano: filtros.ano, mes: mesSelecionado, tipo: filtros.tipo },
+      });
+      setAnalise({
+        resumo: data?.resumo || null,
+        itens: Array.isArray(data?.itens) ? data.itens : [],
+      });
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao analisar orçamento do mês'));
+      setAnalise({ resumo: null, itens: [] });
+    } finally {
+      setLoadingAnalise(false);
+    }
+  }, [filtros.ano, filtros.tipo, mesSelecionado]);
+
+  useEffect(() => {
+    const t = setTimeout(loadAnalise, 0);
+    return () => clearTimeout(t);
+  }, [loadAnalise]);
 
   const handleBuscar = () => {
     setFiltros((prev) => ({ ...prev, busca: buscaInput.trim().toLowerCase() }));
@@ -158,6 +200,7 @@ export default function PrevisaoOrcamentaria() {
       }
       toast.success('Previsões salvas com sucesso');
       load();
+      loadAnalise();
     } catch (err) {
       toast.error(getApiErrorMessage(err, 'Erro ao salvar previsões'));
     } finally {
@@ -190,6 +233,7 @@ export default function PrevisaoOrcamentaria() {
         toast.success('Valor salvo com sucesso.');
       }
       load();
+      loadAnalise();
     } catch (err) {
       toast.error(getApiErrorMessage(err, 'Erro ao salvar valor'));
     } finally {
@@ -213,6 +257,7 @@ export default function PrevisaoOrcamentaria() {
         await api.delete(`/previsoes-orcamentarias/${cell.id}`);
         toast.success('Valor excluído com sucesso.');
         load();
+        loadAnalise();
       } else {
         setValor(contaId, mesSelecionado, '0');
         toast.success('Valor zerado. Clique em Salvar para gravar.');
@@ -238,6 +283,35 @@ export default function PrevisaoOrcamentaria() {
     return contasFiltradas.reduce((sum, c) => sum + normalizeNumber(grid?.[c.id]?.[mesSelecionado]?.value), 0);
   }, [contasFiltradas, grid, mesSelecionado]);
 
+  const analiseMap = useMemo(() => {
+    const map = {};
+    (Array.isArray(analise.itens) ? analise.itens : []).forEach((item) => {
+      map[item.conta_id] = item;
+    });
+    return map;
+  }, [analise.itens]);
+
+  const baixarRelatorio = async () => {
+    setExporting(true);
+    try {
+      const response = await api.get('/relatorios/previsao-orcamentaria', {
+        params: { ano: filtros.ano, mes: mesSelecionado, tipo: filtros.tipo },
+        responseType: 'blob',
+      });
+      const blobUrl = URL.createObjectURL(response.data);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `previsao_orcamentaria_${filtros.ano}_${String(mesSelecionado).padStart(2, '0')}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+      toast.success('Relatório gerado com sucesso.');
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao gerar relatório da previsão orçamentária'));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const mesSelecionadoLabel = MESES.find((m) => m.num === mesSelecionado)?.label || '';
   const totalAlteracoesPendentes = useMemo(() => {
     let total = 0;
@@ -260,9 +334,14 @@ export default function PrevisaoOrcamentaria() {
               : 'Nenhuma alteração pendente'}
           </div>
         </div>
-        <button className="btn btn-primary" onClick={salvar} disabled={saving || loading}>
-          <Save size={15} /> {saving ? 'Salvando...' : 'Salvar Alterações'}
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-outline" onClick={baixarRelatorio} disabled={exporting}>
+            <Download size={15} /> {exporting ? 'Gerando...' : 'Baixar Relatório'}
+          </button>
+          <button className="btn btn-primary" onClick={salvar} disabled={saving || loading}>
+            <Save size={15} /> {saving ? 'Salvando...' : 'Salvar Alterações'}
+          </button>
+        </div>
       </div>
 
       <div className="filters">
@@ -328,33 +407,67 @@ export default function PrevisaoOrcamentaria() {
         </div>
       </div>
 
+      <div className="stats-grid">
+        <div className="stat-card blue">
+          <div className="stat-label">Previsto no mês</div>
+          <div className="stat-value stat-value-compact">{toCurrency(analise.resumo?.total_previsto || 0)}</div>
+        </div>
+        <div className="stat-card green">
+          <div className="stat-label">Realizado no mês</div>
+          <div className="stat-value stat-value-compact">{toCurrency(analise.resumo?.total_realizado || 0)}</div>
+        </div>
+        <div className={`stat-card ${Number(analise.resumo?.total_desvio || 0) > 0 ? 'yellow' : 'purple'}`}>
+          <div className="stat-label">Desvio consolidado</div>
+          <div className="stat-value stat-value-compact">{toCurrency(analise.resumo?.total_desvio || 0)}</div>
+        </div>
+        <div className="stat-card red">
+          <div className="stat-label">Itens com ação</div>
+          <div className="stat-value">{loadingAnalise ? '...' : (analise.resumo?.quantidade_alertas || 0)}</div>
+          <div className="stat-sub">{loadingAnalise ? '' : `${analise.resumo?.quantidade_sem_previsao || 0} sem previsão cadastrada`}</div>
+        </div>
+      </div>
+
       <div className="card">
-        {loading ? <div className="spinner" /> : (
+        {loading || loadingAnalise ? <div className="spinner" /> : (
           <div className="table-wrap">
-            <table style={{ width: 'auto', minWidth: 740 }}>
+            <table style={{ width: 'auto', minWidth: 1380 }}>
               <colgroup>
-                <col style={{ width: 500 }} />
-                <col style={{ width: 220 }} />
+                <col style={{ width: 360 }} />
+                <col style={{ width: 140 }} />
+                <col style={{ width: 160 }} />
+                <col style={{ width: 160 }} />
+                <col style={{ width: 160 }} />
+                <col style={{ width: 170 }} />
+                <col style={{ width: 420 }} />
                 <col style={{ width: 220 }} />
               </colgroup>
               <thead>
                 <tr>
                   <th>Conta</th>
-                  <th style={{ textAlign: 'left', paddingLeft: 12 }}>{mesSelecionadoLabel}</th>
+                  <th style={{ textAlign: 'left', paddingLeft: 12 }}>Previsto {mesSelecionadoLabel}</th>
+                  <th>Realizado</th>
+                  <th>Desvio</th>
+                  <th>Execução</th>
+                  <th>Status</th>
+                  <th>Ação recomendada</th>
                   <th>Ações</th>
                 </tr>
               </thead>
               <tbody>
                 {contasFiltradas.length === 0 ? (
                   <tr>
-                    <td colSpan={3} style={{ textAlign: 'center', padding: 30, color: '#718096' }}>
+                    <td colSpan={8} style={{ textAlign: 'center', padding: 30, color: '#718096' }}>
                       Nenhuma conta encontrada para o filtro informado
                     </td>
                   </tr>
                 ) : contasFiltradas.map((conta) => {
                   const cell = grid?.[conta.id]?.[mesSelecionado] || createEmptyCell();
+                  const itemAnalise = analiseMap[conta.id] || null;
                   const rowKey = `${conta.id}:${mesSelecionado}`;
                   const dirty = isCellDirty(cell);
+                  const status = itemAnalise?.status || 'sem_movimento';
+                  const statusStyle = STATUS_BADGE_STYLES[status] || STATUS_BADGE_STYLES.sem_movimento;
+                  const percentual = itemAnalise?.percentual_execucao;
 
                   return (
                     <tr key={conta.id}>
@@ -367,6 +480,19 @@ export default function PrevisaoOrcamentaria() {
                           onChange={(e) => setValor(conta.id, mesSelecionado, e.target.value)}
                           style={{ width: 150, textAlign: 'center', borderColor: dirty ? '#d69e2e' : undefined, background: dirty ? '#fffaf0' : undefined }}
                         />
+                      </td>
+                      <td>{toCurrency(itemAnalise?.valor_realizado || 0)}</td>
+                      <td style={{ color: Number(itemAnalise?.desvio || 0) > 0 ? '#c53030' : '#2f855a', fontWeight: 600 }}>
+                        {toCurrency(itemAnalise?.desvio || 0)}
+                      </td>
+                      <td>{percentual == null ? '-' : `${percentual.toFixed(2)}%`}</td>
+                      <td>
+                        <span className="badge" style={statusStyle}>
+                          {STATUS_LABELS[status] || STATUS_LABELS.sem_movimento}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: 13, color: '#4a5568', lineHeight: 1.5 }}>
+                        {itemAnalise?.acao_recomendada || 'Sem ação sugerida.'}
                       </td>
                       <td className="table-actions-cell">
                         <div className="table-actions">
@@ -396,6 +522,11 @@ export default function PrevisaoOrcamentaria() {
                   <tr>
                     <td style={{ fontWeight: 700 }}>TOTAL {mesSelecionadoLabel.toUpperCase()}</td>
                     <td style={{ fontWeight: 700 }}>{toCurrency(totalMesSelecionado)}</td>
+                    <td style={{ fontWeight: 700 }}>{toCurrency(analise.resumo?.total_realizado || 0)}</td>
+                    <td style={{ fontWeight: 700 }}>{toCurrency(analise.resumo?.total_desvio || 0)}</td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
                     <td className="table-actions-cell"></td>
                   </tr>
                 </tfoot>

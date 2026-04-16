@@ -227,6 +227,39 @@ class PrevisaoOrcamentariaUpsertItem(BaseModel):
     observacoes: Optional[str] = None
 
 
+class PrevisaoOrcamentariaAnaliseItem(BaseModel):
+    conta_id: str
+    conta_codigo: Optional[str] = None
+    conta_nome: Optional[str] = None
+    tipo: Optional[str] = None
+    ano: int
+    mes: int
+    valor_previsto: float
+    valor_realizado: float
+    desvio: float
+    percentual_execucao: Optional[float] = None
+    status: str
+    acao_recomendada: str
+    observacoes: Optional[str] = None
+
+
+class PrevisaoOrcamentariaAnaliseResumo(BaseModel):
+    ano: int
+    mes: int
+    tipo: Optional[str] = None
+    total_previsto: float
+    total_realizado: float
+    total_desvio: float
+    quantidade_itens: int
+    quantidade_alertas: int
+    quantidade_sem_previsao: int
+
+
+class PrevisaoOrcamentariaAnaliseResponse(BaseModel):
+    resumo: PrevisaoOrcamentariaAnaliseResumo
+    itens: List[PrevisaoOrcamentariaAnaliseItem]
+
+
 # Despesa schemas
 class DespesaCreate(BaseModel):
     descricao: str

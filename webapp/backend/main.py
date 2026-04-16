@@ -666,6 +666,7 @@ FINANCE_REPORT_PREFIXES = (
     "/api/relatorios/conciliacao",
     "/api/relatorios/aplicacoes-financeiras",
     "/api/relatorios/consolidado-financeiro",
+    "/api/relatorios/previsao-orcamentaria",
 )
 
 
@@ -3185,6 +3186,131 @@ def _validar_ano_mes_previsao(ano: int, mes: int):
         raise HTTPException(status_code=400, detail="Mês inválido")
 
 
+def _acao_previsao_orcamentaria(tipo: str, valor_previsto: float, valor_realizado: float, desvio: float) -> tuple[str, str]:
+    tipo_norm = (tipo or "saida").strip().lower()
+    previsto = round(float(valor_previsto or 0), 2)
+    realizado = round(float(valor_realizado or 0), 2)
+    diferenca = round(float(desvio or 0), 2)
+
+    if previsto <= 0 and realizado <= 0:
+        return ("sem_movimento", "Sem ação imediata; acompanhar a conta neste mês.")
+
+    if previsto <= 0 < realizado:
+        if tipo_norm == "entrada":
+            return ("sem_previsao", "Classificar a receita e incluir previsão para os próximos meses.")
+        return ("sem_previsao", "Registrar orçamento para a conta ou justificar a despesa extraordinária.")
+
+    percentual_desvio = abs(diferenca) / previsto if previsto > 0 else 0
+
+    if tipo_norm == "entrada":
+        if realizado < previsto and percentual_desvio >= 0.1:
+            return ("abaixo_do_previsto", "Reforçar cobrança e captação para recuperar a meta do mês.")
+        if realizado > previsto and percentual_desvio >= 0.1:
+            return ("acima_do_previsto", "Revisar a meta e direcionar o excedente para reserva ou investimento.")
+        return ("no_previsto", "Manter o acompanhamento da arrecadação conforme planejado.")
+
+    if realizado > previsto and percentual_desvio >= 0.1:
+        return ("acima_do_previsto", "Conter gasto, revisar fornecedor ou solicitar suplementação orçamentária.")
+    if realizado < previsto and percentual_desvio >= 0.1:
+        return ("abaixo_do_previsto", "Reprogramar a verba disponível ou antecipar despesas pendentes.")
+    return ("no_previsto", "Execução dentro do esperado; manter monitoramento.")
+
+
+def _gerar_analise_previsao_orcamentaria(
+    db: Session,
+    ano: int,
+    mes: int,
+    tipo: Optional[str] = None,
+):
+    _validar_ano_mes_previsao(ano, mes)
+    tipo_norm = (tipo or "").strip().lower() or None
+    mes_ref = f"{ano}-{mes:02d}"
+
+    q_contas = db.query(models.PlanoConta)
+    if tipo_norm in {"entrada", "saida"}:
+        q_contas = q_contas.filter(models.PlanoConta.tipo == tipo_norm)
+    contas = q_contas.order_by(models.PlanoConta.ordem.asc(), models.PlanoConta.codigo.asc()).all()
+
+    previsoes = db.query(models.PrevisaoOrcamentaria).filter(
+        models.PrevisaoOrcamentaria.ano == ano,
+        models.PrevisaoOrcamentaria.mes == mes,
+    ).all()
+    previsao_por_conta = {p.conta_id: p for p in previsoes}
+
+    realizado_entradas = defaultdict(float)
+    for pagamento in _pagamentos_pagos_membros_ativos_no_mes(db, mes_ref):
+        if pagamento.valor_pago:
+            realizado_entradas["1.1"] += float(pagamento.valor_pago)
+
+    for renda in db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all():
+        codigo = (renda.conta_codigo or "1.5").strip()
+        realizado_entradas[codigo] += float(renda.valor or 0)
+
+    realizado_saidas = defaultdict(float)
+    for despesa in db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all():
+        codigo = (despesa.conta_codigo or "2.99").strip()
+        realizado_saidas[codigo] += float(despesa.valor or 0)
+
+    itens = []
+    total_previsto = 0.0
+    total_realizado = 0.0
+    total_alertas = 0
+    total_sem_previsao = 0
+
+    for conta in contas:
+        previsao = previsao_por_conta.get(conta.id)
+        valor_previsto = round(float(previsao.valor_previsto or 0), 2) if previsao else 0.0
+        if (conta.tipo or "saida") == "entrada":
+            valor_realizado = round(float(realizado_entradas.get((conta.codigo or "").strip(), 0)), 2)
+        else:
+            valor_realizado = round(float(realizado_saidas.get((conta.codigo or "").strip(), 0)), 2)
+
+        desvio = round(valor_realizado - valor_previsto, 2)
+        percentual_execucao = round((valor_realizado / valor_previsto) * 100, 2) if valor_previsto > 0 else None
+        status, acao_recomendada = _acao_previsao_orcamentaria(conta.tipo or "saida", valor_previsto, valor_realizado, desvio)
+
+        if status in {"acima_do_previsto", "abaixo_do_previsto", "sem_previsao"}:
+            total_alertas += 1
+        if status == "sem_previsao":
+            total_sem_previsao += 1
+
+        total_previsto += valor_previsto
+        total_realizado += valor_realizado
+
+        itens.append({
+            "conta_id": conta.id,
+            "conta_codigo": conta.codigo,
+            "conta_nome": conta.nome,
+            "tipo": conta.tipo,
+            "ano": ano,
+            "mes": mes,
+            "valor_previsto": valor_previsto,
+            "valor_realizado": valor_realizado,
+            "desvio": desvio,
+            "percentual_execucao": percentual_execucao,
+            "status": status,
+            "acao_recomendada": acao_recomendada,
+            "observacoes": previsao.observacoes if previsao else None,
+        })
+
+    itens.sort(key=lambda item: ((item.get("conta_codigo") or ""), (item.get("conta_nome") or "").lower()))
+
+    return {
+        "resumo": {
+            "ano": ano,
+            "mes": mes,
+            "tipo": tipo_norm,
+            "total_previsto": round(total_previsto, 2),
+            "total_realizado": round(total_realizado, 2),
+            "total_desvio": round(total_realizado - total_previsto, 2),
+            "quantidade_itens": len(itens),
+            "quantidade_alertas": total_alertas,
+            "quantidade_sem_previsao": total_sem_previsao,
+        },
+        "itens": itens,
+    }
+
+
 @app.get("/api/previsoes-orcamentarias", response_model=List[schemas.PrevisaoOrcamentariaResponse])
 def list_previsoes_orcamentarias(
     ano: int,
@@ -3226,6 +3352,17 @@ def list_previsoes_orcamentarias(
             "created_at": p.created_at,
         })
     return result
+
+
+@app.get("/api/previsoes-orcamentarias/analise", response_model=schemas.PrevisaoOrcamentariaAnaliseResponse)
+def analisar_previsoes_orcamentarias(
+    ano: int,
+    mes: int,
+    tipo: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    return _gerar_analise_previsao_orcamentaria(db, ano, mes, tipo)
 
 
 @app.post("/api/previsoes-orcamentarias", response_model=schemas.PrevisaoOrcamentariaResponse)
@@ -6480,25 +6617,35 @@ def _inferir_competencias_dabb_por_conciliacao(
     if not mes_ref:
         return []
 
-    valor_mensalidade, taxa_bancaria = _snapshot_dabb_da_conciliacao(db, conciliacao, membro)
     valor_extrato = round(float(conciliacao.valor_extrato or 0), 2)
-    valor_competencias = round(valor_extrato - taxa_bancaria, 2)
-
-    if valor_mensalidade <= 0 or valor_competencias <= 0:
-        return []
-
-    quantidade_competencias = int(round(valor_competencias / valor_mensalidade))
-    if quantidade_competencias <= 0:
-        return []
-
-    valor_esperado = round(valor_mensalidade * quantidade_competencias, 2)
-    if abs(valor_competencias - valor_esperado) > 0.05:
-        return []
-
     mes_inicio_bimestre, mes_fim_bimestre = _normalizar_inicio_bimestre(mes_ref)
     competencias_bimestre = _meses_entre(mes_inicio_bimestre, mes_fim_bimestre)
+    valor_mensalidade, taxa_bancaria = _snapshot_dabb_da_conciliacao(db, conciliacao, membro)
+    valor_competencias = round(valor_extrato - taxa_bancaria, 2)
+
+    if valor_competencias <= 0:
+        return []
+
+    quantidade_competencias = 0
+    if valor_mensalidade > 0:
+        quantidade_competencias = int(round(valor_competencias / valor_mensalidade))
+        if quantidade_competencias > 0:
+            valor_esperado = round(valor_mensalidade * quantidade_competencias, 2)
+            if abs(valor_competencias - valor_esperado) > 0.05:
+                quantidade_competencias = 0
 
     if quantidade_competencias == len(competencias_bimestre) and quantidade_competencias > 0:
+        return competencias_bimestre
+
+    if _conciliacao_dabb_representa_bimestre_fechado(
+        db=db,
+        conciliacao=conciliacao,
+        membro=membro,
+        competencias_bimestre=competencias_bimestre,
+        mes_ref=mes_ref,
+        mes_fim_bimestre=mes_fim_bimestre,
+        valor_extrato=valor_extrato,
+    ):
         return competencias_bimestre
 
     competencias_em_aberto = _competencias_em_aberto_ate_mes(db, membro, mes_ref)
@@ -6506,6 +6653,42 @@ def _inferir_competencias_dabb_por_conciliacao(
         return []
 
     return competencias_em_aberto[:quantidade_competencias]
+
+
+def _conciliacao_dabb_representa_bimestre_fechado(
+    db: Session,
+    conciliacao: models.Conciliacao,
+    membro: models.Membro,
+    competencias_bimestre: list[str],
+    mes_ref: str,
+    mes_fim_bimestre: str,
+    valor_extrato: float,
+) -> bool:
+    if mes_ref != mes_fim_bimestre or len(competencias_bimestre) <= 1:
+        return False
+
+    pagamento_mes_atual = db.query(models.Pagamento).filter(
+        models.Pagamento.membro_id == membro.id,
+        models.Pagamento.mes_referencia == mes_ref,
+    ).order_by(models.Pagamento.updated_at.desc(), models.Pagamento.created_at.desc()).first()
+
+    if not pagamento_mes_atual:
+        return False
+
+    return abs(float(pagamento_mes_atual.valor_pago or 0) - valor_extrato) <= 0.05
+
+
+def _ratear_valor_dabb_por_competencias(valor_total: float, competencias: list[str]) -> list[float]:
+    if not competencias:
+        return []
+
+    valor_total = round(float(valor_total or 0), 2)
+    quantidade = len(competencias)
+    valor_base = round(valor_total / quantidade, 2)
+    valores = [valor_base for _ in competencias]
+    diferenca = round(valor_total - sum(valores), 2)
+    valores[-1] = round(valores[-1] + diferenca, 2)
+    return valores
 
 
 def _baixar_pagamentos_dabb_por_competencias_inferidas(
@@ -6520,10 +6703,15 @@ def _baixar_pagamentos_dabb_por_competencias_inferidas(
         raise ValueError("Nenhuma competência DABB foi informada para a baixa")
 
     valor_mensalidade, taxa_bancaria = _snapshot_dabb_da_conciliacao(db, conciliacao, membro)
+    valor_total_competencias = round(float(conciliacao.valor_extrato or 0) - taxa_bancaria, 2)
+    valores_competencias = _ratear_valor_dabb_por_competencias(valor_total_competencias, competencias)
+    if not valores_competencias or any(valor <= 0 for valor in valores_competencias):
+        valores_competencias = [round(valor_mensalidade, 2) for _ in competencias]
+
     pagamentos_processados = []
     _anexar_snapshot_dabb_observacoes(conciliacao, valor_mensalidade, taxa_bancaria, competencias)
 
-    for competencia in competencias:
+    for idx, competencia in enumerate(competencias):
         pagamento = db.query(models.Pagamento).filter(
             models.Pagamento.membro_id == membro.id,
             models.Pagamento.mes_referencia == competencia
@@ -6538,7 +6726,7 @@ def _baixar_pagamentos_dabb_por_competencias_inferidas(
             pagamento = models.Pagamento(
                 id=str(uuid.uuid4()),
                 membro_id=membro.id,
-                valor_pago=valor_mensalidade,
+                valor_pago=valores_competencias[idx],
                 mes_referencia=competencia,
                 data_pagamento=conciliacao.data_extrato,
                 status_pagamento="pago",
@@ -6550,7 +6738,7 @@ def _baixar_pagamentos_dabb_por_competencias_inferidas(
             db.add(pagamento)
             db.flush()
         else:
-            pagamento.valor_pago = valor_mensalidade
+            pagamento.valor_pago = valores_competencias[idx]
             pagamento.data_pagamento = conciliacao.data_extrato
             pagamento.status_pagamento = "pago"
             pagamento.forma_pagamento = "debito_automatico_bimestral"
@@ -8513,6 +8701,144 @@ def exportar_aplicacoes_financeiras(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=aplicacoes_financeiras_{mes_ref}.xlsx"}
+    )
+
+
+@app.get("/api/relatorios/previsao-orcamentaria")
+def exportar_previsao_orcamentaria(
+    ano: Optional[int] = None,
+    mes: Optional[int] = None,
+    tipo: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    hoje = date.today()
+    ano_ref = ano or hoje.year
+    mes_ref = mes or hoje.month
+    analise = _gerar_analise_previsao_orcamentaria(db, ano_ref, mes_ref, tipo)
+    resumo = analise["resumo"]
+    itens = analise["itens"]
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Orcado x Realizado"
+
+    tipo_titulo = (tipo or "geral").strip().lower()
+    ws.merge_cells("A1:J1")
+    ws["A1"] = f"PREVISAO ORCAMENTARIA - ORCADO X REALIZADO - {ano_ref}-{mes_ref:02d} - {tipo_titulo.upper()}"
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
+    ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    resumo_linhas = [
+        ("Tipo", tipo_titulo),
+        ("Total Previsto", resumo["total_previsto"]),
+        ("Total Realizado", resumo["total_realizado"]),
+        ("Desvio Total", resumo["total_desvio"]),
+        ("Itens Monitorados", resumo["quantidade_itens"]),
+        ("Alertas", resumo["quantidade_alertas"]),
+        ("Sem Previsao", resumo["quantidade_sem_previsao"]),
+    ]
+    for idx, (label, value) in enumerate(resumo_linhas, start=3):
+        ws.cell(row=idx, column=1, value=label)
+        ws.cell(row=idx, column=2, value=value)
+        ws.cell(row=idx, column=1).font = Font(bold=True)
+        if isinstance(value, (int, float)) and idx in {4, 5, 6}:
+            ws.cell(row=idx, column=2).number_format = 'R$ #,##0.00'
+
+    header_row = 11
+    headers = [
+        "Codigo",
+        "Conta",
+        "Tipo",
+        "Previsto",
+        "Realizado",
+        "Desvio",
+        "Execucao (%)",
+        "Status",
+        "Acao Recomendada",
+        "Observacoes",
+    ]
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=header_row, column=col, value=header)
+        _excel_header_style(cell)
+
+    fill_warning = PatternFill("solid", fgColor="FFF3CD")
+    fill_danger = PatternFill("solid", fgColor="FDECEC")
+    fill_success = PatternFill("solid", fgColor="E6F4EA")
+    fill_info = PatternFill("solid", fgColor="E8F1FB")
+
+    if not itens:
+        itens = [{
+            "conta_codigo": "",
+            "conta_nome": "Sem contas para o filtro informado",
+            "tipo": tipo or "",
+            "valor_previsto": 0.0,
+            "valor_realizado": 0.0,
+            "desvio": 0.0,
+            "percentual_execucao": None,
+            "status": "sem_movimento",
+            "acao_recomendada": "Sem ação imediata.",
+            "observacoes": "",
+        }]
+
+    for idx, item in enumerate(itens, start=header_row + 1):
+        ws.cell(row=idx, column=1, value=item.get("conta_codigo"))
+        ws.cell(row=idx, column=2, value=item.get("conta_nome"))
+        ws.cell(row=idx, column=3, value=item.get("tipo"))
+        ws.cell(row=idx, column=4, value=float(item.get("valor_previsto") or 0))
+        ws.cell(row=idx, column=5, value=float(item.get("valor_realizado") or 0))
+        ws.cell(row=idx, column=6, value=float(item.get("desvio") or 0))
+        ws.cell(row=idx, column=7, value=float(item.get("percentual_execucao") or 0) if item.get("percentual_execucao") is not None else None)
+        ws.cell(row=idx, column=8, value=item.get("status"))
+        ws.cell(row=idx, column=9, value=item.get("acao_recomendada"))
+        ws.cell(row=idx, column=10, value=item.get("observacoes"))
+
+        status = item.get("status")
+        fill = None
+        if status == "acima_do_previsto":
+            fill = fill_danger
+        elif status == "abaixo_do_previsto":
+            fill = fill_warning
+        elif status == "sem_previsao":
+            fill = fill_info
+        elif status == "no_previsto":
+            fill = fill_success
+
+        if fill:
+            for col in range(1, 11):
+                ws.cell(row=idx, column=col).fill = fill
+
+    for row in ws.iter_rows(min_row=header_row + 1, max_row=ws.max_row, min_col=4, max_col=7):
+        for cell in row:
+            if cell.column in {4, 5, 6} and isinstance(cell.value, (int, float)):
+                cell.number_format = 'R$ #,##0.00'
+            if cell.column == 7 and isinstance(cell.value, (int, float)):
+                cell.number_format = '0.00'
+
+    for col_idx, width in {
+        1: 12,
+        2: 40,
+        3: 12,
+        4: 16,
+        5: 16,
+        6: 16,
+        7: 14,
+        8: 18,
+        9: 60,
+        10: 40,
+    }.items():
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+    ws.freeze_panes = f"A{header_row + 1}"
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=previsao_orcamentaria_{ano_ref}_{mes_ref:02d}.xlsx"}
     )
 
 

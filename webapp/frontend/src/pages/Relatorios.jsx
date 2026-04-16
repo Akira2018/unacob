@@ -32,6 +32,7 @@ export default function Relatorios() {
   const [festaId, setFestaId] = useState('');
   const [loading, setLoading] = useState({});
   const [anoConsolidado, setAnoConsolidado] = useState(new Date().getFullYear());
+  const [tipoPrevisao, setTipoPrevisao] = useState('saida');
 
   useEffect(() => {
     api.get('/festas')
@@ -155,6 +156,34 @@ export default function Relatorios() {
         <select className="search-input" value={mes} onChange={(e) => setMes(e.target.value)} style={{ width: '100%' }}>
           {getMeses().map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
+      ),
+    },
+    {
+      key: 'previsao_orcamentaria',
+      icon: <BarChart3 size={24} />,
+      title: 'Orçado x Realizado',
+      desc: 'Relatório mensal da previsão orçamentária com desvio e ação recomendada por conta',
+      color: '#975a16',
+      isFinance: true,
+      action: () => {
+        const [anoRef, mesRef] = String(mes).split('-');
+        return download(
+          'previsao_orcamentaria',
+          '/relatorios/previsao-orcamentaria',
+          `previsao_orcamentaria_${mes}_${tipoPrevisao}.xlsx`,
+          { ano: Number(anoRef), mes: Number(mesRef), tipo: tipoPrevisao }
+        );
+      },
+      extra: (
+        <div style={{ display: 'grid', gap: 8 }}>
+          <select className="search-input" value={mes} onChange={(e) => setMes(e.target.value)} style={{ width: '100%' }}>
+            {getMeses().map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+          <select className="search-input" value={tipoPrevisao} onChange={(e) => setTipoPrevisao(e.target.value)} style={{ width: '100%' }}>
+            <option value="saida">Saídas</option>
+            <option value="entrada">Entradas</option>
+          </select>
+        </div>
       ),
     },
     {
