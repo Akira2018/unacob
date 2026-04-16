@@ -8718,14 +8718,21 @@ def exportar_previsao_orcamentaria(
     analise = _gerar_analise_previsao_orcamentaria(db, ano_ref, mes_ref, tipo)
     resumo = analise["resumo"]
     itens = analise["itens"]
+    status_labels = {
+        "acima_do_previsto": "Acima do previsto",
+        "abaixo_do_previsto": "Abaixo do previsto",
+        "no_previsto": "Dentro do previsto",
+        "sem_previsao": "Sem previsão",
+        "sem_movimento": "Sem movimento",
+    }
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Orcado x Realizado"
+    ws.title = "Orçado x Realizado"
 
     tipo_titulo = (tipo or "geral").strip().lower()
     ws.merge_cells("A1:J1")
-    ws["A1"] = f"PREVISAO ORCAMENTARIA - ORCADO X REALIZADO - {ano_ref}-{mes_ref:02d} - {tipo_titulo.upper()}"
+    ws["A1"] = f"PREVISÃO ORÇAMENTÁRIA - ORÇADO X REALIZADO - {ano_ref}-{mes_ref:02d} - {tipo_titulo.upper()}"
     ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
     ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
@@ -8737,7 +8744,7 @@ def exportar_previsao_orcamentaria(
         ("Desvio Total", resumo["total_desvio"]),
         ("Itens Monitorados", resumo["quantidade_itens"]),
         ("Alertas", resumo["quantidade_alertas"]),
-        ("Sem Previsao", resumo["quantidade_sem_previsao"]),
+        ("Sem Previsão", resumo["quantidade_sem_previsao"]),
     ]
     for idx, (label, value) in enumerate(resumo_linhas, start=3):
         ws.cell(row=idx, column=1, value=label)
@@ -8748,16 +8755,16 @@ def exportar_previsao_orcamentaria(
 
     header_row = 11
     headers = [
-        "Codigo",
+        "Código",
         "Conta",
         "Tipo",
         "Previsto",
         "Realizado",
         "Desvio",
-        "Execucao (%)",
+        "Execução (%)",
         "Status",
-        "Acao Recomendada",
-        "Observacoes",
+        "Ação Recomendada",
+        "Observações",
     ]
     for col, header in enumerate(headers, 1):
         cell = ws.cell(row=header_row, column=col, value=header)
@@ -8790,7 +8797,7 @@ def exportar_previsao_orcamentaria(
         ws.cell(row=idx, column=5, value=float(item.get("valor_realizado") or 0))
         ws.cell(row=idx, column=6, value=float(item.get("desvio") or 0))
         ws.cell(row=idx, column=7, value=float(item.get("percentual_execucao") or 0) if item.get("percentual_execucao") is not None else None)
-        ws.cell(row=idx, column=8, value=item.get("status"))
+        ws.cell(row=idx, column=8, value=status_labels.get(item.get("status"), item.get("status")))
         ws.cell(row=idx, column=9, value=item.get("acao_recomendada"))
         ws.cell(row=idx, column=10, value=item.get("observacoes"))
 
