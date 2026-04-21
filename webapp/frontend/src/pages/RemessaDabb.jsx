@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { BookText, Copy, CreditCard, Download, FileSpreadsheet, RefreshCcw, Trash2 } from 'lucide-react';
 import api from '../api';
 import { getApiErrorMessage } from '../utils/apiError';
+import StatusCounter from '../components/StatusCounter';
 
 const getMeses = () => {
   const r = [];
@@ -425,8 +426,10 @@ export default function RemessaDabb() {
   return (
     <div>
       <div className="topbar">
-        <h2>Remessa DABB</h2>
-        <span style={{ fontSize: 13, color: '#718096' }}>Arquivos .rem do Banco do Brasil</span>
+        <div className="topbar-title-block">
+          <h2>Remessa DABB</h2>
+          <span className="topbar-subtitle">Arquivos .rem do Banco do Brasil</span>
+        </div>
       </div>
 
       <div className="card" style={{ marginBottom: 24, borderTop: '4px solid #b45309' }}>
@@ -621,9 +624,7 @@ export default function RemessaDabb() {
               <input type="checkbox" checked={filtroAtrasoDabb} onChange={(e) => setFiltroAtrasoDabb(e.target.checked)} />
               So com atraso
             </label>
-            <span style={{ fontSize: 13, color: '#718096' }}>
-              {itensPreviaDabb.length} {itensPreviaDabb.length === 1 ? 'linha visivel' : 'linhas visiveis'}
-            </span>
+            <StatusCounter count={itensPreviaDabb.length} singular="linha visivel" plural="linhas visiveis" />
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 16 }}>

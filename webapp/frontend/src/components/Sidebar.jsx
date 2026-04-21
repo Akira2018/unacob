@@ -3,7 +3,7 @@ import { useAuth } from '../context/useAuth';
 import {
   LayoutDashboard, Users, CreditCard, Receipt, TrendingUp,
   PartyPopper, FileSpreadsheet, GitMerge, Tag, Cake,
-  UserCog, BarChart3, DollarSign, LogOut, Building2, Landmark, User
+  UserCog, BarChart3, DollarSign, LogOut, Building2, Landmark, User, BookOpenText
 } from 'lucide-react';
 
 const sections = [
@@ -31,7 +31,6 @@ const sections = [
       { to: '/fluxo-caixa', icon: <TrendingUp size={16} />, label: 'Fluxo de Caixa' },
       { to: '/financeiro', icon: <BarChart3 size={16} />, label: 'Balancete' },
       { to: '/conciliacao', icon: <GitMerge size={16} />, label: 'Conciliação' },
-      { to: '/remessa-dabb', icon: <CreditCard size={16} />, label: 'Remessa DABB' },
     ]
   },
   {
@@ -46,6 +45,7 @@ const sections = [
       { to: '/aniversariantes', icon: <Cake size={16} />, label: 'Aniversariantes' },
       { to: '/etiquetas', icon: <Tag size={16} />, label: 'Etiquetas' },
       { to: '/relatorios', icon: <FileSpreadsheet size={16} />, label: 'Relatórios' },
+      { to: '/documentacao', icon: <BookOpenText size={16} />, label: 'Documentação' },
       { to: '/meu-cadastro', icon: <User size={16} />, label: 'Meu Cadastro' },
       { to: '/usuarios', icon: <UserCog size={16} />, label: 'Usuários' },
     ]
@@ -81,7 +81,7 @@ export default function Sidebar({ open, onNavigate }) {
           const visibleItems = sec.items.filter((item) => {
             const financePaths = new Set([
               '/pagamentos', '/despesas', '/outras-rendas', '/aplicacoes-financeiras',
-              '/plano-contas', '/previsao-orcamentaria', '/fluxo-caixa', '/financeiro', '/conciliacao', '/remessa-dabb'
+              '/plano-contas', '/previsao-orcamentaria', '/fluxo-caixa', '/financeiro', '/conciliacao'
             ]);
             if (financePaths.has(item.to) && isAssistant) return false;
             return true;

@@ -5,6 +5,18 @@ import { format, subMonths } from 'date-fns';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Download } from 'lucide-react';
 import { getApiErrorMessage } from '../utils/apiError';
+import InlineHelpCard from '../components/InlineHelpCard';
+
+const HELP_BY_ROLE = {
+  administrador: 'Priorize saldo inicial, integridade do balancete e consistência do ambiente antes de exportar ou ajustar valores manuais.',
+  gerente: 'Use esta tela para validar entradas, despesas e saldo final antes de compartilhar o fechamento do mês.',
+};
+
+const HELP_LINKS = [
+  { to: '/documentacao/manual', label: 'Abrir manual do usuário' },
+  { to: '/documentacao/troubleshooting', label: 'Ver ajuda para problemas comuns' },
+  { to: '/documentacao', label: 'Ir para a central de documentação' },
+];
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
 const getMeses = () => { const r = []; for (let i = 0; i < 13; i++) r.push(format(subMonths(new Date(), i), 'yyyy-MM')); return r; };
@@ -122,6 +134,13 @@ export default function Financeiro() {
         </div>
       </div>
 
+      <InlineHelpCard
+        defaultLabel="Financeiro"
+        messagesByRole={HELP_BY_ROLE}
+        fallbackMessage="Confirme o mês, o saldo inicial e os totais antes de exportar o balancete."
+        links={HELP_LINKS}
+      />
+
       {loading ? <div className="page-loading"><div className="spinner" /></div> : (
         <>
           {/* Summary */}
@@ -141,14 +160,14 @@ export default function Financeiro() {
           </div>
 
           {/* Balancete Table */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 24 }}>
+          <div className="financeiro-balancete-grid">
             <div className="card">
-              <div className="card-title" style={{ color: '#38a169' }}>📥 ENTRADAS</div>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+              <div className="card-title financeiro-balancete-title-entrada">📥 ENTRADAS</div>
+              <table className="financeiro-balancete-table">
                 <tbody>
-                  <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
-                    <td style={{ padding: '8px 4px' }}><strong>Saldo Anterior ({data?.mes_referencia_anterior || '-'})</strong></td>
-                    <td style={{ textAlign: 'right', fontWeight: 600, color: '#1e3a5f' }}>
+                  <tr className="financeiro-balancete-row-primary">
+                    <td className="financeiro-balancete-cell"><strong>Saldo Anterior ({data?.mes_referencia_anterior || '-'})</strong></td>
+                    <td className="financeiro-balancete-cell financeiro-balancete-value financeiro-balancete-value-strong">
                       {fmt(data?.saldo_anterior)}
                       {data?.origem_saldo_anterior === 'manual' && (
                         <span className="badge badge-warning" style={{ marginLeft: 8 }}>Saldo Manual Ativo</span>
@@ -156,32 +175,32 @@ export default function Financeiro() {
                     </td>
                   </tr>
                   {entradasContaData.map(r => (
-                    <tr key={`${r.codigo}-${r.nome}`} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                      <td style={{ padding: '8px 4px', paddingLeft: 10 }}>{r.codigo} - {r.nome}</td>
-                      <td style={{ textAlign: 'right', color: '#38a169' }}>{fmt(r.valor)}</td>
+                    <tr key={`${r.codigo}-${r.nome}`} className="financeiro-balancete-row-secondary">
+                      <td className="financeiro-balancete-cell financeiro-balancete-cell-indent">{r.codigo} - {r.nome}</td>
+                      <td className="financeiro-balancete-cell financeiro-balancete-value financeiro-balancete-value-entrada">{fmt(r.valor)}</td>
                     </tr>
                   ))}
-                  <tr style={{ background: '#f0fff4', fontWeight: 700 }}>
-                    <td style={{ padding: '10px 4px' }}>TOTAL ENTRADAS</td>
-                    <td style={{ textAlign: 'right', color: '#38a169', fontSize: 15 }}>{fmt(data?.total_entradas)}</td>
+                  <tr className="financeiro-balancete-total-entrada">
+                    <td className="financeiro-balancete-cell">TOTAL ENTRADAS</td>
+                    <td className="financeiro-balancete-cell financeiro-balancete-value financeiro-balancete-value-entrada financeiro-balancete-total-value">{fmt(data?.total_entradas)}</td>
                   </tr>
                 </tbody>
               </table>
             </div>
 
             <div className="card">
-              <div className="card-title" style={{ color: '#e53e3e' }}>📤 SAÍDAS</div>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+              <div className="card-title financeiro-balancete-title-saida">📤 SAÍDAS</div>
+              <table className="financeiro-balancete-table">
                 <tbody>
                   {saidasContaData.map(d => (
-                    <tr key={`${d.codigo}-${d.nome}`} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                      <td style={{ padding: '8px 4px' }}>{d.codigo} - {d.nome}</td>
-                      <td style={{ textAlign: 'right', color: '#e53e3e' }}>{fmt(d.valor)}</td>
+                    <tr key={`${d.codigo}-${d.nome}`} className="financeiro-balancete-row-secondary">
+                      <td className="financeiro-balancete-cell">{d.codigo} - {d.nome}</td>
+                      <td className="financeiro-balancete-cell financeiro-balancete-value financeiro-balancete-value-saida">{fmt(d.valor)}</td>
                     </tr>
                   ))}
-                  <tr style={{ background: '#fff5f5', fontWeight: 700 }}>
-                    <td style={{ padding: '10px 4px' }}>TOTAL SAÍDAS</td>
-                    <td style={{ textAlign: 'right', color: '#e53e3e', fontSize: 15 }}>{fmt(data?.total_despesas)}</td>
+                  <tr className="financeiro-balancete-total-saida">
+                    <td className="financeiro-balancete-cell">TOTAL SAÍDAS</td>
+                    <td className="financeiro-balancete-cell financeiro-balancete-value financeiro-balancete-value-saida financeiro-balancete-total-value">{fmt(data?.total_despesas)}</td>
                   </tr>
                 </tbody>
               </table>
@@ -189,12 +208,12 @@ export default function Financeiro() {
           </div>
 
           {/* SALDO */}
-          <div className="card" style={{ marginBottom: 24, textAlign: 'center', background: data?.saldo >= 0 ? 'linear-gradient(135deg, #f0fff4, #c6f6d5)' : 'linear-gradient(135deg, #fff5f5, #fed7d7)' }}>
-            <div style={{ fontSize: 14, color: '#4a5568', fontWeight: 500 }}>SALDO FINAL (COM SALDO ANTERIOR)</div>
-            <div style={{ fontSize: 36, fontWeight: 800, color: data?.saldo_final >= 0 ? '#276749' : '#9b2c2c', margin: '8px 0' }}>
+          <div className={`card financeiro-saldo-card ${data?.saldo >= 0 ? 'financeiro-saldo-card-positive' : 'financeiro-saldo-card-negative'}`}>
+            <div className="financeiro-saldo-label">SALDO FINAL (COM SALDO ANTERIOR)</div>
+            <div className={`financeiro-saldo-value ${data?.saldo_final >= 0 ? 'financeiro-saldo-value-positive' : 'financeiro-saldo-value-negative'}`}>
               {fmt(data?.saldo_final)}
             </div>
-            <div style={{ fontSize: 13, color: data?.saldo_final >= 0 ? '#276749' : '#9b2c2c' }}>
+            <div className={`financeiro-saldo-status ${data?.saldo_final >= 0 ? 'financeiro-saldo-status-positive' : 'financeiro-saldo-status-negative'}`}>
               {data?.saldo_final >= 0 ? '✅ Saldo acumulado positivo' : '⚠️ Saldo acumulado negativo'}
             </div>
           </div>
@@ -301,10 +320,10 @@ export default function Financeiro() {
 
 function SumCard({ label, value, color, sub, bold, big }) {
   return (
-    <div className="card" style={{ borderLeft: `4px solid ${color}`, padding: 16 }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: '#718096', textTransform: 'uppercase', letterSpacing: '.05em' }}>{label}</div>
-      <div className={`money-value ${big ? 'money-value-big' : 'money-value-compact'}`} style={{ fontWeight: bold ? 800 : 600, color, marginTop: 4 }}>{value}</div>
-      {sub && <div style={{ fontSize: 12, color: '#718096', marginTop: 2 }}>{sub}</div>}
+    <div className="card financeiro-summary-card" style={{ borderLeftColor: color }}>
+      <div className="financeiro-summary-label">{label}</div>
+      <div className={`money-value financeiro-summary-value ${big ? 'money-value-big' : 'money-value-compact'}`} style={{ fontWeight: bold ? 800 : 600, color }}>{value}</div>
+      {sub && <div className="financeiro-summary-sub">{sub}</div>}
     </div>
   );
 }

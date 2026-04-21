@@ -5,6 +5,18 @@ import { Plus, Edit, Trash2, Download } from 'lucide-react';
 import { format, subMonths } from 'date-fns';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { getApiErrorMessage } from '../utils/apiError';
+import InlineHelpCard from '../components/InlineHelpCard';
+
+const HELP_BY_ROLE = {
+  administrador: 'Priorize categoria, conta contábil, forma de pagamento e impacto da despesa no fechamento antes de salvar.',
+  gerente: 'Use esta tela para lançar saídas, revisar fornecedores e conferir o total do mês antes dos relatórios.',
+};
+
+const HELP_LINKS = [
+  { to: '/documentacao/manual', label: 'Abrir manual do usuário' },
+  { to: '/documentacao/troubleshooting', label: 'Ver ajuda para problemas comuns' },
+  { to: '/documentacao', label: 'Ir para a central de documentação' },
+];
 
 const CATEGORIAS = ['Aluguel', 'Energia', 'Água', 'Telefone/Internet', 'Material de Escritório', 'Serviços', 'Eventos', 'Manutenção', 'Salários', 'Impostos', 'Seguros', 'Transporte', 'Alimentação', 'Outros'];
 const COLORS = ['#1e3a5f', '#c8a84b', '#38a169', '#e53e3e', '#805ad5', '#dd6b20', '#2c7a7b', '#553c9a', '#b7791f', '#2d3748'];
@@ -135,8 +147,17 @@ export default function Despesas() {
     <div>
       <div className="topbar">
         <h2>Despesas</h2>
-        <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Nova Despesa</button>
+        <div className="topbar-actions">
+          <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Nova Despesa</button>
+        </div>
       </div>
+
+      <InlineHelpCard
+        defaultLabel="Financeiro"
+        messagesByRole={HELP_BY_ROLE}
+        fallbackMessage="Confirme categoria, conta e valor antes de registrar a despesa."
+        links={HELP_LINKS}
+      />
 
       <div className="filters">
         <div className="form-group" style={{ margin: 0 }}>
@@ -154,9 +175,9 @@ export default function Despesas() {
             onChange={e => setSearch(e.target.value)}
           />
         </div>
-        <div style={{ fontSize: 16, fontWeight: 700, color: '#e53e3e', alignSelf: 'flex-end', padding: '8px 0' }}>
+        <div className="filter-total filter-total-danger">
           {searchTerm ? `Total da busca: ${fmt(totalFiltrado)}` : `Total: ${fmt(totalExibido)}`}
-          {searchTerm && <span style={{ color: '#1e3a5f', fontSize: 14, marginLeft: 10 }}>Total geral: {fmt(total)}</span>}
+          {searchTerm && <span className="filter-total-muted">Total geral: {fmt(total)}</span>}
         </div>
       </div>
 

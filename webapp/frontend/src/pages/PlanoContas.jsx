@@ -112,7 +112,9 @@ export default function PlanoContas() {
     <div>
       <div className="topbar">
         <h2>Código de Contas</h2>
-        <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Nova Conta</button>
+        <div className="topbar-actions">
+          <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Nova Conta</button>
+        </div>
       </div>
 
       <div className="filters">

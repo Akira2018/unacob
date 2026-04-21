@@ -326,15 +326,15 @@ export default function PrevisaoOrcamentaria() {
   return (
     <div>
       <div className="topbar">
-        <div>
+        <div className="topbar-title-block">
           <h2>Previsão Orçamentária</h2>
-          <div style={{ fontSize: 13, color: '#718096', marginTop: 4 }}>
+          <div className="topbar-subtitle">
             {totalAlteracoesPendentes > 0
               ? `${totalAlteracoesPendentes} alteração(ões) pendente(s)`
               : 'Nenhuma alteração pendente'}
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div className="topbar-actions">
           <button className="btn btn-outline" onClick={baixarRelatorio} disabled={exporting}>
             <Download size={15} /> {exporting ? 'Gerando...' : 'Baixar Relatório'}
           </button>

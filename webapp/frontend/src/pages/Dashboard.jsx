@@ -7,12 +7,11 @@ import {
 import { Users, CreditCard, TrendingDown, TrendingUp, Cake, AlertCircle, CheckCircle, DollarSign } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { getApiErrorMessage } from '../utils/apiError';
-import { format, subMonths } from 'date-fns';
 
 const COLORS = ['#1e3a5f', '#c8a84b', '#38a169', '#e53e3e', '#805ad5', '#dd6b20'];
 const COMPACT_CURRENCY_THRESHOLD = 100000;
+const DASHBOARD_MONTH_STORAGE_KEY = 'unacob_dashboard_selected_month';
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
-const getMeses = () => { const r = []; for (let i = 0; i < 13; i++) r.push(format(subMonths(new Date(), i), 'yyyy-MM')); return r; };
 const fmtCompact = (v) => {
   const valor = Number(v || 0);
   const semCentavos = Math.abs(valor) >= COMPACT_CURRENCY_THRESHOLD;
@@ -24,33 +23,49 @@ const fmtCompact = (v) => {
   }).format(valor);
 };
 const fmtMes = m => { if (!m) return ''; const [y, mo] = m.split('-'); const months = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; return `${months[parseInt(mo)-1]}/${y.slice(2)}`; };
+const getMeses = () => {
+  const result = [];
+  const base = new Date();
+  for (let i = 0; i < 13; i += 1) {
+    const current = new Date(base.getFullYear(), base.getMonth() - i, 1);
+    const year = current.getFullYear();
+    const month = String(current.getMonth() + 1).padStart(2, '0');
+    result.push(`${year}-${month}`);
+  }
+  return result;
+};
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
-  const [mes, setMes] = useState('');
   const [loading, setLoading] = useState(true);
+  const [mesSelecionado, setMesSelecionado] = useState(() => window.localStorage.getItem(DASHBOARD_MONTH_STORAGE_KEY) || '');
 
   const load = useCallback(() => {
+    const params = mesSelecionado ? { mes_referencia: mesSelecionado } : undefined;
     setLoading(true);
-    api.get('/dashboard', { params: mes ? { mes_referencia: mes } : undefined })
-      .then(r => {
-        setData(r.data);
-        if (!mes && r.data?.mes_atual) {
-          setMes(r.data.mes_atual);
-        }
-      })
+
+    api.get('/dashboard', { params })
+      .then(r => setData(r.data))
       .catch((err) => {
         if (err.response?.status !== 401) {
           toast.error(getApiErrorMessage(err, 'Erro ao carregar dashboard'));
         }
       })
       .finally(() => setLoading(false));
-  }, [mes]);
+  }, [mesSelecionado]);
 
   useEffect(() => {
     const timerId = setTimeout(load, 0);
     return () => clearTimeout(timerId);
   }, [load]);
+
+  useEffect(() => {
+    if (mesSelecionado) {
+      window.localStorage.setItem(DASHBOARD_MONTH_STORAGE_KEY, mesSelecionado);
+      return;
+    }
+    window.localStorage.removeItem(DASHBOARD_MONTH_STORAGE_KEY);
+  }, [mesSelecionado]);
 
   if (loading) return <div className="page-loading"><div className="spinner" /></div>;
   if (!data) return null;
@@ -59,11 +74,23 @@ export default function Dashboard() {
     <div>
       <div className="topbar">
         <h2>Painel Geral</h2>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 13, color: '#718096' }}>Mês:</span>
-          <select className="search-input" value={mes} onChange={e => setMes(e.target.value)} style={{ minWidth: 110 }}>
-            {getMeses().map(m => <option key={m} value={m}>{fmtMes(m)}</option>)}
-          </select>
+        <div className="topbar-right">
+          <div className="form-group dashboard-month-picker">
+            <label>Mês</label>
+            <select
+              className="dashboard-month-picker-select"
+              value={mesSelecionado || data.mes_atual || ''}
+              onChange={(e) => setMesSelecionado(e.target.value)}
+            >
+              <option value="">Mais recente com movimento</option>
+              {getMeses().map((mes) => (
+                <option key={mes} value={mes}>{fmtMes(mes)}</option>
+              ))}
+            </select>
+            <span className="dashboard-month-picker-caption">
+              Exibindo dados de {fmtMes(data.mes_atual)}
+            </span>
+          </div>
         </div>
       </div>
 

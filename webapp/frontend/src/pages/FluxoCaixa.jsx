@@ -6,7 +6,21 @@ import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts';
 import { TrendingUp, TrendingDown, DollarSign } from 'lucide-react';
+import FilterBar from '../components/FilterBar';
 import { getApiErrorMessage } from '../utils/apiError';
+import InlineHelpCard from '../components/InlineHelpCard';
+import TableEmptyRow from '../components/TableEmptyRow';
+
+const HELP_BY_ROLE = {
+  administrador: 'Priorize saldo inicial, origem do saldo anterior e consistência das transações antes de ajustar dados manuais.',
+  gerente: 'Use esta tela para acompanhar entradas, saídas e saldo final do mês antes de compartilhar indicadores.',
+};
+
+const HELP_LINKS = [
+  { to: '/documentacao/manual', label: 'Abrir manual do usuário' },
+  { to: '/documentacao/troubleshooting', label: 'Ver ajuda para problemas comuns' },
+  { to: '/documentacao', label: 'Ir para a central de documentação' },
+];
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
 const getMeses = () => { const r = []; for (let i = 0; i < 13; i++) r.push(format(subMonths(new Date(), i), 'yyyy-MM')); return r; };
@@ -117,12 +131,19 @@ export default function FluxoCaixa() {
     <div>
       <div className="topbar">
         <h2>Fluxo de Caixa</h2>
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div className="fluxocaixa-topbar-actions">
           <button className="btn btn-outline btn-sm" onClick={openSaldoModal}>Saldo Inicial</button>
         </div>
       </div>
 
-      <div className="filters" style={{ marginBottom: 16 }}>
+      <InlineHelpCard
+        defaultLabel="Financeiro"
+        messagesByRole={HELP_BY_ROLE}
+        fallbackMessage="Confirme mês, saldo inicial e totais antes de interpretar o fluxo."
+        links={HELP_LINKS}
+      />
+
+      <FilterBar style={{ marginBottom: 16 }}>
         <div className="form-group" style={{ margin: 0 }}>
           <label>Mês</label>
           <select className="search-input" value={mes} onChange={e => setMes(e.target.value)}>
@@ -138,14 +159,14 @@ export default function FluxoCaixa() {
             placeholder="Descrição, categoria, origem..."
           />
         </div>
-      </div>
+      </FilterBar>
 
       {/* Summary */}
       <div className="stats-grid" style={{ marginBottom: 24 }}>
         <div className="stat-card blue">
           <div className="stat-label">Saldo Anterior</div>
           <div className="stat-value money-value money-value-regular">{fmt(data?.saldo_anterior)}</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+          <div className="fluxocaixa-stat-meta">
             <div className="stat-sub">Origem: {data?.origem_saldo_anterior === 'manual' ? 'Manual' : 'Calculado'}</div>
             {data?.origem_saldo_anterior === 'manual' && (
               <span className="badge badge-warning">Saldo Manual Ativo</span>
@@ -162,13 +183,13 @@ export default function FluxoCaixa() {
         </div>
         <div className={`stat-card ${(data?.saldo || 0) >= 0 ? 'green' : 'red'}`}>
           <div className="stat-label">Saldo do Mês</div>
-          <div className="stat-value money-value money-value-regular" style={{ color: (data?.saldo || 0) >= 0 ? '#38a169' : '#e53e3e' }}>
+          <div className={`stat-value money-value money-value-regular ${(data?.saldo || 0) >= 0 ? 'fluxocaixa-stat-value-positive' : 'fluxocaixa-stat-value-negative'}`}>
             {fmt(data?.saldo)}
           </div>
         </div>
         <div className={`stat-card ${(data?.saldo_final || 0) >= 0 ? 'green' : 'red'}`}>
           <div className="stat-label">Saldo Final</div>
-          <div className="stat-value money-value money-value-regular" style={{ color: (data?.saldo_final || 0) >= 0 ? '#38a169' : '#e53e3e' }}>
+          <div className={`stat-value money-value money-value-regular ${(data?.saldo_final || 0) >= 0 ? 'fluxocaixa-stat-value-positive' : 'fluxocaixa-stat-value-negative'}`}>
             {fmt(data?.saldo_final)}
           </div>
         </div>
@@ -213,7 +234,7 @@ export default function FluxoCaixa() {
       )}
 
       {/* Evolution chart */}
-      <div className="card" style={{ marginBottom: 24 }}>
+      <div className="card fluxoCaixa-chart-card fluxocaixa-chart-card">
         <div className="card-title">Evolução dos Últimos 12 Meses</div>
         <ResponsiveContainer width="100%" height={280}>
           <AreaChart data={data?.evolucao_mensal?.map(d => ({ ...d, mes: fmtMes(d.mes) }))}>
@@ -239,9 +260,9 @@ export default function FluxoCaixa() {
       </div>
 
       {/* Transactions */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+      <div className="fluxocaixa-transactions-grid">
         <div className="card">
-          <div className="card-title" style={{ color: '#38a169' }}><TrendingUp size={16} /> Entradas do Mês</div>
+          <div className="card-title fluxocaixa-card-title-entrada"><TrendingUp size={16} /> Entradas do Mês</div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -249,17 +270,13 @@ export default function FluxoCaixa() {
               </thead>
               <tbody>
                 {entradasFiltradas.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} style={{ textAlign: 'center', padding: 20, color: '#718096' }}>
-                      {termoBusca ? 'Nenhuma entrada encontrada para a busca' : 'Sem entradas'}
-                    </td>
-                  </tr>
+                  <TableEmptyRow colSpan={4} message={termoBusca ? 'Nenhuma entrada encontrada para a busca' : 'Sem entradas'} />
                 ) : entradasFiltradas.map(t => (
                   <tr key={t.id}>
                     <td>{t.data_transacao}</td>
                     <td>{t.descricao}</td>
                     <td><span className="badge badge-success">{t.categoria || t.origem}</span></td>
-                    <td><strong style={{ color: '#38a169' }}>{fmt(t.valor)}</strong></td>
+                    <td><strong className="fluxocaixa-value-entrada">{fmt(t.valor)}</strong></td>
                   </tr>
                 ))}
               </tbody>
@@ -268,7 +285,7 @@ export default function FluxoCaixa() {
         </div>
 
         <div className="card">
-          <div className="card-title" style={{ color: '#e53e3e' }}><TrendingDown size={16} /> Saídas do Mês</div>
+          <div className="card-title fluxocaixa-card-title-saida"><TrendingDown size={16} /> Saídas do Mês</div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -276,17 +293,13 @@ export default function FluxoCaixa() {
               </thead>
               <tbody>
                 {saidasFiltradas.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} style={{ textAlign: 'center', padding: 20, color: '#718096' }}>
-                      {termoBusca ? 'Nenhuma saída encontrada para a busca' : 'Sem saídas'}
-                    </td>
-                  </tr>
+                  <TableEmptyRow colSpan={4} message={termoBusca ? 'Nenhuma saída encontrada para a busca' : 'Sem saídas'} />
                 ) : saidasFiltradas.map(t => (
                   <tr key={t.id}>
                     <td>{t.data_transacao}</td>
                     <td>{t.descricao}</td>
                     <td><span className="badge badge-danger">{t.categoria || t.origem}</span></td>
-                    <td><strong style={{ color: '#e53e3e' }}>{fmt(t.valor)}</strong></td>
+                    <td><strong className="fluxocaixa-value-saida">{fmt(t.valor)}</strong></td>
                   </tr>
                 ))}
               </tbody>

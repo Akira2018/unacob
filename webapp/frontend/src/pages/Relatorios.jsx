@@ -4,7 +4,10 @@ import toast from 'react-hot-toast';
 import { Download, FileSpreadsheet, Users, CreditCard, Cake, BarChart3, PartyPopper, GitMerge, PiggyBank, BookText } from 'lucide-react';
 import { format, subMonths } from 'date-fns';
 import { useAuth } from '../context/useAuth';
+import FilterBar from '../components/FilterBar';
 import { getApiErrorMessage } from '../utils/apiError';
+import InlineHelpCard from '../components/InlineHelpCard';
+import SummaryCard, { SummaryCardText } from '../components/SummaryCard';
 
 const getMeses = () => {
   const r = [];
@@ -18,6 +21,18 @@ const getAnos = () => {
 };
 
 const MESES = ['Janeiro', 'Fevereiro', 'Marco', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+
+const HELP_BY_ROLE = {
+  administrador: 'Priorize consistência dos dados, período correto e impacto dos relatórios financeiros antes de compartilhar saídas.',
+  gerente: 'Use esta tela para validar fechamento, conferir relatórios do período e detectar divergências antes de concluir a operação.',
+  assistente: 'Use esta tela para consultas operacionais, relatórios não financeiros e conferência básica antes de escalar dúvidas.',
+};
+
+const HELP_LINKS = [
+  { to: '/documentacao/manual', label: 'Abrir manual do usuário' },
+  { to: '/documentacao/troubleshooting', label: 'Ver ajuda para problemas comuns' },
+  { to: '/documentacao', label: 'Ir para a central de documentação' },
+];
 
 export default function Relatorios() {
   const { user } = useAuth();
@@ -238,11 +253,22 @@ export default function Relatorios() {
   return (
     <div>
       <div className="topbar">
-        <h2>Relatorios</h2>
-        <span style={{ fontSize: 13, color: '#718096' }}>Exportacao em Excel (.xlsx)</span>
+        <div className="topbar-title-block">
+          <h2>Relatorios</h2>
+          <span className="topbar-subtitle">Exportacao em Excel (.xlsx)</span>
+        </div>
       </div>
 
-      <div className="filters" style={{ marginBottom: 16 }}>
+      <InlineHelpCard
+        title="Próximo passo"
+        variant="next-step"
+        defaultLabel="Operação"
+        messagesByRole={HELP_BY_ROLE}
+        fallbackMessage="Confirme período e objetivo do relatório antes de exportar."
+        links={HELP_LINKS}
+      />
+
+      <FilterBar style={{ marginBottom: 16 }}>
         <div className="form-group" style={{ margin: 0, minWidth: 280, flex: 1 }}>
           <label>Busca</label>
           <input
@@ -252,24 +278,27 @@ export default function Relatorios() {
             placeholder="Nome ou descricao do relatorio..."
           />
         </div>
-        <div style={{ fontSize: 13, color: '#4a5568', alignSelf: 'flex-end', paddingBottom: 8 }}>
+        <div className="helper-text-strong filter-summary">
           {termoBusca
             ? `${labelRelatorio(reportsFiltrados.length)} de ${labelRelatorio(reportsByRole.length)}`
             : labelRelatorio(reportsByRole.length)}
         </div>
-      </div>
+      </FilterBar>
 
-      <div className="card" style={{ marginBottom: 20, borderLeft: '4px solid #b45309', background: '#fffaf0' }}>
-        <div className="card-title"><FileSpreadsheet size={16} /> Remessa DABB</div>
-        <div style={{ fontSize: 14, color: '#7c2d12', lineHeight: 1.7 }}>
-          A geracao e o historico dos arquivos <code>.rem</code> do Banco do Brasil agora ficam em uma pagina propria.
-        </div>
-        <div style={{ marginTop: 12 }}>
+      <SummaryCard
+        title="Remessa DABB"
+        titleIcon={<FileSpreadsheet size={16} />}
+        variant="attention"
+        actions={(
           <a href="#/remessa-dabb" className="btn btn-primary" style={{ background: '#b45309' }}>
             <CreditCard size={15} /> Abrir Remessa DABB
           </a>
-        </div>
-      </div>
+        )}
+      >
+        <SummaryCardText style={{ color: '#7c2d12' }}>
+          A geracao e o historico dos arquivos <code>.rem</code> do Banco do Brasil agora ficam em uma pagina propria.
+        </SummaryCardText>
+      </SummaryCard>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 20 }}>
         {reportsFiltrados.map((r) => (
@@ -279,8 +308,8 @@ export default function Relatorios() {
                 {r.icon}
               </div>
               <div>
-                <div style={{ fontWeight: 700, fontSize: 15, color: '#2d3748' }}>{r.title}</div>
-                <div style={{ fontSize: 13, color: '#718096', marginTop: 2 }}>{r.desc}</div>
+                <div className="report-card-title">{r.title}</div>
+                <div className="report-card-description">{r.desc}</div>
               </div>
             </div>
             {r.extra && <div style={{ marginBottom: 12 }}>{r.extra}</div>}

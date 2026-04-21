@@ -5,6 +5,19 @@ import { Plus, Edit, Trash2 } from 'lucide-react';
 import { format, subMonths } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { getApiErrorMessage } from '../utils/apiError';
+import InlineHelpCard from '../components/InlineHelpCard';
+
+const HELP_BY_ROLE = {
+  administrador: 'Priorize categoria, conta de entrada e consistência dos valores antes de consolidar o mês.',
+  gerente: 'Use esta tela para lançar receitas complementares e conferir o total do período antes dos relatórios.',
+  assistente: 'Use esta tela para registrar entradas avulsas e revisar descrição, fonte e valor antes de salvar.',
+};
+
+const HELP_LINKS = [
+  { to: '/documentacao/manual', label: 'Abrir manual do usuário' },
+  { to: '/documentacao/troubleshooting', label: 'Ver ajuda para problemas comuns' },
+  { to: '/documentacao', label: 'Ir para a central de documentação' },
+];
 
 const CATEGORIAS = ['Doação', 'Aluguel', 'Patrocínio', 'Evento', 'Convênio', 'Aplicação Financeira', 'Multa', 'Outros'];
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
@@ -98,11 +111,18 @@ export default function OutrasRendas() {
     <div>
       <div className="topbar">
         <h2>Outras Fontes de Renda</h2>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div className="topbar-actions">
           <button className="btn btn-outline" onClick={() => navigate('/plano-contas')}>Código de Contas</button>
           <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Nova Renda</button>
         </div>
       </div>
+
+      <InlineHelpCard
+        defaultLabel="Operação"
+        messagesByRole={HELP_BY_ROLE}
+        fallbackMessage="Confirme categoria, conta e valor antes de registrar a entrada."
+        links={HELP_LINKS}
+      />
 
       <div className="filters">
         <div className="form-group" style={{ margin: 0 }}>
@@ -120,7 +140,7 @@ export default function OutrasRendas() {
             placeholder="Descrição, categoria, fonte..."
           />
         </div>
-        <div style={{ fontSize: 16, fontWeight: 700, color: '#38a169', alignSelf: 'flex-end', padding: '8px 0' }}>
+        <div className="filter-total filter-total-success">
           Total: {fmt(total)}
         </div>
       </div>

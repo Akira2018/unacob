@@ -4,6 +4,19 @@ import toast from 'react-hot-toast';
 import { Download, Upload } from 'lucide-react';
 import { format, subMonths } from 'date-fns';
 import { getApiErrorMessage } from '../utils/apiError';
+import InlineHelpCard from '../components/InlineHelpCard';
+
+const HELP_BY_ROLE = {
+  administrador: 'Priorize conferência de importações, diagnóstico DABB, pendências e impacto financeiro antes de confirmar ações em lote.',
+  gerente: 'Use esta tela para acompanhar recebimentos, tratar pendências de conciliação e revisar o mês ativo antes do fechamento.',
+  assistente: 'Use esta tela para revisar recebimentos, identificar pendências e confirmar o arquivo certo antes de importar.',
+};
+
+const HELP_LINKS = [
+  { to: '/documentacao/manual', label: 'Abrir manual do usuário' },
+  { to: '/documentacao/importacoes', label: 'Ver guia de importações' },
+  { to: '/documentacao/troubleshooting', label: 'Ver ajuda para problemas comuns' },
+];
 
 // --- FUNÇÕES AUXILIARES ---
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
@@ -494,83 +507,72 @@ export default function Pagamentos() {
         </div>
       </div>
 
-      <div
-        className="card"
-        style={{
-          marginBottom: 20,
-          padding: 20,
-          border: '1px solid #dbe7f3',
-          borderRadius: 16,
-          background: 'linear-gradient(180deg, #f8fbff 0%, #ffffff 100%)',
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 18, alignItems: 'flex-start' }}>
-          <div style={{ maxWidth: 760 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#1d4ed8', marginBottom: 6 }}>
-              Importacao bancaria guiada
+      <InlineHelpCard
+        title="Atenção nesta tela"
+        variant="attention"
+        defaultLabel="Operação"
+        messagesByRole={HELP_BY_ROLE}
+        fallbackMessage="Confirme o mês ativo, o tipo do arquivo e as pendências antes de concluir a rotina."
+        links={HELP_LINKS}
+      />
+
+      <div className="card payments-guide-card">
+        <div className="payments-guide-header">
+          <div className="payments-guide-copy">
+            <div className="payments-guide-kicker">
+              Importação bancária guiada
             </div>
-            <div style={{ fontSize: 24, fontWeight: 700, color: '#102a43', marginBottom: 6 }}>
+            <div className="payments-guide-title">
               Escolha o tipo certo de arquivo antes de importar
             </div>
-            <div style={{ fontSize: 14, color: '#486581', lineHeight: 1.6 }}>
+            <div className="payments-guide-description">
               O sistema identifica automaticamente o mes de cada lancamento pela data presente no arquivo importado. O filtro de mes abaixo serve para abrir o painel, as pendencias e o historico no periodo que voce deseja revisar depois da importacao.
             </div>
           </div>
-          <div style={{ minWidth: 240, padding: 14, borderRadius: 12, background: '#eff6ff', border: '1px solid #bfdbfe' }}>
-            <div style={{ fontSize: 12, color: '#1d4ed8', fontWeight: 700, marginBottom: 6 }}>Mes ativo no painel</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: '#102a43', textTransform: 'capitalize' }}>
+          <div className="payments-guide-panel">
+            <div className="payments-guide-panel-label">Mes ativo no painel</div>
+            <div className="payments-guide-panel-value">
               {mesReferenciaImportacao}
             </div>
-            <div style={{ fontSize: 12, color: '#486581', marginTop: 6 }}>
+            <div className="payments-guide-panel-note">
               A importacao usa as datas do arquivo. Este periodo so define o que sera exibido no painel apos o processamento.
             </div>
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10, marginBottom: 18 }}>
+        <div className="payments-guide-steps">
           {[
             '1. Confira o formato do arquivo antes de importar.',
             '2. O sistema vai ler a data de cada lancamento e definir o mes automaticamente.',
             '3. Importe o arquivo e aguarde o processamento.',
             '4. Use o filtro de mes para revisar painel, diagnostico e pendencias.',
           ].map((item) => (
-            <div key={item} style={{ padding: '12px 14px', borderRadius: 12, background: '#ffffff', border: '1px solid #e2e8f0', fontSize: 13, color: '#334e68' }}>
+            <div key={item} className="payments-guide-step">
               {item}
             </div>
           ))}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
+        <div className="payments-import-options">
           {opcoesImportacao.map((opcao) => (
-            <div
-              key={opcao.key}
-              style={{
-                display: 'grid',
-                gap: 12,
-                padding: 16,
-                borderRadius: 14,
-                background: '#ffffff',
-                border: '1px solid #d9e2ec',
-                boxShadow: '0 10px 24px rgba(15, 23, 42, 0.04)',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+            <div key={opcao.key} className="payments-import-option">
+              <div className="payments-import-option-header">
                 <div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: '#102a43', marginBottom: 4 }}>{opcao.titulo}</div>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: '#1d4ed8', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{opcao.formatos}</div>
+                  <div className="payments-import-option-title">{opcao.titulo}</div>
+                  <div className="payments-import-option-format">{opcao.formatos}</div>
                 </div>
-                <div style={{ padding: '6px 10px', borderRadius: 999, background: '#f0f9ff', color: '#0369a1', fontSize: 12, fontWeight: 600 }}>
+                <div className="payments-import-option-tag">
                   Mes {mes}
                 </div>
               </div>
 
-              <div style={{ fontSize: 13, color: '#334e68', lineHeight: 1.6 }}>{opcao.descricao}</div>
+              <div className="payments-import-option-description">{opcao.descricao}</div>
 
-              <div style={{ display: 'grid', gap: 8 }}>
-                <div style={{ padding: '10px 12px', borderRadius: 10, background: '#f8fafc', fontSize: 13, color: '#243b53' }}>
+              <div className="payments-import-option-meta">
+                <div className="payments-import-option-meta-item">
                   <strong>Quando usar:</strong> {opcao.observacao}
                 </div>
-                <div style={{ padding: '10px 12px', borderRadius: 10, background: '#f8fafc', fontSize: 13, color: '#243b53' }}>
+                <div className="payments-import-option-meta-item">
                   <strong>Referencia esperada:</strong> {opcao.referencia}
                 </div>
               </div>
@@ -608,10 +610,10 @@ export default function Pagamentos() {
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 20, padding: 16, display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div className="card payments-inline-note-card">
         <div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: '#102a43', marginBottom: 4 }}>Correção de DABB bimestral</div>
-          <div style={{ fontSize: 13, color: '#486581' }}>
+          <div className="payments-inline-note-title">Correção de DABB bimestral</div>
+          <div className="payments-inline-note-description">
             Use esta ação quando um débito bimestral do DABB tiver sido lançado inteiro no mês atual. O sistema redistribui o valor líquido entre os 2 meses do bimestre, incluindo casos como `R$ 67,00` (`33,00 + 33,00 + 1,00`), `R$ 71,00` (`35,00 + 35,00 + 1,00`) e reajustes futuros no mesmo formato.
           </div>
         </div>
@@ -630,7 +632,7 @@ export default function Pagamentos() {
 
       {/* Seção de Conciliação Pendente */}
       {ultimoDiagnosticoDabb && (ultimoDiagnosticoDabb.codigosSemMembro.length > 0 || ultimoDiagnosticoDabb.codigosAmbiguos.length > 0) && (
-        <div className="card" style={{ marginBottom: 20, border: '1px solid #cbd5e0' }}>
+        <div className="card payments-diagnostic-card">
           <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
             <span>Diagnóstico DABB do Último Arquivo</span>
             <div style={{ display: 'flex', gap: 8 }}>
@@ -652,17 +654,17 @@ export default function Pagamentos() {
               )}
             </div>
           </div>
-          <div style={{ fontSize: 13, color: '#4a5568', marginBottom: 10 }}>
+          <div className="payments-diagnostic-file">
             Arquivo: <strong>{ultimoDiagnosticoDabb.arquivo}</strong>
           </div>
           {ultimoDiagnosticoDabb.codigosSemMembro.length > 0 && (
             <div style={{ marginBottom: 12 }}>
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>
+              <div className="payments-diagnostic-section-title">
                 Códigos sem cadastro na tabela de membros: {ultimoDiagnosticoDabb.codigosSemMembro.length}
               </div>
-              <div style={{ display: 'grid', gap: 6 }}>
+              <div className="payments-diagnostic-list">
                 {ultimoDiagnosticoDabb.codigosSemMembro.slice(0, 8).map((item) => (
-                  <div key={item.codigo_dabb} style={{ fontSize: 12, padding: '6px 8px', background: '#f7fafc', borderRadius: 6 }}>
+                  <div key={item.codigo_dabb} className="payments-diagnostic-item payments-diagnostic-item-neutral">
                     <strong>{item.codigo_dabb}</strong> · qtd {item.quantidade} · valores {asArray(item.valores).join(', ') || '-'} · meses {asArray(item.meses).join(', ') || '-'}
                   </div>
                 ))}
@@ -671,12 +673,12 @@ export default function Pagamentos() {
           )}
           {ultimoDiagnosticoDabb.codigosAmbiguos.length > 0 && (
             <div>
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>
+              <div className="payments-diagnostic-section-title">
                 Códigos ambíguos: {ultimoDiagnosticoDabb.codigosAmbiguos.length}
               </div>
-              <div style={{ display: 'grid', gap: 6 }}>
+              <div className="payments-diagnostic-list">
                 {ultimoDiagnosticoDabb.codigosAmbiguos.slice(0, 8).map((item) => (
-                  <div key={item.codigo_dabb} style={{ fontSize: 12, padding: '6px 8px', background: '#fffaf0', borderRadius: 6 }}>
+                  <div key={item.codigo_dabb} className="payments-diagnostic-item payments-diagnostic-item-attention">
                     <strong>{item.codigo_dabb}</strong> · qtd {item.quantidade} · valores {asArray(item.valores).join(', ') || '-'} · meses {asArray(item.meses).join(', ') || '-'}
                   </div>
                 ))}
@@ -687,7 +689,7 @@ export default function Pagamentos() {
       )}
 
       {historicoDabb.length > 0 && (
-        <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card payments-history-card">
           <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
             <span>Histórico DABB</span>
             <button
@@ -701,14 +703,14 @@ export default function Pagamentos() {
               Limpar histórico
             </button>
           </div>
-          <div style={{ display: 'grid', gap: 10 }}>
+          <div className="payments-history-list">
             {historicoDabb.map((item) => (
-              <div key={item.id} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 10 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <div style={{ fontSize: 13 }}>
+              <div key={item.id} className="payments-history-item">
+                <div className="payments-history-item-header">
+                  <div className="payments-history-item-summary">
                     <strong>{item.arquivo}</strong> · mês {item.mes || '-'} · sem cadastro {item.codigosSemMembro.length} · ambíguos {item.codigosAmbiguos.length}
                   </div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <div className="payments-history-item-actions">
                     {item.codigosSemMembro.length > 0 && (
                       <button
                         className="btn btn-outline btn-sm"
@@ -734,17 +736,17 @@ export default function Pagamentos() {
       )}
 
       {carregandoPendencias && (
-        <div className="card" style={{ marginBottom: 20 }}>
-          <small style={{ color: '#718096' }}>Carregando pendências de conciliação...</small>
+        <div className="card payments-loading-note">
+          <small className="helper-text">Carregando pendências de conciliação...</small>
         </div>
       )}
       {pendenciasConcil.length > 0 && (
-        <div className="card" style={{ marginBottom: 20, border: '1px solid orange' }}>
-          <div className="card-title" style={{ color: 'orange' }}>Pendências de Conciliação ({pendenciasConcil.length})</div>
+        <div className="card payments-pending-card">
+          <div className="card-title payments-pending-title">Pendências de Conciliação ({pendenciasConcil.length})</div>
           {pendenciasConcil.map(p => (
-            <div key={p.conciliacao_id} style={{ padding: 10, borderBottom: '1px solid #eee' }}>
-              <small>{p.data_extrato} - {fmt(p.valor_extrato)} - {p.descricao_extrato}</small>
-              <div style={{ display: 'flex', gap: 10, marginTop: 5 }}>
+            <div key={p.conciliacao_id} className="payments-pending-item">
+              <small className="payments-pending-summary">{p.data_extrato} - {fmt(p.valor_extrato)} - {p.descricao_extrato}</small>
+              <div className="payments-pending-actions">
                 {p.candidatos?.map(c => (
                   <button key={c.membro_id} className="btn btn-success btn-xs" onClick={() => confirmarPendenciaManual(p.conciliacao_id, c.membro_id)} disabled={confirmandoPendencia === `${p.conciliacao_id}:${c.membro_id}`}>
                     Baixar para: {c.nome}
@@ -889,34 +891,34 @@ export default function Pagamentos() {
                 style={{ width: '100%' }}
               />
             </div>
-            <div id="recibo-print-area" style={{ padding: 40, border: '1px solid #eee', background: '#fff', fontSize: 17, lineHeight: 1.7 }}>
-              <div style={{ textAlign: 'center', marginBottom: 24 }}>
-                <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 4 }}>
+            <div id="recibo-print-area" className="payments-receipt-print-area">
+              <div className="payments-receipt-header">
+                <div className="payments-receipt-title">
                   RECIBO DE PAGAMENTO DE MENSALIDADES
                 </div>
-                <div style={{ fontSize: 13, marginBottom: 16 }}>
+                <div className="payments-receipt-org">
                   UNIÃO DOS APOSENTADOS DOS CORREIOS EM BAURU/SP - Rua 7 de Setembro, 8-25 – Centro – 17015-031 – Bauru/SP - Fone: (14) 3202-7391 – whatsapp (14) 99743-5701 – e-mail: secretaria@unacob.com.br
                 </div>
               </div>
 
-              <div style={{ fontSize: 16, marginBottom: 32, marginTop: 32 }}>
-                <p style={{ margin: 0 }}>
+              <div className="payments-receipt-body">
+                <p>
                   Declaramos, para os devidos fins, que recebemos do associado <b>{selected.nome}</b> o valor de <b>R$ {valorPagoFormatado}</b> ({valorPorExtenso(form.valor_pago)}), correspondente à quitação da(s) mensalidade(s) associativa referente{' '}
                   <b>{referenteMeses.trim() ? `aos meses de ${referenciaReciboTexto}` : `ao mês de ${referenciaReciboTexto}`}</b>
                   .
                 </p>
-                <p style={{ margin: '12px 0 0 0' }}>
+                <p>
                   O presente registro confirma a regularidade da contribuição e a adimplência do associado perante a UNACOB.
                 </p>
               </div>
 
-              <div style={{ margin: '48px 0 40px 0', fontSize: 15 }}>
+              <div className="payments-receipt-date">
                 Bauru/SP, {dataHoje()}.
               </div>
 
-              <div style={{ marginTop: 64, textAlign: 'center' }}>
+              <div className="payments-receipt-signature">
                 <b>{assinaturaNome || 'Sérgio Golino'}</b><br />
-                <span style={{ fontSize: 13 }}>{assinaturaCargo || 'Assessor Financeiro'}</span>
+                <span className="payments-receipt-role">{assinaturaCargo || 'Assessor Financeiro'}</span>
               </div>
             </div>
             <div className="modal-footer" style={{ marginTop: 24 }}>

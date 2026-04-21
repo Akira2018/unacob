@@ -5,6 +5,7 @@ import { Plus, Edit, Trash2, UserCog, Shield, User, Download, Upload } from 'luc
 import { useAuth } from '../context/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { getApiErrorMessage } from '../utils/apiError';
+import SummaryCard, { SummaryCardText } from '../components/SummaryCard';
 
 const emptyForm = { email: '', nome_completo: '', role: 'assistente', password: '' };
 const ROLE_LABELS = { administrador: 'Administrador', gerente: 'Gerente', assistente: 'Assistente' };
@@ -297,7 +298,7 @@ export default function Usuarios() {
       <div className="topbar">
         <h2>Usuários do Sistema</h2>
         {isAdmin && (
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div className="topbar-actions">
             <button className="btn btn-outline" onClick={handleBackup} disabled={backupLoading || restoreLoading}>
               <Download size={15} /> {backupLoading ? 'Gerando backup...' : 'Backup do Banco'}
             </button>
@@ -317,33 +318,38 @@ export default function Usuarios() {
       </div>
 
       {isAdmin && (
-        <div className="card" style={{ marginBottom: 20, borderLeft: '4px solid #2b6cb0' }}>
-          <div className="card-title">Segurança de Dados</div>
-          <p style={{ margin: '0 0 14px 0', color: '#4a5568', lineHeight: 1.6 }}>
+        <SummaryCard
+          title="Segurança de Dados"
+          variant="info"
+          actions={(
+            <>
+              <button className="btn btn-outline" onClick={handleBackup} disabled={backupLoading || restoreLoading}>
+                <Download size={15} /> {backupLoading ? 'Gerando backup...' : 'Backup do Banco'}
+              </button>
+              <button className="btn btn-outline" onClick={handleRestoreClick} disabled={restoreLoading || backupLoading}>
+                <Upload size={15} /> {restoreLoading ? 'Restaurando...' : 'Restaurar Banco'}
+              </button>
+            </>
+          )}
+        >
+          <SummaryCardText as="p" style={{ margin: '0 0 14px 0' }}>
             Use o backup para baixar uma cópia atual do banco de dados. Se houver necessidade de recuperação,
             a restauração aceita um arquivo <strong>.db</strong> válido e cria um backup automático do banco atual
             antes de substituir os dados.
-          </p>
-          <p style={{ margin: '0 0 14px 0', color: '#718096', lineHeight: 1.6, fontSize: 13 }}>
+          </SummaryCardText>
+          <SummaryCardText as="p" muted style={{ margin: '0 0 14px 0' }}>
             O sistema também mantém backup automático diário ao iniciar e conserva somente os backups mais recentes
             para evitar acúmulo excessivo de arquivos.
-          </p>
-          <p style={{ margin: '0 0 14px 0', color: '#718096', lineHeight: 1.6, fontSize: 13 }}>
+          </SummaryCardText>
+          <SummaryCardText as="p" muted style={{ margin: '0 0 14px 0' }}>
             Também há backup automático por horário configurável no backend, útil para rotina de segurança mesmo sem ação manual.
-          </p>
+          </SummaryCardText>
           {backupDirectory && (
-            <p style={{ margin: '0 0 14px 0', color: '#718096', fontSize: 13 }}>
+            <SummaryCardText as="p" muted style={{ margin: '0 0 14px 0' }}>
               Pasta local dos backups: <strong>{backupDirectory}</strong>
-            </p>
+            </SummaryCardText>
           )}
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <button className="btn btn-outline" onClick={handleBackup} disabled={backupLoading || restoreLoading}>
-              <Download size={15} /> {backupLoading ? 'Gerando backup...' : 'Backup do Banco'}
-            </button>
-            <button className="btn btn-outline" onClick={handleRestoreClick} disabled={restoreLoading || backupLoading}>
-              <Upload size={15} /> {restoreLoading ? 'Restaurando...' : 'Restaurar Banco'}
-            </button>
-          </div>
+          
           <div style={{ marginTop: 16 }}>
             {sqliteStatus?.is_sqlite && (
               <div style={{ marginBottom: 16, padding: 14, border: '1px solid #dbeafe', borderRadius: 10, background: '#eff6ff' }}>
@@ -431,7 +437,7 @@ export default function Usuarios() {
               </div>
             )}
           </div>
-        </div>
+        </SummaryCard>
       )}
 
       {!isAdmin && (

@@ -3,14 +3,30 @@ import api from '../api';
 import toast from 'react-hot-toast';
 import { Plus, Edit, Trash2, Search, Download, UserCheck, UserX } from 'lucide-react';
 import { getApiErrorMessage } from '../utils/apiError';
+import FilterBar from '../components/FilterBar';
+import InlineHelpCard from '../components/InlineHelpCard';
+import StatusCounter from '../components/StatusCounter';
+import TableEmptyRow from '../components/TableEmptyRow';
+
+const HELP_BY_ROLE = {
+  administrador: 'Use esta tela para manter cadastros consistentes e revisar dados que impactam permissões, cobranças e importações.',
+  gerente: 'Use esta tela para conferir dados cadastrais antes do fechamento, dos relatórios e das rotinas financeiras.',
+  assistente: 'Use esta tela para atualizar cadastro, localizar associados e corrigir dados antes de avançar para outras rotinas.',
+};
+
+const HELP_LINKS = [
+  { to: '/documentacao/manual', label: 'Abrir manual do usuário' },
+  { to: '/documentacao/importacoes', label: 'Ver guia de importações' },
+  { to: '/documentacao', label: 'Ir para a central de documentação' },
+];
 
 const ESTADOS = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 
 const emptyForm = {
-  matricula: '', inscricao: '', nome_completo: '', cpf: '', cpf2: '', codigo_dabb: '', codigo_barras_dabb: '', email: '', telefone: '', celular: '', ddd: '',
+  matricula: '', inscricao: '', nome_completo: '', cpf: '', cpf2: '', codigo_dabb: '', email: '', telefone: '', celular: '', ddd: '',
   endereco: '', numero: '', complemento: '', bairro: '', cidade: '', estado: '', cep: '', ect: '',
   data_nascimento: '', data_filiacao: '', status: 'ativo', sexo: '', cat: '', beneficio: '',
-  valor_mensalidade: '', dabb_habilitado: true, dabb_valor_mensalidade: '', observacoes: ''
+  valor_mensalidade: '', observacoes: ''
 };
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
@@ -25,10 +41,6 @@ export default function Membros() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
-  const [reajusteModal, setReajusteModal] = useState(false);
-  const [reajusteValor, setReajusteValor] = useState('');
-  const [reajusteSomenteDabb, setReajusteSomenteDabb] = useState(false);
-  const [reajustando, setReajustando] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -63,9 +75,6 @@ export default function Membros() {
       data_filiacao: m.data_filiacao || '',
       valor_mensalidade: m.valor_mensalidade || '',
       codigo_dabb: m.codigo_dabb || '',
-      codigo_barras_dabb: m.codigo_barras_dabb || '',
-      dabb_habilitado: m.dabb_habilitado !== false,
-      dabb_valor_mensalidade: m.dabb_valor_mensalidade || '',
       cpf2: m.cpf2 || ''
     } : emptyForm);
     setModal(true);
@@ -81,7 +90,6 @@ export default function Membros() {
       if (!payload.data_nascimento) delete payload.data_nascimento;
       if (!payload.data_filiacao) delete payload.data_filiacao;
       if (payload.valor_mensalidade === '') payload.valor_mensalidade = 0;
-      if (payload.dabb_valor_mensalidade === '') payload.dabb_valor_mensalidade = null;
       if (editing) {
         await api.put(`/membros/${editing.id}`, payload);
         toast.success('Membro atualizado!');
@@ -116,44 +124,27 @@ export default function Membros() {
 
   const setF = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  const aplicarReajusteEmLote = async () => {
-    if (!reajusteValor || Number(reajusteValor) <= 0) {
-      toast.error('Informe um valor válido para o reajuste.');
-      return;
-    }
-
-    setReajustando(true);
-    try {
-      await api.put('/configuracoes/dabb', {
-        valor_mensal_padrao: Number(reajusteValor),
-        aplicar_reajuste_todos: true,
-        somente_habilitados_dabb: reajusteSomenteDabb,
-      });
-      toast.success('Reajuste aplicado com sucesso.');
-      setReajusteModal(false);
-      setReajusteValor('');
-      setReajusteSomenteDabb(false);
-      load();
-    } catch (err) {
-      toast.error(getApiErrorMessage(err, 'Erro ao aplicar reajuste em lote'));
-    } finally {
-      setReajustando(false);
-    }
-  };
-
   return (
     <div>
       <div className="topbar">
         <h2>Cadastro de Associados</h2>
-        <div className="topbar-right">
+        <div className="topbar-actions">
           <button className="btn btn-outline btn-sm" onClick={exportar}><Download size={14} /> Excel</button>
-          <button className="btn btn-outline btn-sm" onClick={() => setReajusteModal(true)}>Reajustar Mensalidade</button>
           <button className="btn btn-primary" onClick={() => openModal()}><Plus size={15} /> Novo Associado</button>
         </div>
       </div>
 
+      <InlineHelpCard
+        title="Próximo passo"
+        variant="next-step"
+        defaultLabel="Operação"
+        messagesByRole={HELP_BY_ROLE}
+        fallbackMessage="Revise dados cadastrais antes de exportar, importar ou seguir para outras rotinas."
+        links={HELP_LINKS}
+      />
+
       <div className="card">
-        <div className="filters">
+        <FilterBar>
           <div className="search-input-wide" style={{ position: 'relative' }}>
             <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#718096' }} />
             <input className="search-input" style={{ paddingLeft: 32, width: '100%' }} placeholder="Buscar por nome, CPF, matrícula..." value={search} onChange={e => setSearch(e.target.value)} />
@@ -164,8 +155,8 @@ export default function Membros() {
             <option value="inativo">Inativo</option>
             <option value="suspenso">Suspenso</option>
           </select>
-          <span style={{ fontSize: 13, color: '#718096' }}>{filtered.length} {filtered.length === 1 ? 'membro' : 'membros'}</span>
-        </div>
+          <StatusCounter count={filtered.length} singular="membro" plural="membros" />
+        </FilterBar>
 
         {loading ? <div className="spinner" /> : (
           <div className="table-wrap">
@@ -185,7 +176,7 @@ export default function Membros() {
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
-                  <tr><td colSpan={9} style={{ textAlign: 'center', padding: 40, color: '#718096' }}>Nenhum membro encontrado</td></tr>
+                  <TableEmptyRow colSpan={9} message="Nenhum membro encontrado" style={{ padding: 40 }} />
                 ) : filtered.map(m => (
                   <tr key={m.id} className={m.status !== 'ativo' ? 'row-red' : ''}>
                     <td>{m.matricula || '-'}</td>
@@ -241,10 +232,6 @@ export default function Membros() {
                   <input value={form.codigo_dabb} onChange={e => setF('codigo_dabb', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>Código Barras DABB</label>
-                  <input value={form.codigo_barras_dabb} onChange={e => setF('codigo_barras_dabb', e.target.value)} />
-                </div>
-                <div className="form-group">
                   <label>CPF2</label>
                   <input value={form.cpf2} onChange={e => setF('cpf2', e.target.value)} />
                 </div>
@@ -297,21 +284,6 @@ export default function Membros() {
                 <div className="form-group">
                   <label>ECT</label>
                   <input value={form.ect} onChange={e => setF('ect', e.target.value)} />
-                </div>
-              </div>
-
-              <div style={{ borderBottom: '1px solid #e2e8f0', paddingBottom: 12, marginBottom: 16, marginTop: 20, fontWeight: 600, fontSize: 13, color: '#1e3a5f' }}>Débito Automático BB</div>
-              <div className="form-grid">
-                <div className="form-group">
-                  <label>Habilitado na Remessa DABB</label>
-                  <select value={form.dabb_habilitado ? 'true' : 'false'} onChange={e => setF('dabb_habilitado', e.target.value === 'true')}>
-                    <option value="true">Sim</option>
-                    <option value="false">Não</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Valor Mensal DABB (R$)</label>
-                  <input type="number" step="0.01" value={form.dabb_valor_mensalidade} onChange={e => setF('dabb_valor_mensalidade', e.target.value)} placeholder="Se vazio, usa a mensalidade padrão" />
                 </div>
               </div>
 
@@ -380,34 +352,6 @@ export default function Membros() {
                 <button type="submit" className="btn btn-primary modal-btn-save" disabled={saving}>{saving ? 'Salvando...' : 'Salvar'}</button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {reajusteModal && (
-        <div className="modal-overlay">
-          <div className="modal" style={{ maxWidth: 520 }}>
-            <div className="modal-header">
-              <div className="modal-title">Reajustar Mensalidade de Todos</div>
-              <button className="btn btn-outline btn-sm modal-close-btn" onClick={() => setReajusteModal(false)}>✕</button>
-            </div>
-            <div className="form-group">
-              <label>Novo valor da mensalidade (R$)</label>
-              <input type="number" step="0.01" value={reajusteValor} onChange={e => setReajusteValor(e.target.value)} />
-            </div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, color: '#4a5568', marginTop: 12 }}>
-              <input type="checkbox" checked={reajusteSomenteDabb} onChange={e => setReajusteSomenteDabb(e.target.checked)} />
-              Aplicar somente aos associados habilitados no DABB
-            </label>
-            <div style={{ fontSize: 13, color: '#718096', marginTop: 12 }}>
-              Esse ajuste atualiza a mensalidade dos associados em lote e também passa a valer como valor padrão do DABB.
-            </div>
-            <div className="modal-footer">
-              <button type="button" className="btn btn-outline modal-btn-cancel" onClick={() => setReajusteModal(false)}>Cancelar</button>
-              <button type="button" className="btn btn-primary modal-btn-save" onClick={aplicarReajusteEmLote} disabled={reajustando}>
-                {reajustando ? 'Aplicando...' : 'Aplicar Reajuste'}
-              </button>
-            </div>
           </div>
         </div>
       )}

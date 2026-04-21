@@ -3,6 +3,11 @@ import api from '../api';
 import toast from 'react-hot-toast';
 import { Plus, Edit, Trash2, Users, PartyPopper, Download, Link, Mail } from 'lucide-react';
 import { getApiErrorMessage } from '../utils/apiError';
+import FilterBar from '../components/FilterBar';
+import FestaLinkBar from '../components/FestaLinkBar';
+import FestaSummaryStrip, { FestaSummaryItem } from '../components/FestaSummaryStrip';
+import StatusCounter from '../components/StatusCounter';
+import TableEmptyRow from '../components/TableEmptyRow';
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
 const fmtDataBR = (valor) => {
@@ -377,47 +382,39 @@ export default function Festas() {
             const regrasFesta = parsePricingRules(f.politica_precos);
             const descricaoPolitica = parsePricingDescription(f.politica_precos);
             return (
-            <div key={f.id} className="card festa-card" style={{ borderTop: `4px solid ${f.status === 'ativa' ? '#c8a84b' : '#718096'}`, padding: 26 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+            <div key={f.id} className="card festa-card" style={{ borderTop: `4px solid ${f.status === 'ativa' ? '#c8a84b' : '#718096'}` }}>
+              <div className="festa-card-header">
                 <div>
-                  <div className="title-inline" style={{ fontWeight: 700, fontSize: 18, color: '#1e3a5f' }}>
+                  <div className="title-inline festa-card-title">
                     <PartyPopper size={16} style={{ color: '#c8a84b' }} />
                     {f.nome_festa}
                   </div>
-                  <div style={{ fontSize: 14, color: '#718096', marginTop: 4 }}>{fmtDataBR(f.data_festa)} | {f.local_festa}</div>
+                  <div className="festa-card-meta">{fmtDataBR(f.data_festa)} | {f.local_festa}</div>
                 </div>
                 <span className={`badge ${f.status === 'ativa' ? 'badge-success' : f.status === 'encerrada' ? 'badge-gray' : 'badge-danger'}`}>{f.status}</span>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, fontSize: 14, marginBottom: 12 }}>
+              <div className="festa-card-details">
                 <div>Convite: <strong>{fmt(f.valor_convite)}</strong></div>
                 <div>Dependente: <strong>{fmt(f.valor_convite_dependente)}</strong></div>
                 {f.capacidade && <div>Capacidade: <strong>{f.capacidade}</strong></div>}
               </div>
-              <div style={{ background: '#f7f8fc', borderRadius: 6, padding: 8, marginBottom: 12, fontSize: 12, color: '#4a5568' }}>
-                <div style={{ fontWeight: 600, color: '#1e3a5f', marginBottom: 4 }}>Política da festa</div>
+              <div className="festa-card-note">
+                <div className="festa-card-note-title">Política da festa</div>
                 <div>• Cortesia: membro + {regrasFesta.cortesia_acompanhantes} {regrasFesta.cortesia_acompanhantes === 1 ? 'acompanhante' : 'acompanhantes'}</div>
                 <div>• Criança grátis até {regrasFesta.idade_gratis_ate} anos</div>
                 <div>• {regrasFesta.idade_meia_de} a {regrasFesta.idade_meia_ate} anos: {regrasFesta.percentual_meia}%</div>
                 {!!descricaoPolitica && (
-                  <div style={{ marginTop: 4, color: '#718096' }}>{descricaoPolitica}</div>
+                  <div className="festa-card-note-muted">{descricaoPolitica}</div>
                 )}
               </div>
-              {
-                <div style={{ background: '#f7f8fc', borderRadius: 6, padding: 8, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                  <Link size={13} color="#1e3a5f" />
-                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getLinkTemplate(f)}</span>
-                  <button
-                    className="btn btn-outline btn-sm"
-                    onClick={() => copyLink(getLinkTemplate(f))}
-                    disabled={festaPassada}
-                    title={festaPassada ? 'Link indisponível para festa passada' : ''}
-                  >
-                    Copiar link
-                  </button>
-                </div>
-              }
+              <FestaLinkBar
+                text={getLinkTemplate(f)}
+                onCopy={() => copyLink(getLinkTemplate(f))}
+                disabled={festaPassada}
+                title={festaPassada ? 'Link indisponível para festa passada' : ''}
+              />
               {festaPassada && (
-                <div style={{ fontSize: 12, color: '#b7791f', marginTop: -8, marginBottom: 10 }}>
+                <div className="festa-link-warning">
                   Link de inscrição disponível apenas para festa com data futura.
                 </div>
               )}
@@ -538,31 +535,29 @@ export default function Festas() {
             <div className="modal-header">
               <div>
                 <div className="modal-title title-inline"><PartyPopper size={18} />{festaSel.nome_festa}</div>
-                <div style={{ fontSize: 12, color: '#718096' }}>{fmtDataBR(festaSel.data_festa)} | {festaSel.local_festa}</div>
+                <div className="festa-modal-subtitle">{fmtDataBR(festaSel.data_festa)} | {festaSel.local_festa}</div>
               </div>
               <button className="btn btn-outline btn-sm modal-close-btn" onClick={() => setModalParts(false)}>✕</button>
             </div>
 
-            <div style={{ display: 'flex', gap: 16, marginBottom: 16, background: '#f7f8fc', borderRadius: 8, padding: 12 }}>
-              <div><span style={{ fontSize: 12, color: '#718096' }}>Total Participantes</span><br /><strong style={{ fontSize: 18 }}>{totalParts}</strong></div>
-              <div><span style={{ fontSize: 12, color: '#718096' }}>Convites Grátis</span><br /><strong style={{ fontSize: 18, color: '#38a169' }}>{totalGratuitos}</strong></div>
-              <div><span style={{ fontSize: 12, color: '#718096' }}>Convites Pagos</span><br /><strong style={{ fontSize: 18, color: '#d69e2e' }}>{totalPagos}</strong></div>
-              <div>
-                <span style={{ fontSize: 12, color: '#718096' }}>Arrecadado</span><br />
+            <FestaSummaryStrip>
+              <FestaSummaryItem label="Total Participantes" value={totalParts} />
+              <FestaSummaryItem label="Convites Grátis" value={totalGratuitos} valueClassName="festa-summary-item-value-success" />
+              <FestaSummaryItem label="Convites Pagos" value={totalPagos} valueClassName="festa-summary-item-value-warning" />
+              <FestaSummaryItem label="Arrecadado">
                 <strong className="money-value money-value-compact" style={{ color: '#38a169' }}>{fmt(totalArrecadado)}</strong>
-              </div>
-              <div>
-                <span style={{ fontSize: 12, color: '#718096' }}>Filtro</span><br />
+              </FestaSummaryItem>
+              <FestaSummaryItem label="Filtro">
                 <select className="search-input" style={{ minWidth: 150, height: 34 }} value={filtroCondicao} onChange={e => setFiltroCondicao(e.target.value)}>
                   <option value="todos">Todos</option>
                   <option value="gratis">Somente grátis</option>
                   <option value="pagos">Somente pagos</option>
                 </select>
-              </div>
+              </FestaSummaryItem>
               <div style={{ marginLeft: 'auto' }}>
                 <button className="btn btn-primary" onClick={() => openModalPart()}><Plus size={14} /> Adicionar Participante</button>
               </div>
-            </div>
+            </FestaSummaryStrip>
 
             {loadingParts ? <div className="spinner" /> : (
               <div className="table-wrap">
@@ -608,18 +603,14 @@ export default function Festas() {
             <div className="modal-header">
               <div>
                 <div className="modal-title">Enviar Convites • {festaConvite.nome_festa}</div>
-                <div style={{ fontSize: 12, color: '#718096' }}>Filtre e selecione os membros que receberão o mesmo link da festa</div>
+                <div className="festa-convite-subtitle">Filtre e selecione os membros que receberão o mesmo link da festa</div>
               </div>
               <button className="btn btn-outline btn-sm modal-close-btn" onClick={() => setModalConvites(false)}>✕</button>
             </div>
 
-            <div style={{ background: '#f7f8fc', borderRadius: 8, padding: 8, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-              <Link size={13} color="#1e3a5f" />
-              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getLinkTemplate(festaConvite)}</span>
-              <button className="btn btn-outline btn-sm" onClick={() => copyLink(getLinkTemplate(festaConvite))}>Copiar link</button>
-            </div>
+            <FestaLinkBar text={getLinkTemplate(festaConvite)} onCopy={() => copyLink(getLinkTemplate(festaConvite))} marginBottom={10} />
 
-            <div className="filters" style={{ marginBottom: 12 }}>
+            <FilterBar style={{ marginBottom: 12 }}>
               <input className="search-input search-input-wide" placeholder="Nome" value={filtroNome} onChange={e => setFiltroNome(e.target.value)} />
               <input className="search-input" placeholder="Matrícula" value={filtroMatricula} onChange={e => setFiltroMatricula(e.target.value)} />
               <input className="search-input" placeholder="Cidade" value={filtroCidade} onChange={e => setFiltroCidade(e.target.value)} />
@@ -634,13 +625,13 @@ export default function Festas() {
                 <option value="inativo">Inativo</option>
                 <option value="suspenso">Suspenso</option>
               </select>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+              <label className="festa-filter-checkbox">
                 <input type="checkbox" checked={somenteEmailValido} onChange={e => setSomenteEmailValido(e.target.checked)} />
                 Somente e-mail válido
               </label>
               <button className="btn btn-outline btn-sm" onClick={selecionarFiltrados}>Selecionar filtrados</button>
               <button className="btn btn-outline btn-sm" onClick={limparSelecao}>Limpar seleção</button>
-            </div>
+            </FilterBar>
 
             {loadingConvites ? <div className="spinner" /> : (
               <div className="table-wrap" style={{ maxHeight: 360, overflow: 'auto' }}>
@@ -657,7 +648,7 @@ export default function Festas() {
                   </thead>
                   <tbody>
                     {destinatariosFiltrados.length === 0 ? (
-                      <tr><td colSpan={6} style={{ textAlign: 'center', padding: 20, color: '#718096' }}>Nenhum membro encontrado</td></tr>
+                      <TableEmptyRow colSpan={6} message="Nenhum membro encontrado" />
                     ) : destinatariosFiltrados.map(m => (
                       <tr key={m.id}>
                         <td>
@@ -676,9 +667,7 @@ export default function Festas() {
             )}
 
             <div className="modal-footer" style={{ justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 13, color: '#718096' }}>
-                {selecionados.size} {selecionados.size === 1 ? 'membro selecionado' : 'membros selecionados'}
-              </span>
+              <StatusCounter count={selecionados.size} singular="membro selecionado" plural="membros selecionados" />
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn btn-outline" onClick={() => enviarConvites(festaConvite, true)}>Reenviar Pendentes</button>
                 <button className="btn btn-primary" onClick={() => enviarConvites(festaConvite)}>Enviar Selecionados</button>

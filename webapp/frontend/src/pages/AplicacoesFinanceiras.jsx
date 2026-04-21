@@ -4,6 +4,19 @@ import { Download, Edit, Plus, Trash2, Upload } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../api';
 import { getApiErrorMessage } from '../utils/apiError';
+import InlineHelpCard from '../components/InlineHelpCard';
+import SummaryCard, { SummaryCardText } from '../components/SummaryCard';
+
+const HELP_BY_ROLE = {
+  administrador: 'Priorize integridade dos extratos importados, conferência dos impostos e impacto de alterações manuais nos saldos.',
+  gerente: 'Use esta tela para revisar saldos, rendimento líquido, resgates e consistência do mês antes de exportar.',
+};
+
+const HELP_LINKS = [
+  { to: '/documentacao/manual', label: 'Abrir manual do usuário' },
+  { to: '/documentacao/troubleshooting', label: 'Ver ajuda para problemas comuns' },
+  { to: '/documentacao', label: 'Ir para a central de documentação' },
+];
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
 const fmtDataAplicacao = (dataAplicacao, mesReferencia) => {
@@ -264,7 +277,7 @@ export default function AplicacoesFinanceiras() {
     <div>
       <div className="topbar">
         <h2>Aplicações Financeiras</h2>
-        <div className="topbar-right">
+        <div className="topbar-actions">
           <label className="btn btn-outline" style={{ cursor: importingPdf ? 'wait' : 'pointer' }}>
             <Upload size={15} /> {importingPdf ? 'Lendo PDF...' : 'Importar PDF'}
             <input type="file" accept=".pdf,application/pdf" style={{ display: 'none' }} onChange={handleImportPdf} disabled={importingPdf} />
@@ -278,16 +291,25 @@ export default function AplicacoesFinanceiras() {
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 16, borderLeft: '4px solid #2b6cb0' }}>
-        <div style={{ color: '#4a5568', lineHeight: 1.6 }}>
+      <InlineHelpCard
+        title="Atenção nesta tela"
+        variant="attention"
+        defaultLabel="Financeiro"
+        messagesByRole={HELP_BY_ROLE}
+        fallbackMessage="Confirme instituição, produto, mês e valores antes de salvar ou importar um PDF."
+        links={HELP_LINKS}
+      />
+
+      <SummaryCard variant="info" style={{ marginBottom: 16 }}>
+        <SummaryCardText>
           O botão <strong>Importar PDF</strong> aceita extratos do Banco do Brasil nos formatos:
           <strong> Fundos Mensal</strong> e <strong>CDB / RDB e BB Reaplic</strong>.
-        </div>
-        <div style={{ color: '#718096', lineHeight: 1.6, fontSize: 13, marginTop: 8 }}>
+        </SummaryCardText>
+        <SummaryCardText muted>
           Exemplos de layout reconhecido: <strong>"Extratos - Investimentos Fundos - Mensal"</strong> e
           <strong> "Extratos - CDB / RDB e BB Reaplic"</strong>.
-        </div>
-      </div>
+        </SummaryCardText>
+      </SummaryCard>
 
       <div className="filters">
         <div className="form-group" style={{ margin: 0 }}>
