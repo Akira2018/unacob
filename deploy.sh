@@ -105,9 +105,12 @@ verify_worktree() {
     return 0
   fi
 
-  if [[ -n "$(git -C "$APP_DIR" status --porcelain)" ]]; then
+  local worktree_changes
+  worktree_changes="$(git -C "$APP_DIR" status --porcelain | grep -Ev '^(\?\?|A |M |AM|MM| D|D |R |C |UU) (\.deploy_state/|\.deploy_prev_commit$|\.deploy_last_success_commit$)' || true)"
+
+  if [[ -n "$worktree_changes" ]]; then
     log "ERRO: há mudanças locais no servidor. Faça commit/stash/limpeza antes do deploy ou use ALLOW_DIRTY_WORKTREE=1 conscientemente."
-    git -C "$APP_DIR" status --short
+    printf '%s\n' "$worktree_changes"
     exit 1
   fi
 }
