@@ -192,6 +192,22 @@ class PrevisaoOrcamentaria(Base):
     updated_at: Mapped[DateTime | None] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class PrevisaoOrcamentariaAnual(Base):
+    __tablename__ = "previsoes_orcamentarias_anuais"
+    __table_args__ = (
+        UniqueConstraint("conta_id", "ano", name="uq_previsao_orcamentaria_anual_conta_ano"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    conta_id: Mapped[str] = mapped_column(String(36), ForeignKey("plano_contas.id"), index=True, nullable=False)
+    ano: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    valor_previsto_anual: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    observacoes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[DateTime | None] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[DateTime | None] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Despesa(Base):
     __tablename__ = "despesas"
 

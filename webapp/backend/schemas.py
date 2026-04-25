@@ -227,6 +227,27 @@ class PrevisaoOrcamentariaUpsertItem(BaseModel):
     observacoes: Optional[str] = None
 
 
+class PrevisaoOrcamentariaAnualResponse(BaseModel):
+    id: str
+    conta_id: str
+    conta_codigo: Optional[str] = None
+    conta_nome: Optional[str] = None
+    ano: int
+    valor_previsto_anual: float
+    observacoes: Optional[str] = None
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class PrevisaoOrcamentariaAnualUpsertItem(BaseModel):
+    conta_id: str
+    ano: int
+    valor_previsto_anual: float
+    observacoes: Optional[str] = None
+
+
 class PrevisaoOrcamentariaAnaliseItem(BaseModel):
     conta_id: str
     conta_codigo: Optional[str] = None

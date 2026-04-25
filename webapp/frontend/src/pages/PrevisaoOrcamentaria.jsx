@@ -57,6 +57,7 @@ export default function PrevisaoOrcamentaria() {
   const [mesSelecionado, setMesSelecionado] = useState(new Date().getMonth() + 1);
   const [contas, setContas] = useState([]);
   const [grid, setGrid] = useState({});
+  const [annualGrid, setAnnualGrid] = useState({});
   const [saving, setSaving] = useState(false);
   const [savingRows, setSavingRows] = useState({});
   const [deletingRows, setDeletingRows] = useState({});
@@ -73,20 +74,24 @@ export default function PrevisaoOrcamentaria() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [contasResp, previsoesResp] = await Promise.all([
+      const [contasResp, previsoesResp, previsoesAnuaisResp] = await Promise.all([
         api.get('/contas', { params: { tipo: filtros.tipo, apenas_ativas: true } }),
         api.get('/previsoes-orcamentarias', { params: { ano: filtros.ano, tipo: filtros.tipo } }),
+        api.get('/previsoes-orcamentarias-anuais', { params: { ano: filtros.ano, tipo: filtros.tipo } }),
       ]);
 
       const contasData = Array.isArray(contasResp.data) ? contasResp.data : [];
       const previsoesData = Array.isArray(previsoesResp.data) ? previsoesResp.data : [];
+      const previsoesAnuaisData = Array.isArray(previsoesAnuaisResp.data) ? previsoesAnuaisResp.data : [];
 
       const nextGrid = {};
+      const nextAnnualGrid = {};
       contasData.forEach((conta) => {
         nextGrid[conta.id] = {};
         MESES.forEach((m) => {
           nextGrid[conta.id][m.num] = createEmptyCell();
         });
+        nextAnnualGrid[conta.id] = createEmptyCell();
       });
 
       previsoesData.forEach((p) => {
@@ -98,8 +103,18 @@ export default function PrevisaoOrcamentaria() {
         };
       });
 
+      previsoesAnuaisData.forEach((p) => {
+        if (!nextAnnualGrid[p.conta_id]) return;
+        nextAnnualGrid[p.conta_id] = {
+          id: p.id,
+          value: String(Number(p.valor_previsto_anual || 0)),
+          originalValue: String(Number(p.valor_previsto_anual || 0)),
+        };
+      });
+
       setContas(contasData);
       setGrid(nextGrid);
+      setAnnualGrid(nextAnnualGrid);
     } catch (err) {
       toast.error(getApiErrorMessage(err, 'Erro ao carregar previsões orçamentárias'));
     } finally {
@@ -159,11 +174,31 @@ export default function PrevisaoOrcamentaria() {
     }));
   };
 
+  const setValorAnual = (contaId, value) => {
+    setAnnualGrid((prev) => ({
+      ...prev,
+      [contaId]: {
+        ...(prev?.[contaId] || createEmptyCell()),
+        value,
+      },
+    }));
+  };
+
   const salvar = async () => {
+    const annualPayload = [];
     const upsertPayload = [];
     const deleteRequests = [];
 
     contas.forEach((conta) => {
+      const annualCell = annualGrid?.[conta.id] || createEmptyCell();
+      if (isCellDirty(annualCell)) {
+        annualPayload.push({
+          conta_id: conta.id,
+          ano: filtros.ano,
+          valor_previsto_anual: normalizeNumber(annualCell.value),
+        });
+      }
+
       MESES.forEach((m) => {
         const cell = grid?.[conta.id]?.[m.num];
         if (!isCellDirty(cell)) return;
@@ -185,13 +220,16 @@ export default function PrevisaoOrcamentaria() {
       });
     });
 
-    if (upsertPayload.length === 0 && deleteRequests.length === 0) {
+    if (annualPayload.length === 0 && upsertPayload.length === 0 && deleteRequests.length === 0) {
       toast('Não há alterações pendentes para salvar.');
       return;
     }
 
     setSaving(true);
     try {
+      if (annualPayload.length > 0) {
+        await api.post('/previsoes-orcamentarias-anuais/upsert-lote', annualPayload);
+      }
       if (upsertPayload.length > 0) {
         await api.post('/previsoes-orcamentarias/upsert-lote', upsertPayload);
       }
@@ -209,21 +247,31 @@ export default function PrevisaoOrcamentaria() {
   };
 
   const salvarLinha = async (contaId) => {
+    const annualCell = annualGrid?.[contaId] || createEmptyCell();
     const cell = grid?.[contaId]?.[mesSelecionado] || createEmptyCell();
     const rowKey = `${contaId}:${mesSelecionado}`;
+    const annualDirty = isCellDirty(annualCell);
+    const monthlyDirty = isCellDirty(cell);
     const valor = normalizeNumber(cell.value);
 
-    if (!isCellDirty(cell)) {
-      toast('Essa conta não tem alteração pendente neste mês.');
+    if (!annualDirty && !monthlyDirty) {
+      toast('Essa conta não tem alteração pendente.');
       return;
     }
 
     setSavingRows((prev) => ({ ...prev, [rowKey]: true }));
     try {
-      if (valor === 0 && cell.id) {
+      if (annualDirty) {
+        await api.post('/previsoes-orcamentarias-anuais/upsert-lote', [{
+          conta_id: contaId,
+          ano: filtros.ano,
+          valor_previsto_anual: normalizeNumber(annualCell.value),
+        }]);
+      }
+      if (monthlyDirty && valor === 0 && cell.id) {
         await api.delete(`/previsoes-orcamentarias/${cell.id}`);
         toast.success('Valor removido com sucesso.');
-      } else if (valor !== 0) {
+      } else if (monthlyDirty && valor !== 0) {
         await api.post('/previsoes-orcamentarias/upsert-lote', [{
           conta_id: contaId,
           ano: filtros.ano,
@@ -231,6 +279,8 @@ export default function PrevisaoOrcamentaria() {
           valor_previsto: valor,
         }]);
         toast.success('Valor salvo com sucesso.');
+      } else if (annualDirty) {
+        toast.success('Previsão anual salva com sucesso.');
       }
       load();
       loadAnalise();
@@ -283,6 +333,10 @@ export default function PrevisaoOrcamentaria() {
     return contasFiltradas.reduce((sum, c) => sum + normalizeNumber(grid?.[c.id]?.[mesSelecionado]?.value), 0);
   }, [contasFiltradas, grid, mesSelecionado]);
 
+  const totalAnual = useMemo(() => {
+    return contasFiltradas.reduce((sum, c) => sum + normalizeNumber(annualGrid?.[c.id]?.value), 0);
+  }, [annualGrid, contasFiltradas]);
+
   const analiseMap = useMemo(() => {
     const map = {};
     (Array.isArray(analise.itens) ? analise.itens : []).forEach((item) => {
@@ -315,13 +369,16 @@ export default function PrevisaoOrcamentaria() {
   const mesSelecionadoLabel = MESES.find((m) => m.num === mesSelecionado)?.label || '';
   const totalAlteracoesPendentes = useMemo(() => {
     let total = 0;
+    Object.values(annualGrid || {}).forEach((cell) => {
+      if (isCellDirty(cell)) total += 1;
+    });
     Object.values(grid || {}).forEach((meses) => {
       Object.values(meses || {}).forEach((cell) => {
         if (isCellDirty(cell)) total += 1;
       });
     });
     return total;
-  }, [grid]);
+  }, [annualGrid, grid]);
 
   return (
     <div>
@@ -408,6 +465,10 @@ export default function PrevisaoOrcamentaria() {
       </div>
 
       <div className="stats-grid">
+        <div className="stat-card purple">
+          <div className="stat-label">Previsto no ano</div>
+          <div className="stat-value stat-value-compact">{toCurrency(totalAnual)}</div>
+        </div>
         <div className="stat-card blue">
           <div className="stat-label">Previsto no mês</div>
           <div className="stat-value stat-value-compact">{toCurrency(analise.resumo?.total_previsto || 0)}</div>
@@ -430,9 +491,10 @@ export default function PrevisaoOrcamentaria() {
       <div className="card">
         {loading || loadingAnalise ? <div className="spinner" /> : (
           <div className="table-wrap">
-            <table style={{ width: 'auto', minWidth: 1380 }}>
+            <table style={{ width: 'auto', minWidth: 1500 }}>
               <colgroup>
                 <col style={{ width: 360 }} />
+                <col style={{ width: 140 }} />
                 <col style={{ width: 140 }} />
                 <col style={{ width: 160 }} />
                 <col style={{ width: 160 }} />
@@ -444,6 +506,7 @@ export default function PrevisaoOrcamentaria() {
               <thead>
                 <tr>
                   <th>Conta</th>
+                  <th style={{ textAlign: 'left', paddingLeft: 12 }}>Previsto Ano</th>
                   <th style={{ textAlign: 'left', paddingLeft: 12 }}>Previsto {mesSelecionadoLabel}</th>
                   <th>Realizado</th>
                   <th>Desvio</th>
@@ -456,15 +519,17 @@ export default function PrevisaoOrcamentaria() {
               <tbody>
                 {contasFiltradas.length === 0 ? (
                   <tr>
-                    <td colSpan={8} style={{ textAlign: 'center', padding: 30, color: '#718096' }}>
+                    <td colSpan={9} style={{ textAlign: 'center', padding: 30, color: '#718096' }}>
                       Nenhuma conta encontrada para o filtro informado
                     </td>
                   </tr>
                 ) : contasFiltradas.map((conta) => {
                   const cell = grid?.[conta.id]?.[mesSelecionado] || createEmptyCell();
+                  const annualCell = annualGrid?.[conta.id] || createEmptyCell();
                   const itemAnalise = analiseMap[conta.id] || null;
                   const rowKey = `${conta.id}:${mesSelecionado}`;
-                  const dirty = isCellDirty(cell);
+                  const monthlyDirty = isCellDirty(cell);
+                  const annualDirty = isCellDirty(annualCell);
                   const status = itemAnalise?.status || 'sem_movimento';
                   const statusStyle = STATUS_BADGE_STYLES[status] || STATUS_BADGE_STYLES.sem_movimento;
                   const percentual = itemAnalise?.percentual_execucao;
@@ -476,9 +541,18 @@ export default function PrevisaoOrcamentaria() {
                         <input
                           type="number"
                           step="0.01"
+                          value={annualCell.value ?? '0'}
+                          onChange={(e) => setValorAnual(conta.id, e.target.value)}
+                          style={{ width: 130, textAlign: 'center', borderColor: annualDirty ? '#d69e2e' : undefined, background: annualDirty ? '#fffaf0' : undefined }}
+                        />
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
+                        <input
+                          type="number"
+                          step="0.01"
                           value={cell.value ?? '0'}
                           onChange={(e) => setValor(conta.id, mesSelecionado, e.target.value)}
-                          style={{ width: 150, textAlign: 'center', borderColor: dirty ? '#d69e2e' : undefined, background: dirty ? '#fffaf0' : undefined }}
+                          style={{ width: 130, textAlign: 'center', borderColor: monthlyDirty ? '#d69e2e' : undefined, background: monthlyDirty ? '#fffaf0' : undefined }}
                         />
                       </td>
                       <td>{toCurrency(itemAnalise?.valor_realizado || 0)}</td>
@@ -499,7 +573,7 @@ export default function PrevisaoOrcamentaria() {
                           <button
                             className="btn btn-primary btn-sm"
                             onClick={() => salvarLinha(conta.id)}
-                            disabled={savingRows[rowKey] || deletingRows[rowKey] || !dirty}
+                            disabled={savingRows[rowKey] || deletingRows[rowKey] || (!annualDirty && !monthlyDirty)}
                           >
                             <Save size={13} /> {savingRows[rowKey] ? 'Salvando...' : 'Salvar'}
                           </button>
@@ -521,6 +595,7 @@ export default function PrevisaoOrcamentaria() {
                 <tfoot>
                   <tr>
                     <td style={{ fontWeight: 700 }}>TOTAL {mesSelecionadoLabel.toUpperCase()}</td>
+                    <td style={{ fontWeight: 700 }}>{toCurrency(totalAnual)}</td>
                     <td style={{ fontWeight: 700 }}>{toCurrency(totalMesSelecionado)}</td>
                     <td style={{ fontWeight: 700 }}>{toCurrency(analise.resumo?.total_realizado || 0)}</td>
                     <td style={{ fontWeight: 700 }}>{toCurrency(analise.resumo?.total_desvio || 0)}</td>

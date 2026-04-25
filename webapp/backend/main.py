@@ -101,6 +101,10 @@ PLANO_CONTAS_PADRAO = [
     {"codigo": "2.27", "nome": "Sorteios e brindes", "tipo": "saida", "ordem": 470},
     {"codigo": "2.28", "nome": "Perda de associados", "tipo": "saida", "ordem": 480},
     {"codigo": "2.29", "nome": "Provisão para impostos e taxas (ISS)", "tipo": "saida", "ordem": 490},
+    {"codigo": "2.30", "nome": "Aplicação investimentos", "tipo": "saida", "ordem": 500},
+    {"codigo": "2.31", "nome": "Resgate para suprimento do caixa", "tipo": "saida", "ordem": 510},
+    {"codigo": "2.32", "nome": "Estorno de Mensalidade", "tipo": "saida", "ordem": 520},
+    {"codigo": "2.33", "nome": "Outras despesas diversas", "tipo": "saida", "ordem": 530},
 ]
 
 PLANO_CONTAS_PADRAO_POR_CODIGO = {c["codigo"]: c for c in PLANO_CONTAS_PADRAO}
@@ -3501,6 +3505,93 @@ def upsert_previsao_orcamentaria_lote(
 
     db.commit()
     return {"ok": True, "criados": criados, "atualizados": atualizados}
+
+
+@app.get("/api/previsoes-orcamentarias-anuais", response_model=List[schemas.PrevisaoOrcamentariaAnualResponse])
+def list_previsoes_orcamentarias_anuais(
+    ano: int,
+    tipo: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    _validar_ano_mes_previsao(ano, 1)
+
+    q = db.query(models.PrevisaoOrcamentariaAnual)
+    q = q.filter(models.PrevisaoOrcamentariaAnual.ano == ano)
+    previsoes = q.all()
+
+    conta_ids = [p.conta_id for p in previsoes]
+    contas = {
+        c.id: c for c in db.query(models.PlanoConta).filter(models.PlanoConta.id.in_(conta_ids)).all()
+    } if conta_ids else {}
+
+    result = []
+    for p in previsoes:
+        conta = contas.get(p.conta_id)
+        if tipo and conta and (conta.tipo or "").lower() != tipo.lower():
+            continue
+        result.append({
+            "id": p.id,
+            "conta_id": p.conta_id,
+            "conta_codigo": conta.codigo if conta else None,
+            "conta_nome": conta.nome if conta else None,
+            "ano": p.ano,
+            "valor_previsto_anual": float(p.valor_previsto_anual or 0),
+            "observacoes": p.observacoes,
+            "created_at": p.created_at,
+        })
+    return result
+
+
+@app.post("/api/previsoes-orcamentarias-anuais/upsert-lote")
+def upsert_previsao_orcamentaria_anual_lote(
+    itens: List[schemas.PrevisaoOrcamentariaAnualUpsertItem],
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    atualizados = 0
+    criados = 0
+    removidos = 0
+
+    for item in itens:
+        _validar_ano_mes_previsao(item.ano, 1)
+        conta = db.query(models.PlanoConta).filter(models.PlanoConta.id == item.conta_id).first()
+        if not conta:
+            continue
+
+        previsao = db.query(models.PrevisaoOrcamentariaAnual).filter(
+            models.PrevisaoOrcamentariaAnual.conta_id == item.conta_id,
+            models.PrevisaoOrcamentariaAnual.ano == item.ano,
+        ).first()
+
+        valor = float(item.valor_previsto_anual or 0)
+        if valor == 0 and previsao:
+            db.delete(previsao)
+            removidos += 1
+            continue
+        if valor == 0:
+            continue
+
+        if previsao:
+            previsao.valor_previsto_anual = valor
+            previsao.observacoes = item.observacoes
+            previsao.updated_at = datetime.utcnow()
+            atualizados += 1
+        else:
+            db.add(models.PrevisaoOrcamentariaAnual(
+                id=str(uuid.uuid4()),
+                user_id=current_user.id,
+                conta_id=item.conta_id,
+                ano=item.ano,
+                valor_previsto_anual=valor,
+                observacoes=item.observacoes,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            ))
+            criados += 1
+
+    db.commit()
+    return {"ok": True, "criados": criados, "atualizados": atualizados, "removidos": removidos}
 
 
 # ════════════════════════════════════════════════════════════════════════════════
