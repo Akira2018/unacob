@@ -178,3 +178,69 @@ Mais comum em fluxos DABB quando `codigo_dabb` do cadastro está ausente, incons
 - Validar cadastro e `codigo_dabb` dos associados quando a rotina envolver DABB.
 - Fazer backup antes de importações volumosas.
 - Após a importação, revisar pendências de conciliação manual.
+
+## 9. Comandos de conferência
+
+Para validar rapidamente se o parser reconhece um arquivo antes do upload. Os scripts aceitam `.ofx`, `.ret`, `.rem` e `.pdf`:
+
+```powershell
+cd webapp/backend
+venv\Scripts\python.exe scripts\check_import_parser.py ..\..\Extrato_01-2026.ofx
+```
+
+Exemplos equivalentes para outros formatos:
+
+```powershell
+cd webapp/backend
+venv\Scripts\python.exe scripts\check_import_parser.py ..\..\arquivo.ret
+venv\Scripts\python.exe scripts\check_import_parser.py BB-DA-remessa-27-02-2026.pdf
+```
+
+Para verificar se os lançamentos do arquivo ainda seriam importados ou já estão no banco:
+
+```powershell
+cd webapp/backend
+venv\Scripts\python.exe scripts\verify_import_file.py ..\..\Extrato_01-2026.ofx
+```
+
+O script infere `banco=Importado` para OFX e `banco=DABB` para RET, REM e PDF. Se precisar conferir um caso fora desse padrão, passe `--banco` explicitamente.
+
+Depois da importação, use o modo estrito para garantir que não restou lançamento novo:
+
+```powershell
+cd webapp/backend
+venv\Scripts\python.exe scripts\verify_import_file.py --expect-imported ..\..\Extrato_01-2026.ofx
+```
+
+Saída esperada no modo estrito após importação bem-sucedida:
+
+- `novas_para_importar=0`
+- `duplicadas_no_banco` igual ao total efetivamente lido
+
+Para varrer automaticamente todos os arquivos suportados de uma pasta:
+
+```powershell
+cd webapp/backend
+venv\Scripts\python.exe scripts\scan_import_folder.py ..\..
+```
+
+Por padrão, o scanner inclui OFX, RET, REM e apenas PDFs com nome que pareça bancário, como `bb`, `dabb`, `remessa` ou `extrato`.
+
+Para garantir que toda a pasta já foi importada:
+
+```powershell
+cd webapp/backend
+venv\Scripts\python.exe scripts\scan_import_folder.py --expect-imported ..\..
+```
+
+Se quiser forçar a análise de qualquer PDF da pasta:
+
+```powershell
+cd webapp/backend
+venv\Scripts\python.exe scripts\scan_import_folder.py --include-all-pdfs ..\..
+```
+
+Compatibilidade:
+
+- `scripts\check_ofx_parser.py` continua funcionando como atalho para o comando novo.
+- `scripts\verificar_importacao_ofx.py` continua funcionando como atalho para o comando novo.

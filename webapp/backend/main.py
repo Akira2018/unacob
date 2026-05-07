@@ -6351,8 +6351,16 @@ def _extrair_tag_ofx(bloco: str, tag: str) -> str:
 
 
 def _decode_uploaded_text(contents: bytes) -> str:
-    # Alguns bancos exportam OFX em UTF-16 ou UTF-8 com BOM.
-    for encoding in ("utf-8-sig", "utf-16", "latin-1"):
+    # Alguns bancos exportam OFX em UTF-8 com BOM, CP1252/Latin-1 ou UTF-16.
+    # Evita tentar UTF-16 cedo demais, porque arquivos CP1252 podem decodificar
+    # sem erro em UTF-16 e virar texto ilegível.
+    if contents.startswith((b"\xff\xfe", b"\xfe\xff")) or b"\x00" in contents[:256]:
+        try:
+            return contents.decode("utf-16")
+        except Exception:
+            pass
+
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
         try:
             return contents.decode(encoding)
         except Exception:
