@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../api';
 import toast from 'react-hot-toast';
-import { Download, FileSpreadsheet, Users, CreditCard, Cake, BarChart3, PartyPopper, GitMerge, PiggyBank, BookText } from 'lucide-react';
+import { Download, FileSpreadsheet, Users, CreditCard, Cake, BarChart3, PartyPopper, GitMerge, PiggyBank, BookText, Wallet } from 'lucide-react';
 import { format, subMonths } from 'date-fns';
 import { useAuth } from '../context/useAuth';
 import FilterBar from '../components/FilterBar';
@@ -125,6 +125,20 @@ export default function Relatorios() {
       color: '#805ad5',
       isFinance: true,
       action: () => download('balancete', '/relatorios/balancete', `balancete_${mes}.xlsx`, { mes_referencia: mes }),
+      extra: (
+        <select className="search-input" value={mes} onChange={(e) => setMes(e.target.value)} style={{ width: '100%' }}>
+          {getMeses().map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+      ),
+    },
+    {
+      key: 'caixa',
+      icon: <Wallet size={24} />,
+      title: 'Relatorio de Caixa',
+      desc: 'Despesas pagas em dinheiro no mes selecionado, usadas para controlar o caixa fisico',
+      color: '#b45309',
+      isFinance: true,
+      action: () => download('caixa', '/relatorios/caixa', `relatorio_caixa_${mes}.xlsx`, { mes_referencia: mes }),
       extra: (
         <select className="search-input" value={mes} onChange={(e) => setMes(e.target.value)} style={{ width: '100%' }}>
           {getMeses().map((m) => <option key={m} value={m}>{m}</option>)}

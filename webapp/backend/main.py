@@ -665,6 +665,7 @@ FINANCE_API_PREFIXES = (
 
 FINANCE_REPORT_PREFIXES = (
     "/api/relatorios/pagamentos",
+    "/api/relatorios/caixa",
     "/api/relatorios/balancete",
     "/api/relatorios/livro-diario",
     "/api/relatorios/conciliacao",
@@ -8190,6 +8191,98 @@ def exportar_aniversariantes(
         buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=aniversariantes_mes_{mes_filtro}.xlsx"}
     )
+
+
+@app.get("/api/relatorios/caixa")
+def exportar_caixa(
+    mes_referencia: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    today = date.today()
+    mes_ref = mes_referencia or today.strftime("%Y-%m")
+
+    despesas = db.query(models.Despesa).filter(
+        models.Despesa.mes_referencia == mes_ref,
+        sql_func.lower(sql_func.trim(models.Despesa.forma_pagamento)) == "dinheiro",
+    ).order_by(
+        models.Despesa.data_despesa.asc(),
+        models.Despesa.descricao.asc(),
+    ).all()
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"Caixa {mes_ref}"
+
+    ws.merge_cells("A1:I1")
+    ws["A1"] = f"RELATORIO DE CAIXA - DESPESAS PAGAS EM DINHEIRO - {mes_ref}"
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
+    ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    headers = [
+        "Data",
+        "Descrição",
+        "Categoria",
+        "Fornecedor",
+        "Conta",
+        "Forma Pagamento",
+        "Nota Fiscal",
+        "Observações",
+        "Valor",
+    ]
+
+    header_row = 3
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=header_row, column=col, value=header)
+        _excel_header_style(cell)
+
+    first_data_row = header_row + 1
+    total_caixa = 0.0
+
+    for row, despesa in enumerate(despesas, first_data_row):
+        valor = float(despesa.valor or 0)
+        total_caixa += valor
+        conta = f"{despesa.conta_codigo} - {despesa.conta_nome or ''}".strip(" -") if despesa.conta_codigo else (despesa.conta_nome or "")
+
+        _excel_set_date_cell(ws, row, 1, despesa.data_despesa)
+        ws.cell(row=row, column=2, value=despesa.descricao or "")
+        ws.cell(row=row, column=3, value=despesa.categoria or "")
+        ws.cell(row=row, column=4, value=despesa.fornecedor or "")
+        ws.cell(row=row, column=5, value=conta)
+        ws.cell(row=row, column=6, value=despesa.forma_pagamento or "dinheiro")
+        ws.cell(row=row, column=7, value=despesa.nota_fiscal or "")
+        ws.cell(row=row, column=8, value=despesa.observacoes or "")
+        ws.cell(row=row, column=9, value=valor)
+        ws.cell(row=row, column=9).number_format = 'R$ #,##0.00'
+        ws.cell(row=row, column=9).alignment = Alignment(horizontal="right")
+
+    total_row = first_data_row + len(despesas)
+    ws.cell(row=total_row, column=8, value="TOTAL DO CAIXA").font = Font(bold=True)
+    ws.cell(row=total_row, column=9, value=round(total_caixa, 2)).font = Font(bold=True, color="C00000")
+    ws.cell(row=total_row, column=9).number_format = 'R$ #,##0.00'
+    ws.cell(row=total_row, column=9).alignment = Alignment(horizontal="right")
+    for col in range(8, 10):
+        ws.cell(row=total_row, column=col).fill = PatternFill("solid", fgColor="FCE4D6")
+
+    last_row = max(first_data_row, total_row)
+    _excel_apply_zebra(ws, first_data_row, total_row - 1, 1, 9)
+    _excel_apply_borders(ws, header_row, total_row, 1, 9)
+    ws.freeze_panes = f"A{first_data_row}"
+    ws.auto_filter.ref = f"A{header_row}:I{total_row}"
+    _excel_autofit_columns(ws, min_width=12, max_width=48)
+    ws.column_dimensions["B"].width = 36
+    ws.column_dimensions["H"].width = 36
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=relatorio_caixa_{mes_ref}.xlsx"},
+    )
+
 
 @app.get("/api/relatorios/balancete")
 def exportar_balancete(

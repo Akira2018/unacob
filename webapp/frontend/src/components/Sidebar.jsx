@@ -23,8 +23,8 @@ const sections = [
     label: 'Financeiro',
     items: [
       { to: '/pagamentos', icon: <CreditCard size={16} />, label: 'Receitas de Mensalidades' },
-      { to: '/despesas', icon: <Receipt size={16} />, label: 'Despesas' },
       { to: '/outras-rendas', icon: <DollarSign size={16} />, label: 'Outras Receitas' },
+      { to: '/despesas', icon: <Receipt size={16} />, label: 'Despesas' },
       { to: '/aplicacoes-financeiras', icon: <Landmark size={16} />, label: 'Aplicações Financeiras' },
       { to: '/plano-contas', icon: <FileSpreadsheet size={16} />, label: 'Código de Contas' },
       { to: '/previsao-orcamentaria', icon: <BarChart3 size={16} />, label: 'Previsão Orçamentária' },
@@ -109,7 +109,7 @@ export default function Sidebar({ open, onNavigate }) {
         })}
       </nav>
 
-      <div style={{ padding: '12px 20px', borderTop: '1px solid rgba(255,255,255,.1)' }}>
+      <div style={{ padding: '12px 20px', borderTop: '1px solid rgba(255,255,255,.1)', flexShrink: 0 }}>
         <div style={{ fontSize: 12, color: 'rgba(255,255,255,.5)', marginBottom: 8 }}>
           {user?.nome_completo}
           <span style={{ display: 'block', color: 'rgba(255,255,255,.3)', fontSize: 11 }}>
