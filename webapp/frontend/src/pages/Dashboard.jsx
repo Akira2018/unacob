@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../api';
 import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts';
-import { Users, CreditCard, TrendingDown, TrendingUp, Cake, AlertCircle, CheckCircle, DollarSign } from 'lucide-react';
+import {
+  Users, CreditCard, TrendingDown, TrendingUp, Cake, AlertCircle, CheckCircle,
+  DollarSign, BookOpenText, FileSpreadsheet, GitMerge, LifeBuoy
+} from 'lucide-react';
 import toast from 'react-hot-toast';
 import { getApiErrorMessage } from '../utils/apiError';
 
@@ -34,6 +38,15 @@ const getMeses = () => {
   }
   return result;
 };
+
+const manualShortcuts = [
+  { to: '/documentacao/manual', icon: <BookOpenText size={16} />, label: 'Manual do usuário' },
+  { to: '/documentacao/importacoes', icon: <FileSpreadsheet size={16} />, label: 'Importações' },
+  { to: '/documentacao/troubleshooting', icon: <LifeBuoy size={16} />, label: 'Problemas comuns' },
+  { to: '/conciliacao', icon: <GitMerge size={16} />, label: 'Conciliação' },
+  { to: '/remessa-dabb', icon: <CreditCard size={16} />, label: 'Remessa DABB' },
+  { to: '/documentacao', icon: <BookOpenText size={16} />, label: 'Central completa' },
+];
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
@@ -91,6 +104,22 @@ export default function Dashboard() {
               Exibindo dados de {fmtMes(data.mes_atual)}
             </span>
           </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card-title"><BookOpenText size={16} /> Manuais e instruções</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+          {manualShortcuts.map((item) => (
+            <Link
+              key={item.to}
+              to={item.to}
+              className="btn btn-outline"
+              style={{ justifyContent: 'flex-start', minHeight: 42 }}
+            >
+              {item.icon} {item.label}
+            </Link>
+          ))}
         </div>
       </div>
 

@@ -12,6 +12,14 @@ const getMeses = () => {
   return r;
 };
 
+const currencyFormatter = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
+const formatCurrency = (value) => currencyFormatter.format(Number(value || 0));
+const formatMesReferencia = (value) => {
+  if (!value) return '';
+  const [year, month] = String(value).split('-');
+  return `${month}/${year}`;
+};
+
 export default function RemessaDabb() {
   const [mes, setMes] = useState(format(new Date(), 'yyyy-MM'));
   const [dataDebitoDabb, setDataDebitoDabb] = useState(format(new Date(), 'yyyy-MM-dd'));
@@ -422,6 +430,8 @@ export default function RemessaDabb() {
     () => [...remessasDabb].sort((a, b) => (b.quantidade_registros || 0) - (a.quantidade_registros || 0) || String(b.created_at || '').localeCompare(String(a.created_at || ''))),
     [remessasDabb],
   );
+  const valorMensalidadePreview = formatCurrency(configDabb.valor_mensal_padrao);
+  const valorTaxaPreview = formatCurrency(configDabb.taxa_bancaria_bimestral);
 
   return (
     <div>
@@ -434,42 +444,87 @@ export default function RemessaDabb() {
 
       <div className="card" style={{ marginBottom: 24, borderTop: '4px solid #b45309' }}>
         <div className="card-title"><CreditCard size={16} /> Geracao da remessa</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
-          <div style={{ display: 'grid', gap: 8 }}>
-            <select className="search-input" value={mes} onChange={(e) => setMes(e.target.value)} style={{ width: '100%' }}>
-              {getMeses().map((m) => <option key={m} value={m}>{m}</option>)}
-            </select>
-            <input className="search-input" type="date" value={dataDebitoDabb} onChange={(e) => setDataDebitoDabb(e.target.value)} />
-            <input
-              className="search-input"
-              type="number"
-              step="0.01"
-              value={configDabb.valor_mensal_padrao}
-              onChange={(e) => setConfigDabb((prev) => ({ ...prev, valor_mensal_padrao: e.target.value }))}
-              placeholder="Mensalidade padrao DABB"
-            />
-            <input
-              className="search-input"
-              type="number"
-              step="0.01"
-              value={configDabb.taxa_bancaria_bimestral}
-              onChange={(e) => setConfigDabb((prev) => ({ ...prev, taxa_bancaria_bimestral: e.target.value }))}
-              placeholder="Taxa bancaria bimestral"
-            />
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#4a5568' }}>
-              <input type="checkbox" checked={incluirAtrasadosDabb} onChange={(e) => setIncluirAtrasadosDabb(e.target.checked)} />
-              Incluir mensalidades em atraso
-            </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#4a5568' }}>
-              <input type="checkbox" checked={aplicarReajusteTodos} onChange={(e) => setAplicarReajusteTodos(e.target.checked)} />
-              Aplicar novo valor para todos os associados
-            </label>
-            {aplicarReajusteTodos && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', gap: 18, alignItems: 'start' }}>
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label>Mes de referencia</label>
+                <select className="search-input" value={mes} onChange={(e) => setMes(e.target.value)} style={{ width: '100%' }}>
+                  {getMeses().map((m) => <option key={m} value={m}>{formatMesReferencia(m)}</option>)}
+                </select>
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label>Data do debito no banco</label>
+                <input className="search-input" type="date" value={dataDebitoDabb} onChange={(e) => setDataDebitoDabb(e.target.value)} />
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+              <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 14, background: '#f8fafc' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>Mensalidade DABB</div>
+                    <div style={{ fontSize: 24, lineHeight: 1.1, fontWeight: 800, color: '#1e3a5f', marginTop: 4 }}>{valorMensalidadePreview}</div>
+                  </div>
+                  <CreditCard size={20} color="#1e3a5f" />
+                </div>
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label>Valor mensal por associado</label>
+                  <input
+                    className="search-input"
+                    type="number"
+                    step="0.01"
+                    value={configDabb.valor_mensal_padrao}
+                    onChange={(e) => setConfigDabb((prev) => ({ ...prev, valor_mensal_padrao: e.target.value }))}
+                    placeholder="Ex.: 35.00"
+                  />
+                </div>
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 8 }}>
+                  Usado como valor padrao da mensalidade mensal do DABB.
+                </div>
+              </div>
+
+              <div style={{ border: '1px solid #fde68a', borderRadius: 8, padding: 14, background: '#fffbeb' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#92400e', fontWeight: 700, textTransform: 'uppercase' }}>Taxa bancaria</div>
+                    <div style={{ fontSize: 24, lineHeight: 1.1, fontWeight: 800, color: '#b45309', marginTop: 4 }}>{valorTaxaPreview}</div>
+                  </div>
+                  <FileSpreadsheet size={20} color="#b45309" />
+                </div>
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label>Taxa cobrada no bimestre</label>
+                  <input
+                    className="search-input"
+                    type="number"
+                    step="0.01"
+                    value={configDabb.taxa_bancaria_bimestral}
+                    onChange={(e) => setConfigDabb((prev) => ({ ...prev, taxa_bancaria_bimestral: e.target.value }))}
+                    placeholder="Ex.: 1.00"
+                  />
+                </div>
+                <div style={{ fontSize: 12, color: '#92400e', marginTop: 8 }}>
+                  Somada ao valor das competencias no arquivo REM.
+                </div>
+              </div>
+            </div>
+
+            <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, display: 'grid', gap: 10 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#4a5568' }}>
-                <input type="checkbox" checked={somenteHabilitadosReajuste} onChange={(e) => setSomenteHabilitadosReajuste(e.target.checked)} />
-                Reajustar somente habilitados no DABB
+                <input type="checkbox" checked={incluirAtrasadosDabb} onChange={(e) => setIncluirAtrasadosDabb(e.target.checked)} />
+                Incluir mensalidades em atraso
               </label>
-            )}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#4a5568' }}>
+                <input type="checkbox" checked={aplicarReajusteTodos} onChange={(e) => setAplicarReajusteTodos(e.target.checked)} />
+                Aplicar novo valor da mensalidade para todos os associados
+              </label>
+              {aplicarReajusteTodos && (
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#4a5568' }}>
+                  <input type="checkbox" checked={somenteHabilitadosReajuste} onChange={(e) => setSomenteHabilitadosReajuste(e.target.checked)} />
+                  Reajustar somente associados habilitados no DABB
+                </label>
+              )}
+            </div>
           </div>
 
           <div style={{ display: 'grid', gap: 10, alignContent: 'start' }}>

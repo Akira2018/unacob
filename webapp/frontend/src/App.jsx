@@ -22,6 +22,7 @@ const PlanoContas = lazy(() => import('./pages/PlanoContas'));
 const PrevisaoOrcamentaria = lazy(() => import('./pages/PrevisaoOrcamentaria'));
 const Etiquetas = lazy(() => import('./pages/Etiquetas'));
 const Relatorios = lazy(() => import('./pages/Relatorios'));
+const RemessaDabb = lazy(() => import('./pages/RemessaDabb'));
 const Usuarios = lazy(() => import('./pages/Usuarios'));
 const MeuCadastro = lazy(() => import('./pages/MeuCadastro'));
 const AcessoNegado = lazy(() => import('./pages/AcessoNegado'));
@@ -72,6 +73,7 @@ function ProtectedLayout() {
             <Route path="/previsao-orcamentaria" element={canAccessFinance ? <PrevisaoOrcamentaria /> : <Navigate to="/acesso-negado" replace />} />
             <Route path="/etiquetas" element={<Etiquetas />} />
             <Route path="/relatorios" element={<Relatorios />} />
+            <Route path="/remessa-dabb" element={canAccessFinance ? <RemessaDabb /> : <Navigate to="/acesso-negado" replace />} />
             <Route path="/documentacao" element={<Documentacao />} />
             <Route path="/documentacao/api" element={<ApiInterna />} />
             <Route path="/documentacao/arquitetura" element={<ArquiteturaInterna />} />
