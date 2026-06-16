@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dotenv import load_dotenv
 from sqlalchemy import or_, cast, String, inspect, text
 from sqlalchemy import func as sql_func
+from sqlalchemy.exc import IntegrityError
 from collections import defaultdict
 import calendar
 import uuid
@@ -155,6 +156,64 @@ def _cidade_corrompida(valor: Optional[str]) -> bool:
         "estao sendo construidos",
     ]
     return any(marker in cidade_norm for marker in marcadores)
+
+
+def _normalizar_chave_alfabetica(valor: Optional[str]) -> str:
+    texto = unicodedata.normalize("NFKD", (valor or "")).encode("ascii", "ignore").decode()
+    texto = re.sub(r"[^A-Za-z0-9]+", " ", texto).strip().lower()
+    return re.sub(r"\s+", " ", texto)
+
+
+def _ordenar_membros_por_nome(membros: list[models.Membro]) -> list[models.Membro]:
+    return sorted(
+        membros,
+        key=lambda m: (_normalizar_chave_alfabetica(m.nome_completo), m.matricula or "", m.id or ""),
+    )
+
+
+def _normalizar_texto_cadastro(valor: Optional[str]) -> Optional[str]:
+    if valor is None:
+        return None
+    texto = str(valor).strip()
+    return texto or None
+
+
+def _normalizar_payload_membro(payload: dict) -> dict:
+    campos_texto = [
+        "matricula", "inscricao", "nome_completo", "cpf", "cpf2", "codigo_dabb",
+        "codigo_barras_dabb", "email", "telefone", "celular", "ddd", "endereco",
+        "numero", "complemento", "bairro", "cidade", "estado", "cep", "ect",
+        "status", "sexo", "cat", "beneficio", "observacoes",
+    ]
+    for campo in campos_texto:
+        if campo in payload:
+            payload[campo] = _normalizar_texto_cadastro(payload[campo])
+
+    if _cidade_corrompida(payload.get("cidade")):
+        observacoes = payload.get("observacoes") or ""
+        cidade = payload.get("cidade") or ""
+        if cidade and cidade not in observacoes:
+            payload["observacoes"] = f"{observacoes}\n{cidade}".strip() if observacoes else cidade
+        payload["cidade"] = None
+
+    return payload
+
+
+def _cidade_para_relatorio(membro: models.Membro) -> Optional[str]:
+    cidade = _normalizar_texto_cadastro(membro.cidade)
+    if not cidade or _cidade_corrompida(cidade):
+        return None
+    return cidade
+
+
+def _arquivar_membro_removido(membro: models.Membro) -> None:
+    membro.status = "removido"
+    membro.dabb_habilitado = False
+    obs = (membro.observacoes or "").strip()
+    nota = f"Associado removido do cadastro em {datetime.utcnow().date().isoformat()}."
+    if nota not in obs:
+        membro.observacoes = f"{obs}\n{nota}".strip() if obs else nota
+    membro.updated_at = datetime.utcnow()
 
 
 def _ensure_financeiro_columns_and_seed_contas():
@@ -1318,6 +1377,8 @@ def list_membros(
     current_user=Depends(get_current_user)
 ):
     q = db.query(models.Membro)
+    if not status:
+        q = q.filter(or_(models.Membro.status.is_(None), models.Membro.status != "removido"))
     if search:
         q = q.filter(or_(
             models.Membro.nome_completo.ilike(f"%{search}%"),
@@ -1327,11 +1388,13 @@ def list_membros(
         ))
     if status:
         q = q.filter(models.Membro.status == status)
-    return q.order_by(models.Membro.nome_completo).offset(skip).limit(limit).all()
+    membros = _ordenar_membros_por_nome(q.all())
+    return membros[skip:skip + limit]
 
 @app.post("/api/membros", response_model=schemas.MembroResponse)
 def create_membro(req: schemas.MembroCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    membro = models.Membro(id=str(uuid.uuid4()), **req.dict(), created_at=datetime.utcnow(), updated_at=datetime.utcnow())
+    payload = _normalizar_payload_membro(req.dict())
+    membro = models.Membro(id=str(uuid.uuid4()), **payload, created_at=datetime.utcnow(), updated_at=datetime.utcnow())
     db.add(membro)
     db.commit()
     db.refresh(membro)
@@ -1349,7 +1412,7 @@ def update_membro(membro_id: str, req: schemas.MembroUpdate, db: Session = Depen
     m = db.query(models.Membro).filter(models.Membro.id == membro_id).first()
     if not m:
         raise HTTPException(status_code=404, detail="Membro não encontrado")
-    for k, v in req.dict(exclude_none=True).items():
+    for k, v in _normalizar_payload_membro(req.dict(exclude_none=True)).items():
         setattr(m, k, v)
     m.updated_at = datetime.utcnow()
     db.commit()
@@ -1361,9 +1424,31 @@ def delete_membro(membro_id: str, db: Session = Depends(get_db), current_user=De
     m = db.query(models.Membro).filter(models.Membro.id == membro_id).first()
     if not m:
         raise HTTPException(status_code=404, detail="Membro não encontrado")
-    db.delete(m)
-    db.commit()
-    return {"ok": True}
+
+    possui_historico = any([
+        db.query(models.Pagamento.id).filter(models.Pagamento.membro_id == membro_id).first(),
+        db.query(models.ParticipacaoFesta.id).filter(models.ParticipacaoFesta.membro_id == membro_id).first(),
+        db.query(models.Aniversariante.id).filter(models.Aniversariante.membro_id == membro_id).first(),
+        db.query(models.DabbRemessaItem.id).filter(models.DabbRemessaItem.membro_id == membro_id).first(),
+    ])
+
+    if possui_historico:
+        _arquivar_membro_removido(m)
+        db.commit()
+        return {"ok": True, "archived": True}
+
+    try:
+        db.delete(m)
+        db.commit()
+        return {"ok": True, "archived": False}
+    except IntegrityError:
+        db.rollback()
+        m = db.query(models.Membro).filter(models.Membro.id == membro_id).first()
+        if not m:
+            return {"ok": True, "archived": False}
+        _arquivar_membro_removido(m)
+        db.commit()
+        return {"ok": True, "archived": True}
 
 
 @app.get("/api/configuracoes/dabb")
@@ -7980,7 +8065,9 @@ def exportar_membros(
     q = db.query(models.Membro)
     if status:
         q = q.filter(models.Membro.status == status)
-    membros = q.order_by(models.Membro.nome_completo).all()
+    else:
+        q = q.filter(or_(models.Membro.status.is_(None), models.Membro.status != "removido"))
+    membros = _ordenar_membros_por_nome(q.all())
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -8012,7 +8099,7 @@ def exportar_membros(
         ws.cell(row=row, column=7, value=m.celular)
         ws.cell(row=row, column=8, value=m.endereco)
         ws.cell(row=row, column=9, value=m.bairro)
-        ws.cell(row=row, column=10, value=m.cidade)
+        ws.cell(row=row, column=10, value=_cidade_para_relatorio(m))
         ws.cell(row=row, column=11, value=m.estado)
         ws.cell(row=row, column=12, value=m.cep)
         _excel_set_date_cell(ws, row, 13, m.data_nascimento)
