@@ -18,6 +18,20 @@ const BACKUP_TYPE_LABELS = {
   outro: 'Outro',
 };
 
+function formatRelativeAge(isoString) {
+  if (!isoString) return '';
+  const diff = Date.now() - new Date(isoString).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'agora';
+  if (mins < 60) return `há ${mins}min`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `há ${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `há ${days}d`;
+  const months = Math.floor(days / 30);
+  return `há ${months}m`;
+}
+
 function isStrongPassword(password) {
   if (password.length < 8) return false;
   if (!/[A-Z]/.test(password)) return false;
@@ -41,6 +55,8 @@ export default function Usuarios() {
   const [users, setUsers] = useState([]);
   const [backups, setBackups] = useState([]);
   const [backupDirectory, setBackupDirectory] = useState('');
+  const [backupTotal, setBackupTotal] = useState(0);
+  const [backupMax, setBackupMax] = useState(10);
   const [sqliteStatus, setSqliteStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(false);
@@ -68,6 +84,8 @@ export default function Usuarios() {
       const { data } = await api.get('/admin/system/backups');
       setBackups(Array.isArray(data?.items) ? data.items : []);
       setBackupDirectory(data?.directory || '');
+      setBackupTotal(data?.total ?? 0);
+      setBackupMax(data?.max_count ?? 10);
     } catch (err) {
       toast.error(getApiErrorMessage(err, 'Erro ao carregar backups'));
     } finally {
@@ -338,11 +356,9 @@ export default function Usuarios() {
             antes de substituir os dados.
           </SummaryCardText>
           <SummaryCardText as="p" muted style={{ margin: '0 0 14px 0' }}>
-            O sistema também mantém backup automático diário ao iniciar e conserva somente os backups mais recentes
-            para evitar acúmulo excessivo de arquivos.
-          </SummaryCardText>
-          <SummaryCardText as="p" muted style={{ margin: '0 0 14px 0' }}>
-            Também há backup automático por horário configurável no backend, útil para rotina de segurança mesmo sem ação manual.
+            O sistema mantém backup automático ao iniciar e por horário configurável — o sistema conserva no
+            máximo <strong>{backupMax} backups</strong> (manuais + automáticos) e substitui o mais antigo
+            quando o limite é atingido (rotação FIFO).
           </SummaryCardText>
           {backupDirectory && (
             <SummaryCardText as="p" muted style={{ margin: '0 0 14px 0' }}>
@@ -374,7 +390,15 @@ export default function Usuarios() {
             )}
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-              <strong>Backups salvos no sistema</strong>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <strong>Backups salvos</strong>
+                <span className={`badge ${backupTotal >= backupMax ? 'badge-warning' : 'badge-info'}`}>
+                  {backupTotal} de {backupMax}
+                </span>
+                {backupTotal >= backupMax && (
+                  <span style={{ fontSize: 12, color: '#92400e' }}>limite atingido — próximo backup substituirá o mais antigo</span>
+                )}
+              </div>
               <button className="btn btn-outline btn-sm" onClick={loadBackups} disabled={backupListLoading || backupLoading || restoreLoading}>
                 {backupListLoading ? 'Atualizando...' : 'Atualizar Lista'}
               </button>
@@ -392,6 +416,7 @@ export default function Usuarios() {
                       <th>Arquivo</th>
                       <th>Tipo</th>
                       <th>Data</th>
+                      <th>Idade</th>
                       <th>Tamanho</th>
                       <th>Ações</th>
                     </tr>
@@ -404,6 +429,11 @@ export default function Usuarios() {
                           <span className="badge badge-info">{BACKUP_TYPE_LABELS[item.type] || item.type || 'Outro'}</span>
                         </td>
                         <td>{formatBackupDate(item.created_at)}</td>
+                        <td>
+                          <span title={item.created_at} style={{ color: '#64748b', fontSize: 12 }}>
+                            {formatRelativeAge(item.created_at)}
+                          </span>
+                        </td>
                         <td>{formatBackupSize(item.size_bytes)}</td>
                         <td>
                           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>

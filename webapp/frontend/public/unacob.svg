@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Shield background -->
+  <path d="M32 4 L56 14 L56 30 Q56 48 32 60 Q8 48 8 30 L8 14 Z"
+        fill="#1e3a8a" stroke="#1e3a8a" stroke-width="1"/>
+
+  <!-- Shield inner highlight -->
+  <path d="M32 8 L52 17 L52 30 Q52 45 32 56 Q12 45 12 30 L12 17 Z"
+        fill="#2563eb"/>
+
+  <!-- Shield top shine -->
+  <path d="M32 8 L52 17 L52 22 L32 14 L12 22 L12 17 Z"
+        fill="#3b82f6" opacity="0.6"/>
+
+  <!-- Letter U - white with subtle shadow -->
+  <path d="M20 24 L20 42 Q20 50 26 50 L26 50 Q32 50 32 42 L32 24"
+        fill="none" stroke="white" stroke-width="6" stroke-linecap="round"/>
+  <path d="M44 24 L44 42 Q44 50 38 50 L38 50 Q32 50 32 42 L32 24"
+        fill="none" stroke="white" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- Bottom connector bar of U -->
+  <path d="M20 42 Q20 50 26 50 L38 50 Q44 50 44 42"
+        fill="none" stroke="white" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- Gold accent line on shield -->
+  <path d="M32 4 L56 14 L56 15 L32 5 L8 15 L8 14 Z"
+        fill="#f59e0b"/>
+
+  <!-- Small gold star accent -->
+  <polygon points="32,56 33.2,58.4 35.8,58.6 34,60.2 34.6,62.7 32,61.5 29.4,62.7 30,60.2 28.2,58.6 30.8,58.4"
+           fill="#f59e0b"/>
+</svg>

@@ -69,7 +69,7 @@ export default function Sidebar({ open, onNavigate }) {
     <aside className={`sidebar ${open ? 'open' : ''}`}>
       <div className="sidebar-brand">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-          <Building2 size={22} color="#c8a84b" />
+          <Building2 size={22} color="#16a34a" />
           <div>
             <h1>UNACOB</h1>
             <span>União dos aposentados dos correios em Bauru - SP</span>
@@ -109,14 +109,14 @@ export default function Sidebar({ open, onNavigate }) {
         })}
       </nav>
 
-      <div style={{ padding: '12px 20px', borderTop: '1px solid rgba(255,255,255,.1)', flexShrink: 0 }}>
-        <div style={{ fontSize: 12, color: 'rgba(255,255,255,.5)', marginBottom: 8 }}>
+      <div style={{ padding: '12px 20px', borderTop: '1px solid rgba(0,0,0,.1)', flexShrink: 0 }}>
+        <div style={{ fontSize: 12, color: 'var(--sidebar-text)', marginBottom: 8 }}>
           {user?.nome_completo}
-          <span style={{ display: 'block', color: 'rgba(255,255,255,.3)', fontSize: 11 }}>
+          <span style={{ display: 'block', color: 'var(--sidebar-text-muted)', fontSize: 11 }}>
             {user?.role}
           </span>
         </div>
-        <button className="btn btn-outline btn-sm" style={{ color: 'rgba(255,255,255,.7)', borderColor: 'rgba(255,255,255,.2)', width: '100%' }} onClick={handleLogout}>
+        <button className="btn btn-outline btn-sm" style={{ color: 'var(--sidebar-text)', borderColor: 'var(--sidebar-border)', width: '100%' }} onClick={handleLogout}>
           <LogOut size={13} /> Sair
         </button>
       </div>

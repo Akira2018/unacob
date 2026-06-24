@@ -42,7 +42,7 @@ except Exception:
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-BACKUP_RETENTION_COUNT = max(1, int(os.getenv("BACKUP_RETENTION_COUNT", "30")))
+BACKUP_RETENTION_COUNT = max(1, int(os.getenv("BACKUP_RETENTION_COUNT", "10")))
 AUTO_BACKUP_ON_STARTUP = os.getenv("AUTO_BACKUP_ON_STARTUP", "true").strip().lower() not in {"0", "false", "no"}
 SCHEDULED_BACKUP_ENABLED = os.getenv("SCHEDULED_BACKUP_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
 SCHEDULED_BACKUP_HOUR = min(23, max(0, int(os.getenv("SCHEDULED_BACKUP_HOUR", "20"))))
@@ -1095,6 +1095,8 @@ def list_backups(current_user=Depends(get_current_user)):
 
     return {
         "items": backups,
+        "total": len(backups),
+        "max_count": BACKUP_RETENTION_COUNT,
         "directory": str(backup_dir),
     }
 
