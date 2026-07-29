@@ -132,6 +132,20 @@ export default function Relatorios() {
       ),
     },
     {
+      key: 'balancete_anual',
+      icon: <BarChart3 size={24} />,
+      title: 'Balancete Anual',
+      desc: 'Saldo anterior, entradas, saídas e saldo final mês a mês no ano, com o movimento de aplicações financeiras à parte',
+      color: '#6b21a8',
+      isFinance: true,
+      action: () => download('balancete_anual', '/relatorios/balancete-anual', `balancete_anual_${anoConsolidado}.xlsx`, { ano: anoConsolidado }),
+      extra: (
+        <select className="search-input" value={anoConsolidado} onChange={(e) => setAnoConsolidado(parseInt(e.target.value, 10))} style={{ width: '100%' }}>
+          {getAnos().map((ano) => <option key={ano} value={ano}>{ano}</option>)}
+        </select>
+      ),
+    },
+    {
       key: 'caixa',
       icon: <Wallet size={24} />,
       title: 'Relatorio de Caixa',
@@ -213,6 +227,20 @@ export default function Relatorios() {
             <option value="entrada">Entradas</option>
           </select>
         </div>
+      ),
+    },
+    {
+      key: 'orcamento_anual',
+      icon: <BarChart3 size={24} />,
+      title: 'Despesas e Receitas do Ano',
+      desc: 'Previsão x realizado mês a mês para cada conta, com totais e saldo da previsão (modelo DESPESAS/RECEITAS)',
+      color: '#9c4221',
+      isFinance: true,
+      action: () => download('orcamento_anual', '/relatorios/orcamento-anual', `orcamento_anual_${anoConsolidado}.xlsx`, { ano: anoConsolidado }),
+      extra: (
+        <select className="search-input" value={anoConsolidado} onChange={(e) => setAnoConsolidado(parseInt(e.target.value, 10))} style={{ width: '100%' }}>
+          {getAnos().map((ano) => <option key={ano} value={ano}>{ano}</option>)}
+        </select>
       ),
     },
     {

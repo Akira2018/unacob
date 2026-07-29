@@ -66,49 +66,139 @@ except ZoneInfoNotFoundError:
 Base.metadata.create_all(bind=engine)
 
 
+# Códigos alinhados ao "Plano de Contas Referencial" (ITG 2002 - entidades sem fins
+# lucrativos): contas de entrada usam a hierarquia de Receitas (4.01.x) e as de saída
+# a hierarquia de Despesas (4.02.x). Quando várias contas práticas da UNACOB caem sob a
+# mesma conta sintética do referencial, um sufixo extra as mantém únicas e rastreáveis
+# até a conta oficial (ex.: 4.02.02.01.08 "Despesas com Viagens, Diárias e Ajuda de
+# Custo" vira 4.02.02.01.08.01, .02, .03... para cada conta específica da UNACOB).
 PLANO_CONTAS_PADRAO = [
-    {"codigo": "1.1", "nome": "Mensalidades", "tipo": "entrada", "ordem": 110},
-    {"codigo": "1.2", "nome": "Fundo social", "tipo": "entrada", "ordem": 120},
-    {"codigo": "1.3", "nome": "Fundo para ações jurídicas", "tipo": "entrada", "ordem": 130},
-    {"codigo": "1.4", "nome": "Resgate da conta de investimentos", "tipo": "entrada", "ordem": 140},
-    {"codigo": "1.5", "nome": "Outras arrecadações", "tipo": "entrada", "ordem": 150},
-    {"codigo": "1.6", "nome": "Estorno de tarifa bancária", "tipo": "entrada", "ordem": 160},
-    {"codigo": "2.1", "nome": "Auxílio funeral emergencial", "tipo": "saida", "ordem": 210},
-    {"codigo": "2.2", "nome": "Diárias/Alimentação", "tipo": "saida", "ordem": 220},
-    {"codigo": "2.3", "nome": "Hospedagens", "tipo": "saida", "ordem": 230},
-    {"codigo": "2.4", "nome": "Passagens aéreas e terrestres", "tipo": "saida", "ordem": 240},
-    {"codigo": "2.5", "nome": "Combustível, pedágio, taxi, uber", "tipo": "saida", "ordem": 250},
-    {"codigo": "2.6", "nome": "Ajuda de custo - Estacionamento/área azul", "tipo": "saida", "ordem": 260},
-    {"codigo": "2.7", "nome": "Contribuição Assoc. de Classe (FAACO)", "tipo": "saida", "ordem": 270},
-    {"codigo": "2.8", "nome": "Xerox/serviços gráficos", "tipo": "saida", "ordem": 280},
-    {"codigo": "2.9", "nome": "Impostos e Taxas (IPTU, ISS, Cartórios)", "tipo": "saida", "ordem": 290},
-    {"codigo": "2.10", "nome": "Comemorações e eventos", "tipo": "saida", "ordem": 300},
-    {"codigo": "2.11", "nome": "Conservação, manutenção e limpeza", "tipo": "saida", "ordem": 310},
-    {"codigo": "2.12", "nome": "Obras e reparos", "tipo": "saida", "ordem": 320},
-    {"codigo": "2.13", "nome": "Despesas postais", "tipo": "saida", "ordem": 330},
-    {"codigo": "2.14", "nome": "Custas processuais/consig.a terceiros - JANOT", "tipo": "saida", "ordem": 340},
-    {"codigo": "2.15", "nome": "Honorários Contábeis", "tipo": "saida", "ordem": 350},
-    {"codigo": "2.16", "nome": "Seguros", "tipo": "saida", "ordem": 360},
-    {"codigo": "2.17", "nome": "Máquinas, Aparelhos e Equipamentos", "tipo": "saida", "ordem": 370},
-    {"codigo": "2.18", "nome": "Materiais para Escritório", "tipo": "saida", "ordem": 380},
-    {"codigo": "2.19", "nome": "Copa e cozinha - insumos", "tipo": "saida", "ordem": 390},
-    {"codigo": "2.20", "nome": "Móveis e Utensílios", "tipo": "saida", "ordem": 400},
-    {"codigo": "2.21", "nome": "Energia elétrica - CPFL", "tipo": "saida", "ordem": 410},
-    {"codigo": "2.22", "nome": "Consumo de água - DAE", "tipo": "saida", "ordem": 420},
-    {"codigo": "2.23", "nome": "Despesas bancárias", "tipo": "saida", "ordem": 430},
-    {"codigo": "2.24", "nome": "Telefone e Internet", "tipo": "saida", "ordem": 440},
-    {"codigo": "2.25", "nome": "Repasse fundo ações judiciais", "tipo": "saida", "ordem": 450},
-    {"codigo": "2.26", "nome": "Repasse fundo ações sociais", "tipo": "saida", "ordem": 460},
-    {"codigo": "2.27", "nome": "Sorteios e brindes", "tipo": "saida", "ordem": 470},
-    {"codigo": "2.28", "nome": "Perda de associados", "tipo": "saida", "ordem": 480},
-    {"codigo": "2.29", "nome": "Provisão para impostos e taxas (ISS)", "tipo": "saida", "ordem": 490},
-    {"codigo": "2.30", "nome": "Aplicação investimentos", "tipo": "saida", "ordem": 500},
-    {"codigo": "2.31", "nome": "Resgate para suprimento do caixa", "tipo": "saida", "ordem": 510},
-    {"codigo": "2.32", "nome": "Estorno de Mensalidade", "tipo": "saida", "ordem": 520},
-    {"codigo": "2.33", "nome": "Outras despesas diversas", "tipo": "saida", "ordem": 530},
+    {"codigo": "4.01.01.09.03", "nome": "Mensalidades", "tipo": "entrada", "ordem": 110},
+    {"codigo": "4.01.01.09.02", "nome": "Fundo social", "tipo": "entrada", "ordem": 120},
+    {"codigo": "4.01.01.09.09", "nome": "Fundo para ações jurídicas", "tipo": "entrada", "ordem": 130},
+    {"codigo": "4.01.05.01.01", "nome": "Resgate da conta de investimentos", "tipo": "entrada", "ordem": 140},
+    {"codigo": "4.01.09.01.09", "nome": "Outras arrecadações", "tipo": "entrada", "ordem": 150},
+    {"codigo": "4.01.05.01.09", "nome": "Estorno de tarifa bancária", "tipo": "entrada", "ordem": 160},
+    {"codigo": "4.02.09.01.09.01", "nome": "Auxílio funeral emergencial", "tipo": "saida", "ordem": 210},
+    {"codigo": "4.02.02.01.08.01", "nome": "Diárias/Alimentação", "tipo": "saida", "ordem": 220},
+    {"codigo": "4.02.02.01.08.02", "nome": "Hospedagens", "tipo": "saida", "ordem": 230},
+    {"codigo": "4.02.02.01.08.03", "nome": "Passagens aéreas e terrestres", "tipo": "saida", "ordem": 240},
+    {"codigo": "4.02.02.01.04", "nome": "Combustível, pedágio, taxi, uber", "tipo": "saida", "ordem": 250},
+    {"codigo": "4.02.02.01.08.04", "nome": "Ajuda de custo - Estacionamento/área azul", "tipo": "saida", "ordem": 260},
+    {"codigo": "4.02.02.01.01.01", "nome": "Contribuição Assoc. de Classe (FAACO)", "tipo": "saida", "ordem": 270},
+    {"codigo": "4.02.02.01.02.01", "nome": "Xerox/serviços gráficos", "tipo": "saida", "ordem": 280},
+    {"codigo": "4.02.03.02.09", "nome": "Impostos e Taxas (IPTU, ISS, Cartórios)", "tipo": "saida", "ordem": 290},
+    {"codigo": "4.02.02.01.19.01", "nome": "Comemorações e eventos", "tipo": "saida", "ordem": 300},
+    {"codigo": "4.02.02.01.07.01", "nome": "Conservação, manutenção e limpeza", "tipo": "saida", "ordem": 310},
+    {"codigo": "4.02.02.01.07.02", "nome": "Obras e reparos", "tipo": "saida", "ordem": 320},
+    {"codigo": "4.02.02.01.19.02", "nome": "Despesas postais", "tipo": "saida", "ordem": 330},
+    {"codigo": "4.02.02.01.19.03", "nome": "Custas processuais/consig.a terceiros - JANOT", "tipo": "saida", "ordem": 340},
+    {"codigo": "4.02.02.01.02.02", "nome": "Honorários Contábeis", "tipo": "saida", "ordem": 350},
+    {"codigo": "4.02.02.01.19.04", "nome": "Seguros", "tipo": "saida", "ordem": 360},
+    {"codigo": "4.02.02.01.19.05", "nome": "Máquinas, Aparelhos e Equipamentos", "tipo": "saida", "ordem": 370},
+    {"codigo": "4.02.02.01.06.01", "nome": "Materiais para Escritório", "tipo": "saida", "ordem": 380},
+    {"codigo": "4.02.02.01.06.02", "nome": "Copa e cozinha - insumos", "tipo": "saida", "ordem": 390},
+    {"codigo": "4.02.02.01.19.06", "nome": "Móveis e Utensílios", "tipo": "saida", "ordem": 400},
+    {"codigo": "4.02.02.01.05.01", "nome": "Energia elétrica - CPFL", "tipo": "saida", "ordem": 410},
+    {"codigo": "4.02.02.01.05.02", "nome": "Consumo de água - DAE", "tipo": "saida", "ordem": 420},
+    {"codigo": "4.02.03.01.09", "nome": "Despesas bancárias", "tipo": "saida", "ordem": 430},
+    {"codigo": "4.02.02.01.05.03", "nome": "Telefone e Internet", "tipo": "saida", "ordem": 440},
+    {"codigo": "4.02.02.01.01.02", "nome": "Repasse fundo ações judiciais", "tipo": "saida", "ordem": 450},
+    {"codigo": "4.02.02.01.01.03", "nome": "Repasse fundo ações sociais", "tipo": "saida", "ordem": 460},
+    {"codigo": "4.02.02.01.09", "nome": "Sorteios e brindes", "tipo": "saida", "ordem": 470},
+    {"codigo": "4.02.09.01.09.02", "nome": "Perda de associados", "tipo": "saida", "ordem": 480},
+    {"codigo": "4.02.03.02.05", "nome": "Provisão para impostos e taxas (ISS)", "tipo": "saida", "ordem": 490},
+    {"codigo": "4.02.09.01.09.03", "nome": "Aplicação investimentos", "tipo": "saida", "ordem": 500},
+    {"codigo": "4.02.09.01.09.04", "nome": "Resgate para suprimento do caixa", "tipo": "saida", "ordem": 510},
+    {"codigo": "4.02.03.01.02", "nome": "Estorno de Mensalidade", "tipo": "saida", "ordem": 520},
+    {"codigo": "4.02.09.01.09.05", "nome": "Outras despesas diversas", "tipo": "saida", "ordem": 530},
 ]
 
 PLANO_CONTAS_PADRAO_POR_CODIGO = {c["codigo"]: c for c in PLANO_CONTAS_PADRAO}
+
+# Códigos de contas referenciados diretamente pelo código (fora do CRUD de plano de
+# contas), usados por relatórios e pela categorização automática de importações OFX.
+# Mantidos como constantes para não ficarem desatualizados numa próxima renumeração.
+CODIGO_CONTA_MENSALIDADES = "4.01.01.09.03"
+CODIGO_CONTA_OUTRAS_ARRECADACOES = "4.01.09.01.09"
+CODIGO_CONTA_ENERGIA_ELETRICA = "4.02.02.01.05.01"
+CODIGO_CONTA_CONSUMO_AGUA = "4.02.02.01.05.02"
+CODIGO_CONTA_DESPESAS_BANCARIAS = "4.02.03.01.09"
+CODIGO_CONTA_TELEFONE_INTERNET = "4.02.02.01.05.03"
+
+# Migração única: mapeia os códigos antigos (numeração interna 1.x/2.x) para os novos
+# códigos do plano referencial acima, preservando o mesmo registro (mesmo id) para não
+# quebrar despesas/receitas já lançadas. Roda uma vez por conta; depois que o código é
+# migrado ele deixa de bater com este dicionário e a linha correspondente é ignorada.
+# Contas duplicadas pré-existentes (desde 2026-03): mesmo nome, código numérico avulso
+# (provavelmente de uma importação antiga) coexistindo com a conta "canônica" 1.x/2.x.
+# Mapeia o código legado -> código novo (referencial) da conta canônica correspondente,
+# para reatribuir despesas/rendas vinculadas e remover a linha duplicada.
+PLANO_CONTAS_DUPLICATAS_LEGADAS_PARA_NOVO = {
+    "10008": "4.01.01.09.03",
+    "10013": "4.01.09.01.09",
+    "558": "4.02.09.01.09.01",
+    "569": "4.02.02.01.08.01",
+    "316": "4.02.02.01.08.03",
+    "565": "4.02.02.01.08.04",
+    "562": "4.02.02.01.01.01",
+    "573": "4.02.03.02.09",
+    "559": "4.02.02.01.19.01",
+    "323": "4.02.02.01.19.02",
+    "365": "4.02.02.01.19.03",
+    "361": "4.02.02.01.02.02",
+    "326": "4.02.02.01.19.04",
+    "119": "4.02.02.01.19.05",
+    "359": "4.02.02.01.06.01",
+    "10003": "4.02.02.01.06.02",
+    "116": "4.02.02.01.19.06",
+    "354": "4.02.02.01.05.01",
+    "355": "4.02.02.01.05.02",
+    "535": "4.02.03.01.09",
+    "322": "4.02.02.01.05.03",
+}
+
+PLANO_CONTAS_MIGRACAO_CODIGO_ANTIGO_PARA_NOVO = {
+    "1.1": "4.01.01.09.03",
+    "1.2": "4.01.01.09.02",
+    "1.3": "4.01.01.09.09",
+    "1.4": "4.01.05.01.01",
+    "1.5": "4.01.09.01.09",
+    "1.6": "4.01.05.01.09",
+    "2.1": "4.02.09.01.09.01",
+    "2.2": "4.02.02.01.08.01",
+    "2.3": "4.02.02.01.08.02",
+    "2.4": "4.02.02.01.08.03",
+    "2.5": "4.02.02.01.04",
+    "2.6": "4.02.02.01.08.04",
+    "2.7": "4.02.02.01.01.01",
+    "2.8": "4.02.02.01.02.01",
+    "2.9": "4.02.03.02.09",
+    "2.10": "4.02.02.01.19.01",
+    "2.11": "4.02.02.01.07.01",
+    "2.12": "4.02.02.01.07.02",
+    "2.13": "4.02.02.01.19.02",
+    "2.14": "4.02.02.01.19.03",
+    "2.15": "4.02.02.01.02.02",
+    "2.16": "4.02.02.01.19.04",
+    "2.17": "4.02.02.01.19.05",
+    "2.18": "4.02.02.01.06.01",
+    "2.19": "4.02.02.01.06.02",
+    "2.20": "4.02.02.01.19.06",
+    "2.21": "4.02.02.01.05.01",
+    "2.22": "4.02.02.01.05.02",
+    "2.23": "4.02.03.01.09",
+    "2.24": "4.02.02.01.05.03",
+    "2.25": "4.02.02.01.01.02",
+    "2.26": "4.02.02.01.01.03",
+    "2.27": "4.02.02.01.09",
+    "2.28": "4.02.09.01.09.02",
+    "2.29": "4.02.03.02.05",
+    "2.30": "4.02.09.01.09.03",
+    "2.31": "4.02.09.01.09.04",
+    "2.32": "4.02.03.01.02",
+    "2.33": "4.02.09.01.09.05",
+}
 
 
 def _normalizar_codigo_conta_seed(codigo: Optional[str]) -> str:
@@ -272,6 +362,76 @@ def _ensure_financeiro_columns_and_seed_contas():
     from database import SessionLocal
     db = SessionLocal()
     try:
+        for codigo_antigo, codigo_novo in PLANO_CONTAS_MIGRACAO_CODIGO_ANTIGO_PARA_NOVO.items():
+            conta_antiga = db.query(models.PlanoConta).filter(models.PlanoConta.codigo == codigo_antigo).first()
+            if not conta_antiga:
+                continue
+            ja_existe_novo = db.query(models.PlanoConta).filter(
+                models.PlanoConta.codigo == codigo_novo,
+                models.PlanoConta.id != conta_antiga.id,
+            ).first()
+            if ja_existe_novo:
+                continue
+
+            conta_antiga.codigo = codigo_novo
+            conta_antiga.updated_at = datetime.utcnow()
+
+            db.query(models.Despesa).filter(models.Despesa.conta_id == conta_antiga.id).update(
+                {models.Despesa.conta_codigo: codigo_novo}, synchronize_session=False,
+            )
+            db.query(models.OutraRenda).filter(models.OutraRenda.conta_id == conta_antiga.id).update(
+                {models.OutraRenda.conta_codigo: codigo_novo}, synchronize_session=False,
+            )
+        db.commit()
+
+        for codigo_legado, codigo_novo in PLANO_CONTAS_DUPLICATAS_LEGADAS_PARA_NOVO.items():
+            legada = db.query(models.PlanoConta).filter(models.PlanoConta.codigo == codigo_legado).first()
+            canonica = db.query(models.PlanoConta).filter(models.PlanoConta.codigo == codigo_novo).first()
+            if not legada or not canonica or legada.id == canonica.id:
+                continue
+
+            db.query(models.Despesa).filter(models.Despesa.conta_id == legada.id).update(
+                {
+                    models.Despesa.conta_id: canonica.id,
+                    models.Despesa.conta_codigo: canonica.codigo,
+                    models.Despesa.conta_nome: canonica.nome,
+                },
+                synchronize_session=False,
+            )
+            db.query(models.OutraRenda).filter(models.OutraRenda.conta_id == legada.id).update(
+                {
+                    models.OutraRenda.conta_id: canonica.id,
+                    models.OutraRenda.conta_codigo: canonica.codigo,
+                    models.OutraRenda.conta_nome: canonica.nome,
+                },
+                synchronize_session=False,
+            )
+
+            for previsao in db.query(models.PrevisaoOrcamentaria).filter(models.PrevisaoOrcamentaria.conta_id == legada.id).all():
+                conflito = db.query(models.PrevisaoOrcamentaria).filter(
+                    models.PrevisaoOrcamentaria.conta_id == canonica.id,
+                    models.PrevisaoOrcamentaria.ano == previsao.ano,
+                    models.PrevisaoOrcamentaria.mes == previsao.mes,
+                ).first()
+                if conflito:
+                    db.delete(previsao)
+                else:
+                    previsao.conta_id = canonica.id
+
+            for previsao_anual in db.query(models.PrevisaoOrcamentariaAnual).filter(models.PrevisaoOrcamentariaAnual.conta_id == legada.id).all():
+                conflito = db.query(models.PrevisaoOrcamentariaAnual).filter(
+                    models.PrevisaoOrcamentariaAnual.conta_id == canonica.id,
+                    models.PrevisaoOrcamentariaAnual.ano == previsao_anual.ano,
+                ).first()
+                if conflito:
+                    db.delete(previsao_anual)
+                else:
+                    previsao_anual.conta_id = canonica.id
+
+            db.flush()
+            db.delete(legada)
+        db.commit()
+
         contas_existentes = db.query(models.PlanoConta).order_by(models.PlanoConta.created_at.asc()).all()
         existentes = {}
 
@@ -1599,6 +1759,24 @@ def _pagamentos_pagos_membros_ativos_no_mes(db: Session, mes_referencia: str):
         pagamento
         for membro_id, pagamento in pagamentos_mes.items()
         if membro_id in membros_ativos_ids and pagamento.status_pagamento == 'pago'
+    ]
+
+
+def _pagamentos_pagos_no_mes(db: Session, mes_referencia: str):
+    """Mensalidades pagas no mês, de QUALQUER associado (inclusive removidos
+    depois). Usada pelos relatórios financeiros (balancete, livro diário,
+    previsão orçamentária, fluxo de caixa, consolidado) para que o "Total
+    Entradas" de um mês passado não mude quando um associado é removido —
+    o dinheiro entrou no caixa naquele mês independente do que aconteceu
+    depois com o cadastro do associado. Mantém coerência com
+    `_saldo_anterior_mes`, que já soma o histórico dessa mesma forma.
+    Para telas operacionais (quem precisa pagar agora), use
+    `_pagamentos_pagos_membros_ativos_no_mes`."""
+    pagamentos_mes = _pagamentos_por_membro_no_mes(db, mes_referencia)
+    return [
+        pagamento
+        for pagamento in pagamentos_mes.values()
+        if pagamento.status_pagamento == 'pago'
     ]
 
 
@@ -3330,12 +3508,12 @@ def _gerar_analise_previsao_orcamentaria(
     previsao_por_conta = {p.conta_id: p for p in previsoes}
 
     realizado_entradas = defaultdict(float)
-    for pagamento in _pagamentos_pagos_membros_ativos_no_mes(db, mes_ref):
+    for pagamento in _pagamentos_pagos_no_mes(db, mes_ref):
         if pagamento.valor_pago:
-            realizado_entradas["1.1"] += float(pagamento.valor_pago)
+            realizado_entradas[CODIGO_CONTA_MENSALIDADES] += float(pagamento.valor_pago)
 
     for renda in db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all():
-        codigo = (renda.conta_codigo or "1.5").strip()
+        codigo = (renda.conta_codigo or CODIGO_CONTA_OUTRAS_ARRECADACOES).strip()
         realizado_entradas[codigo] += float(renda.valor or 0)
 
     realizado_saidas = defaultdict(float)
@@ -4582,7 +4760,7 @@ def fluxo_caixa(
 ):
     today = date.today()
     mes_ref = mes_referencia or today.strftime("%Y-%m")
-    pags_mes = _pagamentos_pagos_membros_ativos_no_mes(db, mes_ref)
+    pags_mes = _pagamentos_pagos_no_mes(db, mes_ref)
     rendas_mes = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all()
     despesas_mes = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all()
 
@@ -4644,7 +4822,7 @@ def fluxo_caixa(
     for i in range(11, -1, -1):
         ref_date = today - timedelta(days=i * 30)
         mes_iter = ref_date.strftime("%Y-%m")
-        pags_i = _pagamentos_pagos_membros_ativos_no_mes(db, mes_iter)
+        pags_i = _pagamentos_pagos_no_mes(db, mes_iter)
         rendas_i = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_iter).all()
         despesas_i = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_iter).all()
         ent = sum(float(p.valor_pago) for p in pags_i if p.valor_pago) + sum(float(r.valor) for r in rendas_i if r.valor)
@@ -6997,10 +7175,10 @@ def _conta_por_codigo(db: Session, codigo: str, tipo: str) -> Optional[models.Pl
 def _inferir_conta_despesa_ofx(db: Session, descricao: Optional[str]) -> Optional[models.PlanoConta]:
     texto = _normalizar_texto_chave(descricao)
     mapa = [
-        (["cpfl", "energia"], "2.21"),
-        (["dae", "agua"], "2.22"),
-        (["vivo", "telefone", "internet", "claro", "tim", "oi"], "2.24"),
-        (["cobranca referente", "tarifa", "estorno solucao imediata", "solucao imediata", "iof", "juros", "taxa bancaria"], "2.23"),
+        (["cpfl", "energia"], CODIGO_CONTA_ENERGIA_ELETRICA),
+        (["dae", "agua"], CODIGO_CONTA_CONSUMO_AGUA),
+        (["vivo", "telefone", "internet", "claro", "tim", "oi"], CODIGO_CONTA_TELEFONE_INTERNET),
+        (["cobranca referente", "tarifa", "estorno solucao imediata", "solucao imediata", "iof", "juros", "taxa bancaria"], CODIGO_CONTA_DESPESAS_BANCARIAS),
     ]
     for termos, codigo in mapa:
         if any(termo in texto for termo in termos):
@@ -7579,7 +7757,7 @@ def balancete(
     today = date.today()
     mes_ref = mes_referencia or today.strftime("%Y-%m")
 
-    pags = _pagamentos_pagos_membros_ativos_no_mes(db, mes_ref)
+    pags = _pagamentos_pagos_no_mes(db, mes_ref)
     desp = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all()
     rendas = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all()
 
@@ -7606,13 +7784,13 @@ def balancete(
 
     entradas_por_conta = defaultdict(float)
     entradas_meta = {}
-    entradas_por_conta["1.1"] += total_mensalidades
-    entradas_meta["1.1"] = {"codigo": "1.1", "nome": "Mensalidades"}
+    entradas_por_conta[CODIGO_CONTA_MENSALIDADES] += total_mensalidades
+    entradas_meta[CODIGO_CONTA_MENSALIDADES] = {"codigo": CODIGO_CONTA_MENSALIDADES, "nome": "Mensalidades"}
 
     for r in rendas:
         if not r.valor:
             continue
-        codigo = (r.conta_codigo or "1.5").strip()
+        codigo = (r.conta_codigo or CODIGO_CONTA_OUTRAS_ARRECADACOES).strip()
         nome = (r.conta_nome or r.categoria or "Outras arrecadações").strip()
         entradas_por_conta[codigo] += float(r.valor)
         entradas_meta[codigo] = {"codigo": codigo, "nome": nome}
@@ -8042,6 +8220,38 @@ def baixar_remessa_dabb_por_id(
     )
 
 
+@app.put("/api/relatorios/dabb-remessa-bimestral/remessas/{remessa_id}/nome")
+def renomear_remessa_dabb_por_id(
+    remessa_id: str,
+    req: schemas.RenomearArquivoRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    remessa = db.query(models.DabbRemessa).filter(models.DabbRemessa.id == remessa_id).first()
+    if not remessa:
+        raise HTTPException(status_code=404, detail="Remessa DABB não encontrada.")
+
+    nome_base = (req.nome_arquivo or "").strip()
+    nome_base = re.sub(r"\.rem$", "", nome_base, flags=re.IGNORECASE).strip()
+    nome_base = re.sub(r'[\\/:*?"<>|]', "", nome_base).strip()
+    if not nome_base:
+        raise HTTPException(status_code=400, detail="Informe um nome de arquivo válido.")
+
+    novo_nome = f"{nome_base}.rem"
+
+    duplicado = db.query(models.DabbRemessa).filter(
+        models.DabbRemessa.arquivo_nome == novo_nome,
+        models.DabbRemessa.id != remessa_id,
+    ).first()
+    if duplicado:
+        raise HTTPException(status_code=400, detail="Já existe um arquivo com este nome.")
+
+    remessa.arquivo_nome = novo_nome
+    remessa.updated_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "arquivo_nome": novo_nome}
+
+
 @app.delete("/api/relatorios/dabb-remessa-bimestral/remessas/{remessa_id}")
 def excluir_remessa_dabb_por_id(
     remessa_id: str,
@@ -8381,7 +8591,7 @@ def exportar_balancete(
 ):
     today = date.today()
     mes_ref = mes_referencia or today.strftime("%Y-%m")
-    pags = _pagamentos_pagos_membros_ativos_no_mes(db, mes_ref)
+    pags = _pagamentos_pagos_no_mes(db, mes_ref)
     desp = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all()
     rendas = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all()
     saldo_anterior = _saldo_anterior_mes(db, mes_ref)
@@ -8399,13 +8609,13 @@ def exportar_balancete(
 
     total_mensalidades = sum(float(p.valor_pago) for p in pags if p.valor_pago)
     entradas_por_conta = defaultdict(float)
-    entradas_meta = {"1.1": "Mensalidades"}
-    entradas_por_conta["1.1"] = total_mensalidades
+    entradas_meta = {CODIGO_CONTA_MENSALIDADES: "Mensalidades"}
+    entradas_por_conta[CODIGO_CONTA_MENSALIDADES] = total_mensalidades
 
     for r in rendas:
         if not r.valor:
             continue
-        codigo = (r.conta_codigo or "1.5").strip()
+        codigo = (r.conta_codigo or CODIGO_CONTA_OUTRAS_ARRECADACOES).strip()
         nome = (r.conta_nome or r.categoria or "Outras arrecadações").strip()
         entradas_meta[codigo] = nome
         entradas_por_conta[codigo] += float(r.valor)
@@ -8545,6 +8755,187 @@ def exportar_balancete(
     )
 
 
+@app.get("/api/relatorios/balancete-anual")
+def exportar_balancete_anual(
+    ano: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """Balancete do ano inteiro: uma linha por mês com saldo anterior, entradas,
+    saídas e saldo final (mesmo cálculo do balancete mensal, encadeado), seguido
+    de uma seção separada com o movimento de Aplicações Financeiras do ano
+    (aportes, resgates e rendimento líquido) — não somado ao saldo de caixa
+    acima, para não confundir caixa operacional com patrimônio aplicado."""
+    ano_ref = ano or date.today().year
+    meses_nomes = [
+        "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+        "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+    ]
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"Balancete {ano_ref}"
+
+    title_fill = PatternFill("solid", fgColor="1E3A5F")
+    header_fill = PatternFill("solid", fgColor="D9E1F2")
+    total_fill = PatternFill("solid", fgColor="FCE4D6")
+    title_font = Font(bold=True, size=14, color="FFFFFF")
+    bold_font = Font(bold=True)
+
+    ws.merge_cells("A1:H1")
+    ws["A1"] = f"BALANCETE ANUAL - {ano_ref}"
+    ws["A1"].fill = title_fill
+    ws["A1"].font = title_font
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    header_row = 3
+    headers = ["Mês", "Saldo Anterior", "Mensalidades", "Outras Receitas", "Total Entradas", "Despesas", "Saldo do Mês", "Saldo Final"]
+    for col, texto in enumerate(headers, start=1):
+        cell = ws.cell(row=header_row, column=col, value=texto)
+        cell.fill = header_fill
+        cell.font = bold_font
+
+    saldo_anual_inicial = None
+    total_mensalidades_ano = 0.0
+    total_outras_ano = 0.0
+    total_entradas_ano = 0.0
+    total_saidas_ano = 0.0
+    row = header_row + 1
+
+    for mes_num in range(1, 13):
+        mes_ref = f"{ano_ref}-{mes_num:02d}"
+        pags = _pagamentos_pagos_no_mes(db, mes_ref)
+        desp = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all()
+        rendas = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all()
+
+        total_mensalidades = round(sum(float(p.valor_pago or 0) for p in pags), 2)
+        total_outras = round(sum(float(r.valor or 0) for r in rendas), 2)
+        total_entradas = round(total_mensalidades + total_outras, 2)
+        total_saidas = round(sum(float(d.valor or 0) for d in desp), 2)
+        saldo_anterior = _saldo_anterior_mes(db, mes_ref)
+        saldo_mes = round(total_entradas - total_saidas, 2)
+        saldo_final = round(saldo_anterior + saldo_mes, 2)
+
+        if saldo_anual_inicial is None:
+            saldo_anual_inicial = saldo_anterior
+
+        ws.cell(row=row, column=1, value=meses_nomes[mes_num - 1])
+        ws.cell(row=row, column=2, value=saldo_anterior)
+        ws.cell(row=row, column=3, value=total_mensalidades)
+        ws.cell(row=row, column=4, value=total_outras)
+        ws.cell(row=row, column=5, value=total_entradas)
+        ws.cell(row=row, column=6, value=total_saidas)
+        ws.cell(row=row, column=7, value=saldo_mes)
+        ws.cell(row=row, column=8, value=saldo_final)
+
+        total_mensalidades_ano += total_mensalidades
+        total_outras_ano += total_outras
+        total_entradas_ano += total_entradas
+        total_saidas_ano += total_saidas
+        row += 1
+
+    total_row = row
+    saldo_final_ano = round((saldo_anual_inicial or 0) + total_entradas_ano - total_saidas_ano, 2)
+    ws.cell(row=total_row, column=1, value="TOTAL DO ANO")
+    ws.cell(row=total_row, column=2, value=round(saldo_anual_inicial or 0, 2))
+    ws.cell(row=total_row, column=3, value=round(total_mensalidades_ano, 2))
+    ws.cell(row=total_row, column=4, value=round(total_outras_ano, 2))
+    ws.cell(row=total_row, column=5, value=round(total_entradas_ano, 2))
+    ws.cell(row=total_row, column=6, value=round(total_saidas_ano, 2))
+    ws.cell(row=total_row, column=7, value=round(total_entradas_ano - total_saidas_ano, 2))
+    ws.cell(row=total_row, column=8, value=saldo_final_ano)
+    for col in range(1, 9):
+        ws.cell(row=total_row, column=col).fill = total_fill
+        ws.cell(row=total_row, column=col).font = bold_font
+
+    _excel_apply_zebra(ws, header_row + 1, total_row - 1, 1, 8)
+    _excel_apply_borders(ws, header_row, total_row, 1, 8)
+
+    for col_idx in range(2, 9):
+        for r_idx in range(header_row + 1, total_row + 1):
+            ws.cell(row=r_idx, column=col_idx).number_format = 'R$ #,##0.00'
+
+    # Seção separada: movimento de Aplicações Financeiras no ano (não somado ao
+    # saldo de caixa acima — caixa operacional e patrimônio aplicado são coisas
+    # distintas para uma associação sem fins lucrativos).
+    aplic_title_row = total_row + 2
+    ws.merge_cells(f"A{aplic_title_row}:F{aplic_title_row}")
+    ws.cell(row=aplic_title_row, column=1, value=f"APLICAÇÕES FINANCEIRAS - MOVIMENTO DO ANO {ano_ref}")
+    ws.cell(row=aplic_title_row, column=1).fill = title_fill
+    ws.cell(row=aplic_title_row, column=1).font = title_font
+    ws.cell(row=aplic_title_row, column=1).alignment = Alignment(horizontal="center", vertical="center")
+
+    aplic_header_row = aplic_title_row + 2
+    aplic_headers = ["Mês", "Aportes", "Resgates", "Rendimento Líquido", "Impostos", "Saldo Total Aplicado"]
+    for col, texto in enumerate(aplic_headers, start=1):
+        cell = ws.cell(row=aplic_header_row, column=col, value=texto)
+        cell.fill = header_fill
+        cell.font = bold_font
+
+    row = aplic_header_row + 1
+    total_aportes_ano = 0.0
+    total_resgates_ano = 0.0
+    total_rendimento_ano = 0.0
+    total_impostos_ano = 0.0
+    for mes_num in range(1, 13):
+        mes_ref = f"{ano_ref}-{mes_num:02d}"
+        aplics = db.query(models.AplicacaoFinanceira).filter(models.AplicacaoFinanceira.mes_referencia == mes_ref).all()
+        if not aplics:
+            continue
+
+        aportes = round(sum(float(a.aplicacoes or 0) for a in aplics), 2)
+        resgates = round(sum(float(a.resgate or 0) for a in aplics), 2)
+        rendimento = round(sum(float(a.rendimento_liquido or 0) for a in aplics), 2)
+        impostos = round(sum(float(a.impostos or (a.imposto_renda or 0) + (a.iof or 0)) for a in aplics), 2)
+        saldo_total = round(sum(float(a.saldo_atual or 0) for a in aplics), 2)
+
+        ws.cell(row=row, column=1, value=meses_nomes[mes_num - 1])
+        ws.cell(row=row, column=2, value=aportes)
+        ws.cell(row=row, column=3, value=resgates)
+        ws.cell(row=row, column=4, value=rendimento)
+        ws.cell(row=row, column=5, value=impostos)
+        ws.cell(row=row, column=6, value=saldo_total)
+
+        total_aportes_ano += aportes
+        total_resgates_ano += resgates
+        total_rendimento_ano += rendimento
+        total_impostos_ano += impostos
+        row += 1
+
+    if row == aplic_header_row + 1:
+        ws.cell(row=row, column=1, value="Nenhuma aplicação financeira registrada no ano.")
+        row += 1
+    else:
+        aplic_total_row = row
+        ws.cell(row=aplic_total_row, column=1, value="TOTAL DO ANO")
+        ws.cell(row=aplic_total_row, column=2, value=round(total_aportes_ano, 2))
+        ws.cell(row=aplic_total_row, column=3, value=round(total_resgates_ano, 2))
+        ws.cell(row=aplic_total_row, column=4, value=round(total_rendimento_ano, 2))
+        ws.cell(row=aplic_total_row, column=5, value=round(total_impostos_ano, 2))
+        for col in range(1, 6):
+            ws.cell(row=aplic_total_row, column=col).fill = total_fill
+            ws.cell(row=aplic_total_row, column=col).font = bold_font
+        row += 1
+
+    _excel_apply_borders(ws, aplic_header_row, row - 1, 1, 6)
+    for col_idx in range(2, 7):
+        for r_idx in range(aplic_header_row + 1, row):
+            ws.cell(row=r_idx, column=col_idx).number_format = 'R$ #,##0.00'
+
+    for col_letter, width in {"A": 16, "B": 16, "C": 16, "D": 16, "E": 16, "F": 16, "G": 16, "H": 18}.items():
+        ws.column_dimensions[col_letter].width = width
+
+    ws.freeze_panes = f"A{header_row + 1}"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=balancete_anual_{ano_ref}.xlsx"}
+    )
+
+
 @app.get("/api/relatorios/livro-diario")
 def exportar_livro_diario(
     mes_referencia: Optional[str] = None,
@@ -8554,7 +8945,7 @@ def exportar_livro_diario(
     today = date.today()
     mes_ref = mes_referencia or today.strftime("%Y-%m")
 
-    pags = _pagamentos_pagos_membros_ativos_no_mes(db, mes_ref)
+    pags = _pagamentos_pagos_no_mes(db, mes_ref)
     rendas = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all()
     despesas = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all()
     saldo_anterior = _saldo_anterior_mes(db, mes_ref)
@@ -8576,7 +8967,7 @@ def exportar_livro_diario(
         nome_membro = nomes_membros.get(p.membro_id, p.membro_id or "Membro")
         linhas.append({
             "data": p.data_pagamento,
-            "codigo": "1.1",
+            "codigo": CODIGO_CONTA_MENSALIDADES,
             "conta": "Mensalidades",
             "historico": f"Mensalidade de {nome_membro}",
             "tipo": "entrada",
@@ -8589,7 +8980,7 @@ def exportar_livro_diario(
             continue
         linhas.append({
             "data": r.data_recebimento,
-            "codigo": (r.conta_codigo or "1.5"),
+            "codigo": (r.conta_codigo or CODIGO_CONTA_OUTRAS_ARRECADACOES),
             "conta": (r.conta_nome or r.categoria or "Outras arrecadações"),
             "historico": r.descricao or "Outras receitas",
             "tipo": "entrada",
@@ -9181,19 +9572,19 @@ def exportar_consolidado_financeiro(
     for idx, mes_ref in enumerate(meses):
         row = first_data_row + idx
 
-        mensalidades = _pagamentos_pagos_membros_ativos_no_mes(db, mes_ref)
+        mensalidades = _pagamentos_pagos_no_mes(db, mes_ref)
         outras_rendas = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all()
         despesas = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all()
         aplicacoes = db.query(models.AplicacaoFinanceira).filter(models.AplicacaoFinanceira.mes_referencia == mes_ref).all()
 
         entradas_conta_mes = defaultdict(float)
-        entradas_meta_mes = {"1.1": "Mensalidades"}
-        entradas_conta_mes["1.1"] += round(sum(float(p.valor_pago or 0) for p in mensalidades), 2)
+        entradas_meta_mes = {CODIGO_CONTA_MENSALIDADES: "Mensalidades"}
+        entradas_conta_mes[CODIGO_CONTA_MENSALIDADES] += round(sum(float(p.valor_pago or 0) for p in mensalidades), 2)
 
         for r in outras_rendas:
             if not r.valor:
                 continue
-            codigo = (r.conta_codigo or "1.5").strip()
+            codigo = (r.conta_codigo or CODIGO_CONTA_OUTRAS_ARRECADACOES).strip()
             nome = (r.conta_nome or r.categoria or "Outras arrecadações").strip()
             entradas_conta_mes[codigo] += float(r.valor)
             entradas_meta_mes[codigo] = nome
@@ -9416,6 +9807,170 @@ def exportar_consolidado_financeiro(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=consolidado_financeiro_{ano_ref}.xlsx"}
     )
+
+@app.get("/api/relatorios/orcamento-anual")
+def exportar_orcamento_anual(
+    ano: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """Relatório anual mês a mês (Previsão x Realizado x Saldo) de despesas e
+    receitas, uma linha por conta do plano de contas — no modelo da planilha
+    "DESPESAS/RECEITAS" usada pela diretoria para acompanhar o orçamento."""
+    ano_ref = ano or date.today().year
+    meses_nomes = ["JAN", "FEV", "MAR", "ABR", "MAI", "JUN", "JUL", "AGO", "SET", "OUT", "NOV", "DEZ"]
+
+    contas_entrada = db.query(models.PlanoConta).filter(models.PlanoConta.tipo == "entrada").order_by(
+        models.PlanoConta.ordem.asc(), models.PlanoConta.codigo.asc()
+    ).all()
+    contas_saida = db.query(models.PlanoConta).filter(models.PlanoConta.tipo == "saida").order_by(
+        models.PlanoConta.ordem.asc(), models.PlanoConta.codigo.asc()
+    ).all()
+
+    previsao_anual_por_conta = {
+        p.conta_id: float(p.valor_previsto_anual or 0)
+        for p in db.query(models.PrevisaoOrcamentariaAnual).filter(models.PrevisaoOrcamentariaAnual.ano == ano_ref).all()
+    }
+    previsao_mensal_por_conta = defaultdict(float)
+    for p in db.query(models.PrevisaoOrcamentaria).filter(models.PrevisaoOrcamentaria.ano == ano_ref).all():
+        previsao_mensal_por_conta[p.conta_id] += float(p.valor_previsto or 0)
+
+    def previsao_anual_da_conta(conta_id: str) -> float:
+        if conta_id in previsao_anual_por_conta:
+            return previsao_anual_por_conta[conta_id]
+        return previsao_mensal_por_conta.get(conta_id, 0.0)
+
+    realizado_entrada = defaultdict(lambda: defaultdict(float))
+    realizado_saida = defaultdict(lambda: defaultdict(float))
+
+    for mes_num in range(1, 13):
+        mes_ref = f"{ano_ref}-{mes_num:02d}"
+
+        for pagamento in _pagamentos_pagos_no_mes(db, mes_ref):
+            if pagamento.valor_pago:
+                realizado_entrada[CODIGO_CONTA_MENSALIDADES][mes_num] += float(pagamento.valor_pago)
+
+        for r in db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all():
+            if not r.valor:
+                continue
+            codigo = (r.conta_codigo or CODIGO_CONTA_OUTRAS_ARRECADACOES).strip()
+            realizado_entrada[codigo][mes_num] += float(r.valor)
+
+        for d in db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all():
+            if not d.valor:
+                continue
+            codigo = (d.conta_codigo or "").strip()
+            if not codigo:
+                continue
+            realizado_saida[codigo][mes_num] += float(d.valor)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"Orçamento {ano_ref}"
+
+    num_cols = 1 + 1 + 12 + 1 + 1  # classificação + previsão + 12 meses + total + saldo
+    last_col_letter = get_column_letter(num_cols)
+
+    def escrever_titulo(linha: int, texto: str):
+        ws.merge_cells(f"A{linha}:{last_col_letter}{linha}")
+        cell = ws.cell(row=linha, column=1, value=texto)
+        cell.font = Font(bold=True, color="FFFFFF", size=14)
+        cell.fill = PatternFill("solid", fgColor="1E3A5F")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    def escrever_cabecalho(linha: int):
+        headers = ["Classificação", "Previsão"] + meses_nomes + ["Total", "Saldo da Previsão"]
+        for col, texto in enumerate(headers, start=1):
+            _excel_header_style(ws.cell(row=linha, column=col, value=texto))
+
+    def escrever_secao(linha_inicial: int, contas: list, realizado_por_conta: dict) -> tuple[int, dict]:
+        """Escreve uma seção (despesas ou receitas) e retorna a próxima linha livre
+        e os totais mensais/anuais da seção (para a linha R/D no final)."""
+        totais_mes = defaultdict(float)
+        total_previsao = 0.0
+        total_geral = 0.0
+        linha = linha_inicial
+
+        for conta in contas:
+            realizado_mes = realizado_por_conta.get(conta.codigo, {})
+            previsao = previsao_anual_da_conta(conta.id)
+            total_conta = sum(realizado_mes.get(m, 0.0) for m in range(1, 13))
+            if previsao == 0 and total_conta == 0:
+                continue
+
+            ws.cell(row=linha, column=1, value=f"{conta.codigo} - {conta.nome}")
+            ws.cell(row=linha, column=2, value=round(previsao, 2))
+            for mes_num in range(1, 13):
+                valor_mes = round(realizado_mes.get(mes_num, 0.0), 2)
+                ws.cell(row=linha, column=3 + mes_num - 1, value=valor_mes)
+                totais_mes[mes_num] += valor_mes
+            ws.cell(row=linha, column=num_cols - 1, value=round(total_conta, 2))
+            ws.cell(row=linha, column=num_cols, value=round(previsao - total_conta, 2))
+
+            total_previsao += previsao
+            total_geral += total_conta
+            linha += 1
+
+        ws.cell(row=linha, column=1, value="TOTAIS")
+        ws.cell(row=linha, column=2, value=round(total_previsao, 2))
+        for mes_num in range(1, 13):
+            ws.cell(row=linha, column=3 + mes_num - 1, value=round(totais_mes[mes_num], 2))
+        ws.cell(row=linha, column=num_cols - 1, value=round(total_geral, 2))
+        ws.cell(row=linha, column=num_cols, value=round(total_previsao - total_geral, 2))
+        for col in range(1, num_cols + 1):
+            ws.cell(row=linha, column=col).font = Font(bold=True)
+            ws.cell(row=linha, column=col).fill = PatternFill("solid", fgColor="FCE4D6")
+
+        return linha + 1, {"mes": totais_mes, "previsao": total_previsao, "total": total_geral}
+
+    linha = 1
+    escrever_titulo(linha, f"DESPESAS - {ano_ref}")
+    linha += 1
+    escrever_cabecalho(linha)
+    linha += 1
+    linha, totais_despesas = escrever_secao(linha, contas_saida, realizado_saida)
+
+    linha += 1
+    escrever_titulo(linha, f"RECEITAS - {ano_ref}")
+    linha += 1
+    escrever_cabecalho(linha)
+    linha += 1
+    linha, totais_receitas = escrever_secao(linha, contas_entrada, realizado_entrada)
+
+    linha += 1
+    ws.cell(row=linha, column=1, value="R/D (Receita ÷ Despesa)")
+    ws.cell(row=linha, column=1).font = Font(bold=True, italic=True)
+    for mes_num in range(1, 13):
+        despesa_mes = totais_despesas["mes"].get(mes_num, 0.0)
+        receita_mes = totais_receitas["mes"].get(mes_num, 0.0)
+        razao = round(receita_mes / despesa_mes, 4) if despesa_mes else None
+        cell = ws.cell(row=linha, column=3 + mes_num - 1, value=razao)
+        cell.number_format = '0.00'
+    if totais_despesas["total"]:
+        cell_total = ws.cell(row=linha, column=num_cols - 1, value=round(totais_receitas["total"] / totais_despesas["total"], 4))
+        cell_total.number_format = '0.00'
+
+    for row in ws.iter_rows(min_row=3, max_row=ws.max_row, min_col=2, max_col=num_cols - 1):
+        for cell in row:
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = 'R$ #,##0.00'
+
+    ws.column_dimensions["A"].width = 46
+    for col in range(2, num_cols + 1):
+        ws.column_dimensions[get_column_letter(col)].width = 14
+    ws.column_dimensions[get_column_letter(num_cols)].width = 18
+
+    ws.freeze_panes = "B4"
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=orcamento_anual_{ano_ref}.xlsx"}
+    )
+
 
 @app.get("/api/relatorios/festas/{festa_id}")
 def exportar_festa(

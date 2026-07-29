@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import api from '../api';
 import toast from 'react-hot-toast';
-import { Download, Save, Search, Trash2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Download, Save, Search, Trash2 } from 'lucide-react';
 import { getApiErrorMessage } from '../utils/apiError';
 
 const MESES = [
@@ -65,6 +65,10 @@ export default function PrevisaoOrcamentaria() {
   const [analise, setAnalise] = useState({ resumo: null, itens: [] });
   const [loadingAnalise, setLoadingAnalise] = useState(true);
   const [exporting, setExporting] = useState(false);
+  const tableWrapRef = useRef(null);
+  const rolarTabela = (direcao) => {
+    tableWrapRef.current?.scrollBy({ left: direcao * 420, behavior: 'smooth' });
+  };
 
   const anos = useMemo(() => {
     const y = new Date().getFullYear();
@@ -490,7 +494,16 @@ export default function PrevisaoOrcamentaria() {
 
       <div className="card">
         {loading || loadingAnalise ? <div className="spinner" /> : (
-          <div className="table-wrap">
+          <>
+            <div className="table-scroll-buttons">
+              <button type="button" className="btn btn-primary table-scroll-btn" onClick={() => rolarTabela(-1)}>
+                <ArrowLeft size={20} /> Ver mais à esquerda
+              </button>
+              <button type="button" className="btn btn-primary table-scroll-btn" onClick={() => rolarTabela(1)}>
+                Ver mais à direita <ArrowRight size={20} />
+              </button>
+            </div>
+          <div className="table-wrap" ref={tableWrapRef}>
             <table style={{ width: 'auto', minWidth: 1500 }}>
               <colgroup>
                 <col style={{ width: 360 }} />
@@ -565,7 +578,7 @@ export default function PrevisaoOrcamentaria() {
                           {STATUS_LABELS[status] || STATUS_LABELS.sem_movimento}
                         </span>
                       </td>
-                      <td style={{ fontSize: 13, color: '#4a5568', lineHeight: 1.5 }}>
+                      <td style={{ fontSize: 13, color: '#4a5568', lineHeight: 1.5, maxWidth: 280, whiteSpace: 'normal' }}>
                         {itemAnalise?.acao_recomendada || 'Sem ação sugerida.'}
                       </td>
                       <td className="table-actions-cell">
@@ -608,6 +621,7 @@ export default function PrevisaoOrcamentaria() {
               )}
             </table>
           </div>
+          </>
         )}
       </div>
     </div>

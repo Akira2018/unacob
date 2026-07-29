@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { format, subMonths } from 'date-fns';
 import toast from 'react-hot-toast';
-import { BookText, Copy, CreditCard, Download, FileSpreadsheet, RefreshCcw, Trash2 } from 'lucide-react';
+import { BookText, Copy, CreditCard, Download, FileSpreadsheet, Pencil, RefreshCcw, Trash2 } from 'lucide-react';
 import api from '../api';
 import { getApiErrorMessage } from '../utils/apiError';
 import StatusCounter from '../components/StatusCounter';
@@ -381,6 +381,30 @@ export default function RemessaDabb() {
     }
   };
 
+  const renomearRemessaDabb = async (remessa) => {
+    const nomeAtual = String(remessa.arquivo_nome || '').replace(/\.rem$/i, '');
+    const novoNome = window.prompt('Novo nome do arquivo (a extensao ".rem" e adicionada automaticamente):', nomeAtual);
+    if (novoNome == null) return;
+
+    const nomeLimpo = novoNome.trim();
+    if (!nomeLimpo) {
+      toast.error('Informe um nome valido.');
+      return;
+    }
+    if (nomeLimpo.replace(/\.rem$/i, '') === nomeAtual) return;
+
+    try {
+      setLoading((prev) => ({ ...prev, [`remessa_renomear_${remessa.id}`]: true }));
+      const r = await api.put(`/relatorios/dabb-remessa-bimestral/remessas/${remessa.id}/nome`, { nome_arquivo: nomeLimpo });
+      toast.success(`Arquivo renomeado para ${r.data.arquivo_nome}.`);
+      await carregarArquivosRemessa();
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao renomear arquivo'));
+    } finally {
+      setLoading((prev) => ({ ...prev, [`remessa_renomear_${remessa.id}`]: false }));
+    }
+  };
+
   const excluirRemessaDabb = async (remessa) => {
     const confirmar = window.confirm(`Deseja excluir a remessa ${remessa.arquivo_nome} da lista de arquivos gerados?`);
     if (!confirmar) return;
@@ -572,6 +596,9 @@ export default function RemessaDabb() {
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button type="button" className="btn btn-outline btn-sm" onClick={() => copiarTexto(remessa.arquivo_nome, 'Nome do arquivo')}>
                     <Copy size={13} /> Copiar nome
+                  </button>
+                  <button type="button" className="btn btn-outline btn-sm" onClick={() => renomearRemessaDabb(remessa)} disabled={loading[`remessa_renomear_${remessa.id}`]}>
+                    <Pencil size={13} /> {loading[`remessa_renomear_${remessa.id}`] ? 'Renomeando...' : 'Renomear'}
                   </button>
                   <button type="button" className="btn btn-outline btn-sm" onClick={() => carregarRemessaDabbPorId(remessa.id)} disabled={loading[`remessa_preview_${remessa.id}`]}>
                     {loading[`remessa_preview_${remessa.id}`] ? 'Abrindo...' : 'Ver remessa'}

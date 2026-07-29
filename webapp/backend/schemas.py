@@ -709,3 +709,7 @@ class TransacaoResponse(BaseModel):
     created_at: Optional[datetime]
     class Config:
         from_attributes = True
+
+
+class RenomearArquivoRequest(BaseModel):
+    nome_arquivo: str

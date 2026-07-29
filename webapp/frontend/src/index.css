@@ -78,7 +78,7 @@ body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--tex
 .nav-item:hover { background: var(--sidebar-hover); color: var(--sidebar-text); }
 .nav-item.active { background: var(--sidebar-active-bg); color: var(--sidebar-text); border-left: 3px solid var(--sidebar-border); }
 .nav-item svg { flex-shrink: 0; }
-.main-content { margin-left: 260px; flex: 1; padding: 24px; min-height: 100vh; }
+.main-content { margin-left: 260px; flex: 1; min-width: 0; padding: 24px; min-height: 100vh; }
 .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
 .topbar h2 { font-size: 22px; font-weight: 700; color: var(--primary); }
 .topbar-right { display: flex; gap: 12px; align-items: center; }
@@ -214,8 +214,46 @@ body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--tex
 .menu-toggle-btn { display: none; }
 
 /* Table */
-.table-wrap { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.table-wrap {
+  overflow-x: auto;
+  scrollbar-width: auto;
+  scrollbar-color: #d2691e #fde68a;
+  padding-bottom: 8px;
+}
+.table-wrap::-webkit-scrollbar { height: 22px; }
+.table-wrap::-webkit-scrollbar-track { background: #fde68a; border-radius: 11px; border: 1px solid #d2691e; }
+.table-wrap::-webkit-scrollbar-thumb {
+  background: #d2691e;
+  border-radius: 11px;
+  border: 4px solid #fde68a;
+}
+.table-wrap::-webkit-scrollbar-thumb:hover { background: #b45309; }
+table { width: 100%; min-width: max-content; border-collapse: collapse; font-size: 13.5px; }
+
+/* Botões grandes de rolagem horizontal para tabelas largas — pensados para
+   usuários com baixa visão, que têm dificuldade em localizar/arrastar a
+   barra de rolagem padrão do navegador. Ficam fixos (sticky) no topo da tela
+   conforme a página rola, para nunca precisar "caçar" o controle em tabelas
+   compridas — o botão sempre está ao alcance, não importa a linha visível. */
+.table-scroll-buttons {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+  position: sticky;
+  top: 8px;
+  z-index: 5;
+  background: var(--card);
+  padding: 8px;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.table-scroll-btn {
+  font-size: 15px;
+  font-weight: 700;
+  padding: 12px 20px;
+}
 thead th { background: var(--primary); color: white; padding: 10px 12px; text-align: left; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
 tbody tr { border-bottom: 1px solid var(--border); }
 tbody tr:hover { background: var(--bg); }
