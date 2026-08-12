@@ -323,6 +323,7 @@ export default function Despesas() {
                     <option value="boleto">Boleto</option>
                     <option value="cartao">Cartão</option>
                     <option value="cheque">Cheque</option>
+                    <option value="debito_automatico">Débito automático</option>
                   </select>
                 </div>
                 <div className="form-group">
