@@ -2501,6 +2501,25 @@ def _pontuacao_match_membro_extrato(
     }
 
 
+def _buscar_membro_por_cpf_no_extrato(db: Session, descricao_extrato: Optional[str]) -> Optional[models.Membro]:
+    descricao_digitos = _somente_digitos(descricao_extrato)
+    if len(descricao_digitos) < 6:
+        return None
+
+    membros = db.query(models.Membro).filter(models.Membro.status == "ativo").all()
+    encontrados = {}
+    for membro in membros:
+        for cpf_membro in (membro.cpf, membro.cpf2):
+            cpf_digitos = _somente_digitos(cpf_membro)
+            if len(cpf_digitos) >= 6 and cpf_digitos in descricao_digitos:
+                encontrados[membro.id] = membro
+                break
+
+    if len(encontrados) == 1:
+        return next(iter(encontrados.values()))
+    return None
+
+
 def _status_pagamento_pendente_ou_atrasado(status_pagamento: Optional[str]) -> bool:
     return status_pagamento in (None, "", "pendente", "atrasado")
 
@@ -7145,6 +7164,10 @@ def _descricao_credito_parece_mensalidade_ofx(descricao: Optional[str]) -> bool:
 
 
 def _escolher_membro_para_credito_ofx(db: Session, conciliacao: models.Conciliacao) -> Optional[models.Membro]:
+    membro_por_cpf = _buscar_membro_por_cpf_no_extrato(db, conciliacao.descricao_extrato)
+    if membro_por_cpf:
+        return membro_por_cpf
+
     sugestoes = _sugerir_membros_para_conciliacao_credito(db, conciliacao).get("membros", [])
     if not sugestoes:
         return None

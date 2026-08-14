@@ -30,6 +30,11 @@ webapp/backend/backups/
 *.rem
 *.rar
 
+# Extratos bancarios (dados pessoais/sensiveis - nunca versionar)
+*.ofx
+*.ret
+*.zip
+
 # IDE / OS
 .vscode/
 .idea/
