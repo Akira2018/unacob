@@ -1830,6 +1830,19 @@ def _meses_entre(inicio: str, fim: str) -> list[str]:
     return meses
 
 
+def _competencias_a_partir_do_mes(mes_referencia: str, quantidade: int) -> list[str]:
+    ano, mes = _parse_mes_referencia_or_400(mes_referencia)
+    cursor = _primeiro_dia_mes(ano, mes)
+    competencias = []
+    for _ in range(max(0, quantidade)):
+        competencias.append(cursor.strftime("%Y-%m"))
+        if cursor.month == 12:
+            cursor = date(cursor.year + 1, 1, 1)
+        else:
+            cursor = date(cursor.year, cursor.month + 1, 1)
+    return competencias
+
+
 def _normalizar_inicio_bimestre(mes_referencia: str) -> tuple[str, str]:
     ano, mes = _parse_mes_referencia_or_400(mes_referencia)
     mes_inicio = mes if mes % 2 == 1 else mes - 1
@@ -6921,6 +6934,18 @@ def _iterar_transacoes_pdf_bb(texto: str):
         }
 
 
+def _quantidade_meses_cobertos_pelo_valor(valor_disponivel: float, valor_mensalidade: float) -> int:
+    """Quantas mensalidades (do valor atual do membro) cabem no valor recebido, com tolerância de arredondamento."""
+    if valor_mensalidade <= 0 or valor_disponivel <= 0:
+        return 0
+    quantidade = int(round(valor_disponivel / valor_mensalidade))
+    if quantidade <= 0:
+        return 0
+    if abs(valor_disponivel - round(valor_mensalidade * quantidade, 2)) > 0.05:
+        return 0
+    return quantidade
+
+
 def _baixar_pagamento_mensalidade_por_conciliacao(
     db: Session,
     conciliacao: models.Conciliacao,
@@ -6934,6 +6959,26 @@ def _baixar_pagamento_mensalidade_por_conciliacao(
     if not mes_ref:
         raise ValueError("Mes de referencia nao identificado para a conciliacao")
 
+    valor_extrato = float(conciliacao.valor_extrato or 0)
+    valor_mensalidade = _valor_mensalidade_dabb_membro(db, membro)
+    codigo_dabb = _extrair_codigo_dabb_das_observacoes(conciliacao.observacoes)
+    taxa_bancaria = _get_dabb_taxa_bimestral(db) if codigo_dabb else 0.0
+
+    quantidade_meses = _quantidade_meses_cobertos_pelo_valor(valor_extrato - taxa_bancaria, valor_mensalidade)
+    if quantidade_meses > 1:
+        competencias = _competencias_a_partir_do_mes(mes_ref, quantidade_meses)
+        _anexar_snapshot_dabb_observacoes(conciliacao, valor_mensalidade, taxa_bancaria, competencias)
+        pagamentos = _baixar_pagamentos_dabb_por_competencias_inferidas(
+            db=db,
+            conciliacao=conciliacao,
+            membro=membro,
+            competencias=competencias,
+            user_id=user_id,
+            observacao_origem=observacao_origem,
+            forma_pagamento="debito_automatico_bimestral" if codigo_dabb else "debito_automatico",
+        )
+        return pagamentos[-1]
+
     pagamento = db.query(models.Pagamento).filter(
         models.Pagamento.membro_id == membro.id,
         models.Pagamento.mes_referencia == mes_ref
@@ -6941,7 +6986,7 @@ def _baixar_pagamento_mensalidade_por_conciliacao(
 
     observacao = observacao_origem.strip()
     if pagamento:
-        pagamento.valor_pago = float(conciliacao.valor_extrato or 0)
+        pagamento.valor_pago = valor_extrato
         pagamento.status_pagamento = "pago"
         pagamento.data_pagamento = conciliacao.data_extrato
         pagamento.forma_pagamento = "debito_automatico"
@@ -6953,7 +6998,7 @@ def _baixar_pagamento_mensalidade_por_conciliacao(
         pagamento = models.Pagamento(
             id=str(uuid.uuid4()),
             membro_id=membro.id,
-            valor_pago=float(conciliacao.valor_extrato or 0),
+            valor_pago=valor_extrato,
             mes_referencia=mes_ref,
             data_pagamento=conciliacao.data_extrato,
             status_pagamento="pago",
@@ -7006,17 +7051,7 @@ def _inferir_competencias_dabb_por_conciliacao(
     competencias_bimestre = _meses_entre(mes_inicio_bimestre, mes_fim_bimestre)
     valor_mensalidade, taxa_bancaria = _snapshot_dabb_da_conciliacao(db, conciliacao, membro)
     valor_competencias = round(valor_extrato - taxa_bancaria, 2)
-
-    if valor_competencias <= 0:
-        return []
-
-    quantidade_competencias = 0
-    if valor_mensalidade > 0:
-        quantidade_competencias = int(round(valor_competencias / valor_mensalidade))
-        if quantidade_competencias > 0:
-            valor_esperado = round(valor_mensalidade * quantidade_competencias, 2)
-            if abs(valor_competencias - valor_esperado) > 0.05:
-                quantidade_competencias = 0
+    quantidade_competencias = _quantidade_meses_cobertos_pelo_valor(valor_competencias, valor_mensalidade)
 
     if quantidade_competencias == len(competencias_bimestre) and quantidade_competencias > 0:
         return competencias_bimestre
@@ -7082,6 +7117,7 @@ def _baixar_pagamentos_dabb_por_competencias_inferidas(
     competencias: list[str],
     user_id: str,
     observacao_origem: str,
+    forma_pagamento: str = "debito_automatico_bimestral",
 ):
     if not competencias:
         raise ValueError("Nenhuma competência DABB foi informada para a baixa")
@@ -7114,7 +7150,7 @@ def _baixar_pagamentos_dabb_por_competencias_inferidas(
                 mes_referencia=competencia,
                 data_pagamento=conciliacao.data_extrato,
                 status_pagamento="pago",
-                forma_pagamento="debito_automatico_bimestral",
+                forma_pagamento=forma_pagamento,
                 observacoes=observacao,
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
@@ -7125,7 +7161,7 @@ def _baixar_pagamentos_dabb_por_competencias_inferidas(
             pagamento.valor_pago = valores_competencias[idx]
             pagamento.data_pagamento = conciliacao.data_extrato
             pagamento.status_pagamento = "pago"
-            pagamento.forma_pagamento = "debito_automatico_bimestral"
+            pagamento.forma_pagamento = forma_pagamento
             pagamento.observacoes = (
                 (pagamento.observacoes + "\n") if pagamento.observacoes else ""
             ) + observacao
