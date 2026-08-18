@@ -1843,6 +1843,33 @@ def _competencias_a_partir_do_mes(mes_referencia: str, quantidade: int) -> list[
     return competencias
 
 
+def _competencias_para_cobrir(
+    db: Session,
+    membro: models.Membro,
+    mes_referencia: str,
+    quantidade: int,
+) -> list[str]:
+    """Escolhe quais competências um pagamento de N meses deve cobrir.
+
+    Prioriza meses já em aberto (atrasados) até o mês do extrato, do mais
+    antigo para o mais novo - assim um associado que paga vários meses de
+    vez em quando primeiro acerta o que já estava pendente. Só avança para
+    meses futuros (adiantamento) se ainda faltar quantidade depois de
+    cobrir todo o atraso.
+    """
+    abertas = _competencias_em_aberto_ate_mes(db, membro, mes_referencia)
+    if mes_referencia not in abertas:
+        abertas = sorted(set(abertas) | {mes_referencia})
+
+    if len(abertas) >= quantidade:
+        return abertas[:quantidade]
+
+    faltam = quantidade - len(abertas)
+    ultimo_mes = abertas[-1] if abertas else mes_referencia
+    seguintes = _competencias_a_partir_do_mes(ultimo_mes, faltam + 1)[1:]
+    return abertas + seguintes
+
+
 def _normalizar_inicio_bimestre(mes_referencia: str) -> tuple[str, str]:
     ano, mes = _parse_mes_referencia_or_400(mes_referencia)
     mes_inicio = mes if mes % 2 == 1 else mes - 1
@@ -6966,7 +6993,7 @@ def _baixar_pagamento_mensalidade_por_conciliacao(
 
     quantidade_meses = _quantidade_meses_cobertos_pelo_valor(valor_extrato - taxa_bancaria, valor_mensalidade)
     if quantidade_meses > 1:
-        competencias = _competencias_a_partir_do_mes(mes_ref, quantidade_meses)
+        competencias = _competencias_para_cobrir(db, membro, mes_ref, quantidade_meses)
         _anexar_snapshot_dabb_observacoes(conciliacao, valor_mensalidade, taxa_bancaria, competencias)
         pagamentos = _baixar_pagamentos_dabb_por_competencias_inferidas(
             db=db,
