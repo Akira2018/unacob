@@ -971,6 +971,17 @@ def seed_admin():
     db = SessionLocal()
     try:
         admin = db.query(models.User).filter(models.User.email == "admin@associacao.com").first()
+
+        if not admin:
+            outro_admin_ativo = db.query(models.User).filter(
+                models.User.role == "administrador",
+                models.User.ativo == True,
+            ).first()
+            if outro_admin_ativo:
+                # Já existe um admin de verdade (ex.: a conta padrão foi
+                # intencionalmente removida) - não recria a conta fantasma.
+                return
+
         configured_password = os.getenv("ADMIN_INITIAL_PASSWORD")
         if not admin:
             initial_password = configured_password or secrets.token_urlsafe(12)
