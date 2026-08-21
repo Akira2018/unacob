@@ -216,15 +216,16 @@ export default function Usuarios() {
       return;
     }
 
-    const confirmed = confirm(
-      'A restauração substituirá o banco atual. Um backup automático será criado antes. Deseja continuar?'
+    const senha = prompt(
+      'A restauração substituirá o banco atual. Um backup automático será criado antes.\n\nDigite sua senha atual para confirmar:'
     );
-    if (!confirmed) return;
+    if (!senha) return;
 
     setRestoreLoading(true);
     try {
       const formData = new FormData();
       formData.append('file', selectedFile);
+      formData.append('confirmar_senha', senha);
       const { data } = await api.post('/admin/system/restore', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
@@ -261,14 +262,16 @@ export default function Usuarios() {
   };
 
   const restoreSavedBackup = async (filename) => {
-    const confirmed = confirm(
-      `Restaurar o backup "${filename}"? O banco atual será substituído e um backup automático será criado antes.`
+    const senha = prompt(
+      `Restaurar o backup "${filename}"? O banco atual será substituído e um backup automático será criado antes.\n\nDigite sua senha atual para confirmar:`
     );
-    if (!confirmed) return;
+    if (!senha) return;
 
     setActiveBackupAction(`restore:${filename}`);
     try {
-      const { data } = await api.post(`/admin/system/backups/${encodeURIComponent(filename)}/restore`);
+      const { data } = await api.post(`/admin/system/backups/${encodeURIComponent(filename)}/restore`, {
+        confirmar_senha: senha,
+      });
       toast.success(data?.detail || 'Backup restaurado com sucesso');
       loadBackups();
       setTimeout(() => {

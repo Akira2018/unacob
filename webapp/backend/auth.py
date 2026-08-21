@@ -8,12 +8,31 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 import os
+import secrets
 from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-change-secret-key")
+
+def _load_or_create_secret_key() -> str:
+    env_key = os.getenv("SECRET_KEY")
+    if env_key:
+        return env_key
+    key_file = Path(__file__).resolve().parent / ".secret_key"
+    if key_file.exists():
+        return key_file.read_text().strip()
+    generated = secrets.token_hex(32)
+    key_file.write_text(generated)
+    print(
+        f"[auth] SECRET_KEY não definido em ambiente; gerado automaticamente e "
+        f"persistido em {key_file}. Defina a variável de ambiente SECRET_KEY em "
+        f"produção para controlar essa chave explicitamente."
+    )
+    return generated
+
+
+SECRET_KEY = _load_or_create_secret_key()
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))  # 8 hours
 

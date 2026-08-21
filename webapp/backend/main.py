@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Body, Request
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Body, Request
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -14,6 +14,7 @@ import os
 import io
 import re
 import json
+import secrets
 import shutil
 import sqlite3
 import tempfile
@@ -891,6 +892,9 @@ FINANCE_REPORT_PREFIXES = (
     "/api/relatorios/aplicacoes-financeiras",
     "/api/relatorios/consolidado-financeiro",
     "/api/relatorios/previsao-orcamentaria",
+    "/api/relatorios/dabb-remessa-bimestral",
+    "/api/relatorios/orcamento-anual",
+    "/api/relatorios/festas",
 )
 
 
@@ -967,18 +971,37 @@ def seed_admin():
     db = SessionLocal()
     try:
         admin = db.query(models.User).filter(models.User.email == "admin@associacao.com").first()
+        configured_password = os.getenv("ADMIN_INITIAL_PASSWORD")
         if not admin:
+            initial_password = configured_password or secrets.token_urlsafe(12)
             admin = models.User(
                 id=str(uuid.uuid4()),
                 email="admin@associacao.com",
                 nome_completo="Administrador",
                 role="administrador",
-                password=get_password_hash("admin123"),
+                password=get_password_hash(initial_password),
                 ativo=True,
                 created_at=datetime.utcnow()
             )
             db.add(admin)
             db.commit()
+            if not configured_password:
+                print(
+                    f"[seed_admin] Usuário admin@associacao.com criado com senha "
+                    f"gerada automaticamente: {initial_password} — troque-a no "
+                    f"primeiro login. Defina ADMIN_INITIAL_PASSWORD para controlar "
+                    f"essa senha explicitamente."
+                )
+        elif verify_password("admin123", admin.password):
+            new_password = configured_password or secrets.token_urlsafe(12)
+            admin.password = get_password_hash(new_password)
+            db.commit()
+            print(
+                f"[seed_admin] ALERTA DE SEGURANÇA: a conta admin@associacao.com "
+                f"ainda usava a senha padrão 'admin123' e foi rotacionada "
+                f"automaticamente. Nova senha: {new_password} — troque-a e "
+                f"guarde-a em local seguro."
+            )
     finally:
         db.close()
 
@@ -1307,8 +1330,14 @@ def download_saved_backup(filename: str, current_user=Depends(get_current_user))
 
 
 @app.post("/api/admin/system/backups/{filename}/restore")
-def restore_saved_backup(filename: str, current_user=Depends(get_current_user)):
+def restore_saved_backup(
+    filename: str,
+    confirmar_senha: str = Body(..., embed=True),
+    current_user=Depends(get_current_user),
+):
     _assert_admin(current_user)
+    if not verify_password(confirmar_senha, current_user.password):
+        raise HTTPException(status_code=400, detail="Senha atual inválida — restauração cancelada")
 
     db_path = _sqlite_db_path_or_400()
     if not db_path.exists():
@@ -1355,12 +1384,18 @@ def delete_saved_backup(filename: str, current_user=Depends(get_current_user)):
     return {"ok": True, "detail": "Backup removido com sucesso"}
 
 
+REQUIRED_RESTORE_TABLES = ("users", "membros", "pagamentos", "conciliacoes", "plano_contas")
+
+
 @app.post("/api/admin/system/restore")
 async def restore_database(
     file: UploadFile = File(...),
+    confirmar_senha: str = Form(...),
     current_user=Depends(get_current_user)
 ):
     _assert_admin(current_user)
+    if not verify_password(confirmar_senha, current_user.password):
+        raise HTTPException(status_code=400, detail="Senha atual inválida — restauração cancelada")
 
     db_path = _sqlite_db_path_or_400()
     if not db_path.exists():
@@ -1381,6 +1416,22 @@ async def restore_database(
             integrity = conn_test.execute("PRAGMA integrity_check;").fetchone()
             if not integrity or str(integrity[0]).lower() != "ok":
                 raise HTTPException(status_code=400, detail="Arquivo de backup inválido (integridade SQLite falhou)")
+
+            tabelas = {
+                row[0]
+                for row in conn_test.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table';"
+                ).fetchall()
+            }
+            faltantes = [t for t in REQUIRED_RESTORE_TABLES if t not in tabelas]
+            if faltantes:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Arquivo não parece ser um backup válido deste sistema "
+                        f"(tabelas ausentes: {', '.join(faltantes)})"
+                    ),
+                )
 
         backup_before_restore = _create_sqlite_backup_file(db_path, prefix="before_restore")
 
@@ -2512,7 +2563,7 @@ def _pontuacao_match_membro_extrato(
     nome_norm = _normalizar_texto(membro_nome)
     nome_completo_match = bool(nome_norm and descricao_norm and nome_norm in descricao_norm)
 
-    cpf_match = bool(cpf_digitos and len(cpf_digitos) >= 6 and cpf_digitos in descricao_digitos)
+    cpf_match = bool(cpf_digitos and len(cpf_digitos) == CPF_DIGITOS_LENGTH and cpf_digitos in descricao_digitos)
     matricula_match = bool(matricula_digitos and len(matricula_digitos) >= 4 and matricula_digitos in descricao_digitos)
 
     score = 0
@@ -2541,9 +2592,12 @@ def _pontuacao_match_membro_extrato(
     }
 
 
+CPF_DIGITOS_LENGTH = 11
+
+
 def _buscar_membro_por_cpf_no_extrato(db: Session, descricao_extrato: Optional[str]) -> Optional[models.Membro]:
     descricao_digitos = _somente_digitos(descricao_extrato)
-    if len(descricao_digitos) < 6:
+    if len(descricao_digitos) < CPF_DIGITOS_LENGTH:
         return None
 
     membros = db.query(models.Membro).filter(models.Membro.status == "ativo").all()
@@ -2551,7 +2605,9 @@ def _buscar_membro_por_cpf_no_extrato(db: Session, descricao_extrato: Optional[s
     for membro in membros:
         for cpf_membro in (membro.cpf, membro.cpf2):
             cpf_digitos = _somente_digitos(cpf_membro)
-            if len(cpf_digitos) >= 6 and cpf_digitos in descricao_digitos:
+            # Exige o CPF completo (11 dígitos) como substring - um prefixo/sufixo
+            # parcial pode coincidir por acaso com número de documento ou valor.
+            if len(cpf_digitos) == CPF_DIGITOS_LENGTH and cpf_digitos in descricao_digitos:
                 encontrados[membro.id] = membro
                 break
 
@@ -3048,6 +3104,11 @@ def reparar_pagamentos_dabb_bimestral(
         )
 
         if len(competencias_inferidas) <= 1:
+            total_sem_necessidade += 1
+            continue
+
+        snapshot_existente = _competencias_snapshot_de_observacoes(conciliacao.observacoes)
+        if snapshot_existente is not None and snapshot_existente == competencias_inferidas:
             total_sem_necessidade += 1
             continue
 
@@ -6037,8 +6098,10 @@ def _sugerir_membros_para_conciliacao_credito(db: Session, conciliacao: models.C
     candidatos = []
 
     for membro in membros:
-        nome_norm = _normalizar_nome_busca_mensalidade(membro.nome_completo)
-        hits = sum(1 for token in tokens if token in nome_norm)
+        nome_tokens = set(_tokens_nome_busca_mensalidade(membro.nome_completo))
+        # Comparação por palavra inteira - substring (ex.: "ANA" em "MARIANA")
+        # gerava falsos positivos de matching.
+        hits = sum(1 for token in tokens if token in nome_tokens)
         if hits == 0:
             continue
 
@@ -6761,6 +6824,15 @@ def _anexar_snapshot_dabb_observacoes(
         conciliacao.observacoes = observacoes + ((" | " if observacoes else "")) + " | ".join(complementos)
 
 
+def _competencias_snapshot_de_observacoes(observacoes: Optional[str]) -> Optional[list[str]]:
+    if not observacoes:
+        return None
+    match = re.search(r"competencias_snapshot=([0-9,\-]+)", observacoes)
+    if not match:
+        return None
+    return [c for c in match.group(1).split(",") if c]
+
+
 def _indexar_membros_por_codigo_dabb(db: Session) -> dict[str, list[models.Membro]]:
     indice = defaultdict(list)
     membros = db.query(models.Membro).filter(
@@ -6842,14 +6914,27 @@ def _iterar_transacoes_dabb(texto: str):
 
 
 def _extrair_data_dabb_payload(payload: str, data_fallback: Optional[date] = None) -> Optional[date]:
+    def _data_plausivel(candidato_data: date) -> bool:
+        # O payload é um blob numérico sem separadores; qualquer sequência de 8
+        # dígitos pode "parecer" uma data válida por coincidência (valor,
+        # documento etc.). Ancora a busca na data do cabeçalho do arquivo
+        # (ou, na falta dela, num horizonte razoável) para descartar esses
+        # falsos positivos em vez de aceitar uma data completamente errada.
+        if data_fallback:
+            return abs((candidato_data - data_fallback).days) <= 120
+        hoje = date.today()
+        return date(2000, 1, 1) <= candidato_data <= date(hoje.year + 1, 12, 31)
+
     # No layout observado, a data costuma iniciar na posição 18 do payload.
     if len(payload) >= 26:
         candidato_fixo = payload[18:26]
         for formato in ("%Y%m%d", "%d%m%Y"):
             try:
-                return datetime.strptime(candidato_fixo, formato).date()
+                data_tx = datetime.strptime(candidato_fixo, formato).date()
             except ValueError:
                 continue
+            if _data_plausivel(data_tx):
+                return data_tx
 
     candidatos = []
 
@@ -6865,9 +6950,11 @@ def _extrair_data_dabb_payload(payload: str, data_fallback: Optional[date] = Non
         vistos.add(candidato)
         for formato in ("%Y%m%d", "%d%m%Y"):
             try:
-                return datetime.strptime(candidato, formato).date()
+                data_tx = datetime.strptime(candidato, formato).date()
             except ValueError:
                 continue
+            if _data_plausivel(data_tx):
+                return data_tx
 
     return data_fallback
 
@@ -7045,21 +7132,33 @@ def _baixar_pagamento_mensalidade_por_conciliacao(
     return pagamento
 
 
+MAX_ANOS_RETROATIVOS_SEM_FILIACAO = 3
+
+
 def _competencias_em_aberto_ate_mes(
     db: Session,
     membro: models.Membro,
     mes_fim: str,
 ) -> list[str]:
-    ano, _ = _parse_mes_referencia_or_400(mes_fim)
-    meses_considerados = _meses_entre(f"{ano}-01", mes_fim)
-    pagas = _competencias_pagamento_pagas_no_ano(db, membro.id, ano)
-    em_aberto = [mes for mes in meses_considerados if mes not in pagas]
+    """Competências em aberto (não pagas) até `mes_fim`, incluindo atraso de anos
+    anteriores - não apenas do ano civil de `mes_fim`. O início da busca é a data
+    de filiação do membro quando conhecida; sem ela, limita-se a um horizonte de
+    MAX_ANOS_RETROATIVOS_SEM_FILIACAO anos para não escanear o histórico inteiro.
+    """
+    ano_fim, _ = _parse_mes_referencia_or_400(mes_fim)
+    limite_filiacao = membro.data_filiacao.strftime("%Y-%m") if membro.data_filiacao else None
+    mes_inicio = limite_filiacao or f"{ano_fim - MAX_ANOS_RETROATIVOS_SEM_FILIACAO}-01"
+    if mes_inicio > mes_fim:
+        return []
 
-    if membro.data_filiacao:
-        limite_filiacao = membro.data_filiacao.strftime("%Y-%m")
-        em_aberto = [mes for mes in em_aberto if mes >= limite_filiacao]
+    ano_inicio, _ = _parse_mes_referencia_or_400(mes_inicio)
+    meses_considerados = _meses_entre(mes_inicio, mes_fim)
 
-    return em_aberto
+    pagas: set[str] = set()
+    for ano in range(ano_inicio, ano_fim + 1):
+        pagas |= _competencias_pagamento_pagas_no_ano(db, membro.id, ano)
+
+    return [mes for mes in meses_considerados if mes not in pagas]
 
 
 def _inferir_competencias_dabb_por_conciliacao(
@@ -7152,7 +7251,8 @@ def _baixar_pagamentos_dabb_por_competencias_inferidas(
     valor_mensalidade, taxa_bancaria = _snapshot_dabb_da_conciliacao(db, conciliacao, membro)
     valor_total_competencias = round(float(conciliacao.valor_extrato or 0) - taxa_bancaria, 2)
     valores_competencias = _ratear_valor_dabb_por_competencias(valor_total_competencias, competencias)
-    if not valores_competencias or any(valor <= 0 for valor in valores_competencias):
+    rateio_confiavel = bool(valores_competencias) and all(valor > 0 for valor in valores_competencias)
+    if not rateio_confiavel:
         valores_competencias = [round(valor_mensalidade, 2) for _ in competencias]
 
     pagamentos_processados = []
@@ -7197,9 +7297,27 @@ def _baixar_pagamentos_dabb_por_competencias_inferidas(
         _register_transaction(db, pagamento, user_id)
         pagamentos_processados.append(pagamento)
 
-    conciliacao.pagamento_id = pagamentos_processados[-1].id
-    conciliacao.conciliado = True
+        # Atualiza o ponteiro a cada competência processada (não só no final) para
+        # que uma falha no meio do laço não deixe a conciliação sem referência ao
+        # que já foi efetivamente baixado.
+        conciliacao.pagamento_id = pagamento.id
+        conciliacao.updated_at = datetime.utcnow()
+        db.commit()
+
+    if rateio_confiavel:
+        conciliacao.conciliado = True
+    else:
+        conciliacao.conciliado = False
+        conciliacao.observacoes = (
+            (conciliacao.observacoes + "\n") if conciliacao.observacoes else ""
+        ) + (
+            f"ALERTA: valor do extrato (R$ {valor_total_competencias:.2f}) não é suficiente "
+            f"para ratear entre {len(competencias)} competência(s) sem gerar parcela zerada "
+            f"ou negativa; pagamentos lançados com o valor padrão de mensalidade "
+            f"(R$ {valor_mensalidade:.2f} cada) — revisar manualmente."
+        )
     conciliacao.updated_at = datetime.utcnow()
+    db.commit()
     return pagamentos_processados
 
 
