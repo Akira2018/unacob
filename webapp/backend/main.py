@@ -8922,13 +8922,14 @@ def exportar_relatorio_auditoria_pagamentos(
 
         for col, val in enumerate(values, 1):
             cell = ws.cell(row=row, column=col, value=val)
-            _excel_border(cell)
+            cell.border = _excel_thin_border()
             if col in (5, 6):
                 cell.number_format = "R$ #,##0.00"
                 cell.alignment = Alignment(horizontal="right", vertical="center")
             else:
                 cell.alignment = Alignment(horizontal="left", vertical="center")
             cell.fill = yellow_fill
+
 
     last_data_row = first_data_row + len(pagamentos_divergentes) - 1
     if len(pagamentos_divergentes) > 0:
