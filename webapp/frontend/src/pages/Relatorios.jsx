@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import api from '../api';
 import toast from 'react-hot-toast';
-import { Download, FileSpreadsheet, Users, CreditCard, Cake, BarChart3, PartyPopper, GitMerge, PiggyBank, BookText, Wallet } from 'lucide-react';
+import { Download, FileSpreadsheet, Users, CreditCard, Cake, BarChart3, PartyPopper, GitMerge, PiggyBank, BookText, Wallet, ShieldCheck } from 'lucide-react';
+
 import { format, subMonths } from 'date-fns';
 import { useAuth } from '../context/useAuth';
 import FilterBar from '../components/FilterBar';
@@ -257,7 +258,22 @@ export default function Relatorios() {
         </select>
       ),
     },
+    {
+      key: 'auditoria_pagamentos',
+      icon: <ShieldCheck size={24} />,
+      title: 'Auditoria de Pagamentos (Divergências)',
+      desc: 'Lista de pagamentos e cadastros com valores divergentes do padrão (R$ 35,00 / R$ 36,00), categorizados por processo de pagamento',
+      color: '#800000',
+      isFinance: true,
+      action: () => download('auditoria_pagamentos', '/relatorios/auditoria-pagamentos', `auditoria_pagamentos_divergentes_${anoConsolidado}.xlsx`, { ano: anoConsolidado }),
+      extra: (
+        <select className="search-input" value={anoConsolidado} onChange={(e) => setAnoConsolidado(parseInt(e.target.value, 10))} style={{ width: '100%' }}>
+          {getAnos().map((ano) => <option key={ano} value={ano}>{ano}</option>)}
+        </select>
+      ),
+    },
   ];
+
 
   if (festas.length > 0) {
     reports.push({

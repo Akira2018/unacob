@@ -361,8 +361,21 @@ export default function Pagamentos() {
 
   const openReciboModal = () => {
     setModal(false);
+    if (selected) {
+      const v = Number(form.valor_pago || selected.valor_pago || 0);
+      const valMensal = Number(selected.valor_mensalidade || 35);
+      const qtdMeses = valMensal > 0 ? Math.max(1, Math.round(v / valMensal)) : 1;
+      if (qtdMeses >= 12) {
+        setReferenteMeses(`janeiro a dezembro de ${anoExtenso(mes)} (12 mensalidades)`);
+      } else if (qtdMeses > 1) {
+        setReferenteMeses(`janeiro a ${mesExtenso(mes)} de ${anoExtenso(mes)} (${qtdMeses} mensalidades)`);
+      } else {
+        setReferenteMeses(`${mesExtenso(mes)} de ${anoExtenso(mes)}`);
+      }
+    }
     setShowRecibo(true);
   };
+
 
   const closeReciboModal = () => {
     resetReciboState();

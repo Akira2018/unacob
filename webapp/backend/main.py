@@ -550,6 +550,28 @@ def _get_dabb_valor_mensal_padrao(db: Session) -> float:
     return round(float(_get_config(db, "dabb_valor_mensal_padrao", str(DABB_VALOR_MENSAL_PADRAO)) or DABB_VALOR_MENSAL_PADRAO), 2)
 
 
+def _get_dabb_valor_mensal_padrao_para_mes(db: Session, mes_referencia: Optional[str] = None) -> float:
+    """Retorna o valor padrão da mensalidade para a competência informada (YYYY-MM), respeitando o histórico e vigência dos reajustes."""
+    if not mes_referencia:
+        return _get_dabb_valor_mensal_padrao(db)
+
+    mes_norm = str(mes_referencia).strip()[:7]
+    if mes_norm < "2026-01":
+        return 33.00
+
+    reajuste = db.query(models.HistoricoConfiguracaoDabb).filter(
+        models.HistoricoConfiguracaoDabb.valor_mensal_novo.isnot(None)
+    ).order_by(models.HistoricoConfiguracaoDabb.created_at.desc()).first()
+
+    if reajuste and reajuste.created_at:
+        mes_reajuste = reajuste.created_at.strftime("%Y-%m")
+        if mes_norm < mes_reajuste and reajuste.valor_mensal_anterior is not None:
+            return round(float(reajuste.valor_mensal_anterior), 2)
+
+    return _get_dabb_valor_mensal_padrao(db)
+
+
+
 def _registrar_historico_configuracao_dabb(
     db: Session,
     current_user,
@@ -885,6 +907,7 @@ FINANCE_API_PREFIXES = (
 
 FINANCE_REPORT_PREFIXES = (
     "/api/relatorios/pagamentos",
+    "/api/relatorios/auditoria-pagamentos",
     "/api/relatorios/caixa",
     "/api/relatorios/balancete",
     "/api/relatorios/livro-diario",
@@ -896,6 +919,7 @@ FINANCE_REPORT_PREFIXES = (
     "/api/relatorios/orcamento-anual",
     "/api/relatorios/festas",
 )
+
 
 
 def _is_finance_path(path: str) -> bool:
@@ -2756,7 +2780,8 @@ def baixa_automatica_pagamentos_banco(
             if membro["id"] in membros_ja_baixados:
                 continue
 
-            if abs(valor_extrato - membro["valor_mensalidade"]) > tolerancia_valor:
+            qtd_meses = _quantidade_meses_cobertos_pelo_valor(valor_extrato, membro["valor_mensalidade"])
+            if qtd_meses <= 0 and abs(valor_extrato - membro["valor_mensalidade"]) > tolerancia_valor:
                 continue
 
             metrica = _pontuacao_match_membro_extrato(
@@ -2800,38 +2825,17 @@ def baixa_automatica_pagamentos_banco(
 
         membro_match = melhores[0][0]
         metrica_match = melhores[0][1]
-        pagamento = membro_match["pagamento_atual"]
+        membro_obj = db.query(models.Membro).filter(models.Membro.id == membro_match["id"]).first()
 
-        if pagamento:
-            pagamento.valor_pago = valor_extrato
-            pagamento.status_pagamento = "pago"
-            pagamento.data_pagamento = conciliacao.data_extrato
-            pagamento.forma_pagamento = "transferencia"
-            pagamento.observacoes = (
-                (pagamento.observacoes + "\n") if pagamento.observacoes else ""
-            ) + f"Baixa automática via extrato bancário ({mes_referencia}) - confiança {metrica_match['confianca']}"
-            pagamento.updated_at = datetime.utcnow()
-        else:
-            pagamento = models.Pagamento(
-                id=str(uuid.uuid4()),
-                membro_id=membro_match["id"],
-                valor_pago=valor_extrato,
-                mes_referencia=mes_referencia,
-                data_pagamento=conciliacao.data_extrato,
-                status_pagamento="pago",
-                forma_pagamento="transferencia",
-                observacoes=f"Baixa automática via extrato bancário ({mes_referencia}) - confiança {metrica_match['confianca']}",
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
+        if membro_obj:
+            _baixar_pagamento_mensalidade_por_conciliacao(
+                db=db,
+                conciliacao=conciliacao,
+                membro=membro_obj,
+                user_id=current_user.id,
+                observacao_origem=f"Baixa automática via extrato bancário ({mes_referencia}) - confiança {metrica_match['confianca']}"
             )
-            db.add(pagamento)
-            db.flush()
 
-        conciliacao.pagamento_id = pagamento.id
-        conciliacao.conciliado = True
-        conciliacao.updated_at = datetime.utcnow()
-
-        _register_transaction(db, pagamento, current_user.id)
 
         membros_ja_baixados.add(membro_match["id"])
         total_baixados += 1
@@ -2911,8 +2915,10 @@ def listar_pendencias_conciliacao_manual(
 
         candidatos = []
         for membro in membros_disponiveis:
-            if abs(valor_extrato - membro["valor_mensalidade"]) > tolerancia_valor:
+            qtd_meses = _quantidade_meses_cobertos_pelo_valor(valor_extrato, membro["valor_mensalidade"])
+            if qtd_meses <= 0 and abs(valor_extrato - membro["valor_mensalidade"]) > tolerancia_valor:
                 continue
+
 
             metrica = _pontuacao_match_membro_extrato(
                 membro_nome=membro["nome"],
@@ -3145,16 +3151,93 @@ def reparar_pagamentos_dabb_bimestral(
             "competencias": competencias_inferidas,
         })
 
+@app.post("/api/pagamentos/reparar-multimes")
+def reparar_pagamentos_multimes_existentes(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """Localiza pagamentos concentrados em um único mês (ex: R$ 450 em 2026-06) e redistribui pelas competências em aberto."""
+    pagamentos_concentrados = db.query(models.Pagamento).filter(
+        models.Pagamento.valor_pago >= 70.0,
+        models.Pagamento.status_pagamento == "pago"
+    ).all()
+
+    total_analisados = len(pagamentos_concentrados)
+    total_redistribuidos = 0
+    detalhes = []
+
+    for p in pagamentos_concentrados:
+        membro = db.query(models.Membro).filter(models.Membro.id == p.membro_id).first()
+        if not membro:
+            continue
+
+        valor_total = round(float(p.valor_pago or 0), 2)
+        valor_mensalidade = _valor_mensalidade_dabb_membro(db, membro)
+        qtd_meses = _quantidade_meses_cobertos_pelo_valor(valor_total, valor_mensalidade)
+
+        if qtd_meses <= 1:
+            continue
+
+        competencias = _competencias_para_cobrir(db, membro, p.mes_referencia or "2026-01", qtd_meses)
+        if len(competencias) <= 1:
+            continue
+
+        valores_competencias, excedente = _ratear_valor_dabb_por_competencias(
+            valor_total=valor_total,
+            competencias=competencias,
+            valor_mensalidade=valor_mensalidade,
+            taxa_bancaria=0.0
+        )
+
+        for idx, comp in enumerate(competencias):
+            pag_existente = db.query(models.Pagamento).filter(
+                models.Pagamento.membro_id == membro.id,
+                models.Pagamento.mes_referencia == comp
+            ).order_by(models.Pagamento.updated_at.desc(), models.Pagamento.created_at.desc()).first()
+
+            obs = f"Redistribuição multimeses (R$ {valor_total:.2f} referente a {len(competencias)} meses: {', '.join(competencias)})"
+            if excedente > 0:
+                obs += f" | Saldo excedente: R$ {excedente:.2f}"
+
+            if pag_existente:
+                pag_existente.valor_pago = valores_competencias[idx]
+                pag_existente.status_pagamento = "pago"
+                pag_existente.data_pagamento = p.data_pagamento
+                pag_existente.forma_pagamento = p.forma_pagamento or "transferencia"
+                pag_existente.observacoes = ((pag_existente.observacoes + "\n") if pag_existente.observacoes else "") + obs
+                pag_existente.updated_at = datetime.utcnow()
+                _register_transaction(db, pag_existente, current_user.id)
+            else:
+                novo_pag = models.Pagamento(
+                    id=str(uuid.uuid4()),
+                    membro_id=membro.id,
+                    valor_pago=valores_competencias[idx],
+                    mes_referencia=comp,
+                    data_pagamento=p.data_pagamento,
+                    status_pagamento="pago",
+                    forma_pagamento=p.forma_pagamento or "transferencia",
+                    observacoes=obs,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                db.add(novo_pag)
+                db.flush()
+                _register_transaction(db, novo_pag, current_user.id)
+
+        total_redistribuidos += 1
+        detalhes.append({
+            "membro_id": membro.id,
+            "membro_nome": membro.nome_completo,
+            "valor_total": valor_total,
+            "competencias": competencias
+        })
+
     db.commit()
     return {
         "ok": True,
-        "mes_referencia": mes_referencia,
         "total_analisados": total_analisados,
-        "total_corrigidos": total_corrigidos,
-        "total_sem_match": total_sem_match,
-        "total_ambiguos": total_ambiguos,
-        "total_sem_necessidade": total_sem_necessidade,
-        "detalhes": detalhes,
+        "total_redistribuidos": total_redistribuidos,
+        "detalhes": detalhes
     }
 
 
@@ -3186,60 +3269,97 @@ def confirmar_pendencia_conciliacao_manual(
     if not mes_ref:
         raise HTTPException(status_code=400, detail="Não foi possível identificar o mês de referência")
 
-    pagamento = db.query(models.Pagamento).filter(
-        models.Pagamento.membro_id == membro_id,
-        models.Pagamento.mes_referencia == mes_ref
-    ).first()
+    membro = db.query(models.Membro).filter(models.Membro.id == membro_id).first()
+    if not membro:
+        raise HTTPException(status_code=404, detail="Membro não encontrado")
 
-    valor_extrato = float(conciliacao.valor_extrato or 0)
-
-    if pagamento:
-        pagamento.valor_pago = valor_extrato
-        pagamento.status_pagamento = "pago"
-        pagamento.data_pagamento = conciliacao.data_extrato
-        pagamento.forma_pagamento = "transferencia"
-        pagamento.observacoes = (
-            (pagamento.observacoes + "\n") if pagamento.observacoes else ""
-        ) + f"Baixa manual via pendência de conciliação ({mes_ref})"
-        pagamento.updated_at = datetime.utcnow()
-    else:
-        pagamento = models.Pagamento(
-            id=str(uuid.uuid4()),
-            membro_id=membro_id,
-            valor_pago=valor_extrato,
-            mes_referencia=mes_ref,
-            data_pagamento=conciliacao.data_extrato,
-            status_pagamento="pago",
-            forma_pagamento="transferencia",
-            observacoes=f"Baixa manual via pendência de conciliação ({mes_ref})",
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
-        )
-        db.add(pagamento)
-        db.flush()
-
-    conciliacao.pagamento_id = pagamento.id
-    conciliacao.conciliado = True
-    conciliacao.updated_at = datetime.utcnow()
-
-    _register_transaction(db, pagamento, current_user.id)
+    pagamento = _baixar_pagamento_mensalidade_por_conciliacao(
+        db=db,
+        conciliacao=conciliacao,
+        membro=membro,
+        user_id=current_user.id,
+        observacao_origem=f"Baixa manual via pendência de conciliação ({mes_ref})",
+    )
 
     db.commit()
-
-    membro = db.query(models.Membro).filter(models.Membro.id == membro_id).first()
 
     return {
         "ok": True,
         "detail": "Baixa manual realizada com sucesso",
         "conciliacao_id": conciliacao.id,
-        "pagamento_id": pagamento.id,
+        "pagamento_id": pagamento.id if pagamento else None,
         "membro_nome": membro.nome_completo if membro else None,
         "mes_referencia": mes_ref
     }
 
+
 @app.post("/api/pagamentos", response_model=schemas.PagamentoResponse)
 def create_pagamento(req: schemas.PagamentoCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    # Check if payment already exists
+    membro = db.query(models.Membro).filter(models.Membro.id == req.membro_id).first()
+    if not membro:
+        raise HTTPException(status_code=404, detail="Membro não encontrado")
+
+    valor_pago = round(float(req.valor_pago or 0), 2)
+    valor_mensalidade = _valor_mensalidade_dabb_membro(db, membro)
+    qtd_meses = _quantidade_meses_cobertos_pelo_valor(valor_pago, valor_mensalidade)
+
+    if qtd_meses > 1:
+        competencias = _competencias_para_cobrir(db, membro, req.mes_referencia or date.today().strftime("%Y-%m"), qtd_meses)
+        valores_competencias, excedente = _ratear_valor_dabb_por_competencias(
+            valor_total=valor_pago,
+            competencias=competencias,
+            valor_mensalidade=valor_mensalidade,
+            taxa_bancaria=0.0
+        )
+        pagamentos_processados = []
+
+        for idx, competencia in enumerate(competencias):
+            pag = db.query(models.Pagamento).filter(
+                models.Pagamento.membro_id == req.membro_id,
+                models.Pagamento.mes_referencia == competencia
+            ).order_by(models.Pagamento.updated_at.desc(), models.Pagamento.created_at.desc()).first()
+
+            obs = req.observacoes or ""
+            if len(competencias) > 1:
+                obs_multimes = f"Pagamento acumulado de R$ {valor_pago:.2f} referente a {len(competencias)} meses ({', '.join(competencias)})"
+                if excedente > 0:
+                    obs_multimes += f" | Saldo excedente: R$ {excedente:.2f}"
+                obs = f"{obs}\n{obs_multimes}".strip() if obs else obs_multimes
+
+
+            if not pag:
+                pag = models.Pagamento(
+                    id=str(uuid.uuid4()),
+                    membro_id=req.membro_id,
+                    valor_pago=valores_competencias[idx],
+                    mes_referencia=competencia,
+                    data_pagamento=req.data_pagamento or date.today(),
+                    status_pagamento=req.status_pagamento or "pago",
+                    forma_pagamento=req.forma_pagamento or "dinheiro",
+                    comprovante=req.comprovante,
+                    observacoes=obs,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                db.add(pag)
+                db.flush()
+            else:
+                pag.valor_pago = valores_competencias[idx]
+                pag.data_pagamento = req.data_pagamento or date.today()
+                pag.status_pagamento = req.status_pagamento or "pago"
+                pag.forma_pagamento = req.forma_pagamento or pag.forma_pagamento
+                if req.comprovante:
+                    pag.comprovante = req.comprovante
+                pag.observacoes = obs
+                pag.updated_at = datetime.utcnow()
+
+            _register_transaction(db, pag, current_user.id)
+            pagamentos_processados.append(pag)
+
+        db.commit()
+        return pagamentos_processados[-1]
+
+    # Check if payment already exists for 1 single month
     existing = db.query(models.Pagamento).filter(
         models.Pagamento.membro_id == req.membro_id,
         models.Pagamento.mes_referencia == req.mes_referencia
@@ -3250,7 +3370,6 @@ def create_pagamento(req: schemas.PagamentoCreate, db: Session = Depends(get_db)
         existing.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(existing)
-        # Register transaction
         _register_transaction(db, existing, current_user.id)
         return existing
     
@@ -3265,6 +3384,7 @@ def create_pagamento(req: schemas.PagamentoCreate, db: Session = Depends(get_db)
     db.refresh(p)
     _register_transaction(db, p, current_user.id)
     return p
+
 
 def _register_transaction(db, pagamento, user_id):
     m = db.query(models.Membro).filter(models.Membro.id == pagamento.membro_id).first()
@@ -7060,15 +7180,30 @@ def _iterar_transacoes_pdf_bb(texto: str):
 
 
 def _quantidade_meses_cobertos_pelo_valor(valor_disponivel: float, valor_mensalidade: float) -> int:
-    """Quantas mensalidades (do valor atual do membro) cabem no valor recebido, com tolerância de arredondamento."""
+    """Quantas mensalidades (do valor atual do membro) cabem no valor recebido, com tolerância para mensalidades individuais e pagamentos acumulados/multimeses."""
     if valor_mensalidade <= 0 or valor_disponivel <= 0:
         return 0
+
+    if abs(valor_disponivel - valor_mensalidade) <= 2.00:
+        return 1
+
     quantidade = int(round(valor_disponivel / valor_mensalidade))
     if quantidade <= 0:
         return 0
-    if abs(valor_disponivel - round(valor_mensalidade * quantidade, 2)) > 0.05:
-        return 0
+
+    diferenca = abs(valor_disponivel - round(valor_mensalidade * quantidade, 2))
+    if diferenca <= 0.05:
+        return quantidade
+
+    if valor_disponivel >= 1.5 * valor_mensalidade:
+        if diferenca <= valor_mensalidade:
+            return quantidade
+        quantidade_piso = int(valor_disponivel // valor_mensalidade)
+        if quantidade_piso >= 1:
+            return quantidade_piso
+
     return quantidade
+
 
 
 def _baixar_pagamento_mensalidade_por_conciliacao(
@@ -7234,17 +7369,37 @@ def _conciliacao_dabb_representa_bimestre_fechado(
     return abs(float(pagamento_mes_atual.valor_pago or 0) - valor_extrato) <= 0.05
 
 
-def _ratear_valor_dabb_por_competencias(valor_total: float, competencias: list[str]) -> list[float]:
+def _ratear_valor_dabb_por_competencias(
+    valor_total: float,
+    competencias: list[str],
+    valor_mensalidade: float = 35.0,
+    taxa_bancaria: float = 0.0,
+) -> tuple[list[float], float]:
+    """Retorna a lista de valores por competência (usando o valor padrão R$ 35,00 / R$ 36,00 por mês) e eventual saldo excedente."""
     if not competencias:
-        return []
+        return [], 0.0
 
     valor_total = round(float(valor_total or 0), 2)
+    val_mensal = round(float(valor_mensalidade or 0), 2)
+    if val_mensal <= 0:
+        val_mensal = 35.0
+
+    val_taxa = round(float(taxa_bancaria or 0), 2)
+    valor_alocado_padrao = round(val_mensal + val_taxa, 2)
     quantidade = len(competencias)
-    valor_base = round(valor_total / quantidade, 2)
-    valores = [valor_base for _ in competencias]
-    diferenca = round(valor_total - sum(valores), 2)
-    valores[-1] = round(valores[-1] + diferenca, 2)
-    return valores
+
+    total_esperado = round(quantidade * valor_alocado_padrao, 2)
+
+    if valor_total >= total_esperado:
+        valores = [valor_alocado_padrao for _ in competencias]
+        excedente = round(valor_total - total_esperado, 2)
+        return valores, excedente
+    else:
+        valor_base = round(valor_total / quantidade, 2)
+        valores = [valor_base for _ in competencias]
+        diferenca = round(valor_total - sum(valores), 2)
+        valores[-1] = round(valores[-1] + diferenca, 2)
+        return valores, 0.0
 
 
 def _baixar_pagamentos_dabb_por_competencias_inferidas(
@@ -7260,11 +7415,21 @@ def _baixar_pagamentos_dabb_por_competencias_inferidas(
         raise ValueError("Nenhuma competência DABB foi informada para a baixa")
 
     valor_mensalidade, taxa_bancaria = _snapshot_dabb_da_conciliacao(db, conciliacao, membro)
-    valor_total_competencias = round(float(conciliacao.valor_extrato or 0) - taxa_bancaria, 2)
-    valores_competencias = _ratear_valor_dabb_por_competencias(valor_total_competencias, competencias)
+    valor_extrato = round(float(conciliacao.valor_extrato or 0), 2)
+    taxa_bancaria_aplicada = taxa_bancaria if codigo_dabb_em_obs else 0.0
+    valor_total_competencias = round(valor_extrato - taxa_bancaria_aplicada, 2)
+
+    valores_competencias, excedente = _ratear_valor_dabb_por_competencias(
+        valor_total=valor_total_competencias,
+        competencias=competencias,
+        valor_mensalidade=valor_mensalidade,
+        taxa_bancaria=0.0
+    )
     rateio_confiavel = bool(valores_competencias) and all(valor > 0 for valor in valores_competencias)
     if not rateio_confiavel:
         valores_competencias = [round(valor_mensalidade, 2) for _ in competencias]
+        excedente = 0.0
+
 
     pagamentos_processados = []
     _anexar_snapshot_dabb_observacoes(conciliacao, valor_mensalidade, taxa_bancaria, competencias)
@@ -8649,6 +8814,145 @@ def exportar_pagamentos(
         buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=recebimento_mensalidades_{mes_ref}.xlsx"}
     )
+
+
+@app.get("/api/relatorios/auditoria-pagamentos")
+def exportar_relatorio_auditoria_pagamentos(
+    ano: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """Gera relatório de auditoria de mensalidades comparando dinamicamente com a mensalidade padrão histórica configurada para cada mês."""
+    ano_ref = ano or date.today().year
+    prefixo_ano = f"{ano_ref}-%"
+
+    taxa_padrao = _get_dabb_taxa_bimestral(db)
+
+    # Busca todos os pagamentos do ano para verificar divergência mês a mês respeitando a vigência histórica do período
+    pagamentos_ano = db.query(models.Pagamento, models.Membro).join(
+        models.Membro, models.Membro.id == models.Pagamento.membro_id
+    ).filter(
+        models.Pagamento.mes_referencia.like(prefixo_ano),
+        models.Pagamento.status_pagamento == "pago",
+    ).order_by(models.Pagamento.mes_referencia.asc(), models.Membro.nome_completo.asc()).all()
+
+    pagamentos_divergentes = []
+    for p, m in pagamentos_ano:
+        valor_padrao_mes = _get_dabb_valor_mensal_padrao_para_mes(db, p.mes_referencia)
+        valor_padrao_mes_com_taxa = round(valor_padrao_mes + taxa_padrao, 2)
+        val_cad = float(m.dabb_valor_mensalidade or m.valor_mensalidade or 0)
+        if val_cad <= 0:
+            val_cad = valor_padrao_mes
+
+        val_pago = float(p.valor_pago or 0)
+
+        # Se o valor pago for diferente do padrão do mês (e do padrão com taxa) ou se o cadastro do membro for diferente do padrão
+        if (
+            abs(val_pago - valor_padrao_mes) > 0.01
+            and abs(val_pago - valor_padrao_mes_com_taxa) > 0.01
+        ) or abs(val_cad - valor_padrao_mes) > 0.01:
+            pagamentos_divergentes.append((p, m, valor_padrao_mes))
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"Auditoria {ano_ref}"
+
+    ws.merge_cells("A1:I1")
+    ws["A1"] = f"AUDITORIA DE PAGAMENTOS DE MENSALIDADES - DIVERGÊNCIAS POR VIGÊNCIA ({ano_ref})"
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=13)
+    ws["A1"].fill = PatternFill("solid", fgColor="800000")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+
+
+    headers = [
+        "Nome do Associado",
+        "Matrícula",
+        "CPF",
+        "Mês Ref.",
+        "Valor Pago (R$)",
+        "Valor Cadastro (R$)",
+        "Processo de Pagamento",
+        "Forma Pagamento",
+        "Observações / Origem"
+    ]
+
+    header_row = 3
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=header_row, column=col, value=header)
+        _excel_header_style(cell)
+
+    first_data_row = header_row + 1
+
+    def classificar_processo(forma_pag: Optional[str], obs: Optional[str]) -> str:
+        forma = (forma_pag or "").lower()
+        observacao = (obs or "").lower()
+        if any(k in forma for k in ["dinheiro", "pix", "balcao", "cheque", "presencial"]) or "diretamente" in observacao or "balc" in observacao:
+            return "Pagamento Direto na Associação"
+        elif "transferencia" in forma or "pix" in observacao or "transf" in observacao:
+            if "extrato" in observacao or "ofx" in observacao:
+                return "Transferência Bancária / Conciliação de Extrato"
+            return "Transferência / Depósito Direto"
+        elif "debito_automatico" in forma or "dabb" in observacao or "ret" in observacao or "rem" in observacao or "pdf" in observacao:
+            return "Débito Automático Bancário (DABB)"
+        else:
+            return "Outro Processo / Conciliação Manual"
+
+    yellow_fill = PatternFill("solid", fgColor="FFF2CC")
+
+    for row, (p, m, val_padrao_mes) in enumerate(pagamentos_divergentes, first_data_row):
+        val_cad = float(m.dabb_valor_mensalidade or m.valor_mensalidade or 0)
+        if val_cad <= 0:
+            val_cad = val_padrao_mes
+        val_pago = float(p.valor_pago or 0)
+
+        processo = classificar_processo(p.forma_pagamento, p.observacoes)
+
+        values = [
+            m.nome_completo,
+            m.matricula,
+            m.cpf,
+            p.mes_referencia,
+            val_pago,
+            val_cad,
+            processo,
+            p.forma_pagamento or "",
+            (p.observacoes or "").replace("\n", " | ")
+        ]
+
+        for col, val in enumerate(values, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+            _excel_border(cell)
+            if col in (5, 6):
+                cell.number_format = "R$ #,##0.00"
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+            else:
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+            cell.fill = yellow_fill
+
+    last_data_row = first_data_row + len(pagamentos_divergentes) - 1
+    if len(pagamentos_divergentes) > 0:
+        sum_row = last_data_row + 1
+        ws.cell(row=sum_row, column=4, value="TOTAL DIVERGENTE").font = Font(bold=True)
+        cell_sum = ws.cell(row=sum_row, column=5, value=f"=SUM(E{first_data_row}:E{last_data_row})")
+        cell_sum.font = Font(bold=True)
+        cell_sum.number_format = "R$ #,##0.00"
+        _excel_header_style(ws.cell(row=sum_row, column=4))
+        _excel_header_style(cell_sum)
+
+    for col in range(1, len(headers) + 1):
+        column_letter = get_column_letter(col)
+        ws.column_dimensions[column_letter].width = 25
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=auditoria_pagamentos_divergentes_{ano_ref}.xlsx"}
+    )
+
 
 @app.get("/api/relatorios/aniversariantes")
 def exportar_aniversariantes(
