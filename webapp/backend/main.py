@@ -7416,6 +7416,7 @@ def _baixar_pagamentos_dabb_por_competencias_inferidas(
 
     valor_mensalidade, taxa_bancaria = _snapshot_dabb_da_conciliacao(db, conciliacao, membro)
     valor_extrato = round(float(conciliacao.valor_extrato or 0), 2)
+    codigo_dabb_em_obs = _extrair_codigo_dabb_das_observacoes(conciliacao.observacoes)
     taxa_bancaria_aplicada = taxa_bancaria if codigo_dabb_em_obs else 0.0
     valor_total_competencias = round(valor_extrato - taxa_bancaria_aplicada, 2)
 
