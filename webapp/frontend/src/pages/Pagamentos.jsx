@@ -804,7 +804,16 @@ export default function Pagamentos() {
       )}
       {pendenciasConcil.length > 0 && (
         <div className="card payments-pending-card">
-          <div className="card-title payments-pending-title">Pendências de Conciliação ({pendenciasConcil.length})</div>
+          <div className="payments-pending-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <div className="card-title payments-pending-title">Pendências de Conciliação ({pendenciasConcil.length})</div>
+            <button
+              className="btn btn-outline btn-sm"
+              title="Lista de códigos DABB que o banco está debitando mas não pertencem a associado ativo (para enviar cancelamento ao banco)"
+              onClick={() => baixarRelatorio('/relatorios/dabb-debitos-sem-associado.xlsx', 'dabb_debitos_sem_associado.xlsx')}
+            >
+              <Download size={15} /> Débitos DABB sem associado ativo (.xlsx)
+            </button>
+          </div>
           {pendenciasConcil.map(p => (
             <div key={p.conciliacao_id} className="payments-pending-item">
               <small className="payments-pending-summary">{formatDateBR(p.data_extrato)} - {fmt(p.valor_extrato)} - {p.descricao_extrato}</small>

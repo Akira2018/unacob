@@ -8488,6 +8488,158 @@ def exportar_previa_remessa_dabb_bimestral_excel(
     )
 
 
+def _extrair_codigo_barras_das_observacoes(observacoes: Optional[str]) -> Optional[str]:
+    match = re.search(r"codigo_barras=([0-9A-Za-z]+)", observacoes or "")
+    return match.group(1) if match else None
+
+
+def _relatorio_dabb_debitos_sem_associado(db: Session) -> list[dict]:
+    """Codigos DABB que o banco debitou (conciliacoes de credito vindas de arquivo
+    DABB) mas que NAO pertencem a um associado ativo - candidatos a cancelamento
+    da autorizacao de debito junto ao banco."""
+    membros_por_codigo: dict[str, list[models.Membro]] = {}
+    for membro in db.query(models.Membro).all():
+        normalizado = _normalizar_codigo_dabb(membro.codigo_dabb)
+        if normalizado:
+            membros_por_codigo.setdefault(normalizado, []).append(membro)
+
+    conciliacoes = db.query(models.Conciliacao).filter(
+        models.Conciliacao.tipo == "credito",
+        models.Conciliacao.observacoes.isnot(None),
+        models.Conciliacao.observacoes.like("Arquivo DABB%"),
+    ).all()
+
+    agregado: dict[str, dict] = {}
+    for conciliacao in conciliacoes:
+        codigo = _extrair_codigo_dabb_das_observacoes(conciliacao.observacoes)
+        if not codigo:
+            continue
+
+        membros_match: list[models.Membro] = []
+        for variante in _variantes_codigo_dabb(codigo):
+            if variante in membros_por_codigo:
+                membros_match = membros_por_codigo[variante]
+                break
+
+        if membros_match and any((m.status or "").lower() == "ativo" for m in membros_match):
+            continue  # pertence a associado ativo -> ok, nao entra no relatorio
+
+        membro = membros_match[0] if membros_match else None
+        situacao = "SEM CADASTRO" if membro is None else (membro.status or "sem status").upper()
+
+        item = agregado.setdefault(codigo, {
+            "codigo_dabb": codigo,
+            "codigo_barras": (
+                _extrair_codigo_barras_das_observacoes(conciliacao.observacoes)
+                or (membro.codigo_barras_dabb if membro else None)
+            ),
+            "nome": membro.nome_completo if membro else None,
+            "matricula": membro.matricula if membro else None,
+            "situacao": situacao,
+            "quantidade_debitos": 0,
+            "valor_total": 0.0,
+            "meses": set(),
+            "ultimo_debito": None,
+            "ja_conciliado": 0,
+        })
+        item["quantidade_debitos"] += 1
+        item["valor_total"] = round(item["valor_total"] + float(conciliacao.valor_extrato or 0), 2)
+        if conciliacao.mes_referencia:
+            item["meses"].add(conciliacao.mes_referencia)
+        if conciliacao.conciliado:
+            item["ja_conciliado"] += 1
+        if conciliacao.data_extrato and (
+            item["ultimo_debito"] is None or conciliacao.data_extrato > item["ultimo_debito"]
+        ):
+            item["ultimo_debito"] = conciliacao.data_extrato
+
+    linhas = []
+    for item in agregado.values():
+        item["meses"] = ", ".join(sorted(item["meses"]))
+        item["ultimo_debito"] = item["ultimo_debito"].isoformat() if item["ultimo_debito"] else None
+        linhas.append(item)
+
+    linhas.sort(key=lambda x: (x["situacao"] != "SEM CADASTRO", x["situacao"], x["codigo_dabb"]))
+    return linhas
+
+
+@app.get("/api/relatorios/dabb-debitos-sem-associado")
+def relatorio_dabb_debitos_sem_associado(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    linhas = _relatorio_dabb_debitos_sem_associado(db)
+    return {
+        "total_codigos": len(linhas),
+        "total_debitos": sum(l["quantidade_debitos"] for l in linhas),
+        "valor_total": round(sum(l["valor_total"] for l in linhas), 2),
+        "itens": linhas,
+    }
+
+
+@app.get("/api/relatorios/dabb-debitos-sem-associado.xlsx")
+def exportar_dabb_debitos_sem_associado_excel(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    linhas = _relatorio_dabb_debitos_sem_associado(db)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "DABB sem associado ativo"
+
+    ws.merge_cells("A1:I1")
+    ws["A1"] = "DEBITOS DABB SEM ASSOCIADO ATIVO - candidatos a cancelamento no banco"
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=13)
+    ws["A1"].fill = PatternFill("solid", fgColor="B45309")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    ws.cell(row=3, column=1, value="Códigos").font = Font(bold=True)
+    ws.cell(row=3, column=2, value=len(linhas))
+    ws.cell(row=4, column=1, value="Total de débitos").font = Font(bold=True)
+    ws.cell(row=4, column=2, value=sum(l["quantidade_debitos"] for l in linhas))
+    ws.cell(row=5, column=1, value="Valor total").font = Font(bold=True)
+    ws.cell(row=5, column=2, value=round(sum(l["valor_total"] for l in linhas), 2)).number_format = 'R$ #,##0.00'
+
+    header_row = 7
+    headers = [
+        "Código DABB", "Código de barras", "Nome", "Matrícula", "Situação cadastro",
+        "Qtd débitos", "Valor total", "Meses", "Último débito",
+    ]
+    for col, header in enumerate(headers, 1):
+        _excel_header_style(ws.cell(row=header_row, column=col, value=header))
+
+    first_data_row = header_row + 1
+    for row, item in enumerate(linhas, first_data_row):
+        ws.cell(row=row, column=1, value=item["codigo_dabb"])
+        ws.cell(row=row, column=2, value=item["codigo_barras"])
+        ws.cell(row=row, column=3, value=item["nome"] or "(não cadastrado)")
+        ws.cell(row=row, column=4, value=item["matricula"])
+        ws.cell(row=row, column=5, value=item["situacao"])
+        ws.cell(row=row, column=6, value=item["quantidade_debitos"])
+        valor_cell = ws.cell(row=row, column=7, value=float(item["valor_total"] or 0))
+        valor_cell.number_format = 'R$ #,##0.00'
+        valor_cell.alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=8, value=item["meses"])
+        ws.cell(row=row, column=9, value=item["ultimo_debito"])
+
+    last_row = max(first_data_row, first_data_row + len(linhas) - 1)
+    _excel_apply_zebra(ws, first_data_row, last_row, 1, 9)
+    _excel_apply_borders(ws, header_row, last_row, 1, 9)
+    ws.freeze_panes = f"A{first_data_row}"
+    ws.auto_filter.ref = f"A{header_row}:I{last_row}"
+    _excel_autofit_columns(ws, min_width=12, max_width=44)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=dabb_debitos_sem_associado.xlsx"},
+    )
+
+
 @app.get("/api/relatorios/dabb-remessa-bimestral/ultima")
 def baixar_ultima_remessa_dabb_bimestral(
     mes_referencia: str,
