@@ -51,6 +51,11 @@ coverage/
 # Ruflo local secrets and runtime data
 .env.local
 .env.*.local
-.claude-flow/data/
-.claude-flow/logs/
-.claude-flow/sessions/
+
+# Ruflo / Claude Code tooling scaffolding (nao versionar)
+.claude/
+.claude-flow/
+.swarm/
+.mcp.json
+CLAUDE.md
+mes_referencia
