@@ -15,6 +15,10 @@
 #       -> roda o reset mesmo que o marcador ja exista
 #
 # Variaveis opcionais: REPO_DIR (/opt/unacob), DOMAIN (https://unacobadmin.com.br)
+#
+# GARANTIA: se o script parar o backend para o reset e algo falhar depois,
+# o trap de saida sempre tenta subir o backend de novo (nunca deixa fora do ar).
+# O health check ao final apenas avisa; nao derruba o deploy.
 # =============================================================================
 set -euo pipefail
 
@@ -22,7 +26,6 @@ REPO_DIR="${REPO_DIR:-/opt/unacob}"
 DOMAIN="${DOMAIN:-https://unacobadmin.com.br}"
 FORCE_RESET="${FORCE_RESET:-0}"
 DB_IN_CONTAINER="/data/associacao.db"
-RESET_MARKER="/data/.reset_mensalidades_done"
 
 DO_RESET=0
 for arg in "$@"; do
@@ -31,23 +34,40 @@ done
 
 cd "$REPO_DIR"
 TS="$(date +%Y%m%d_%H%M%S)"
+BKP="$REPO_DIR/associacao.db.bak-${TS}"
+PREV_COMMIT=""
+BACKEND_STOPPED=0
 
 if docker compose version >/dev/null 2>&1; then DC="docker compose"; else DC="docker-compose"; fi
+
+backend_running() { $DC ps 2>/dev/null | grep -Eq 'backend.*(Up|running)'; }
+
+# ----------------------------------------------------------------------------
+# Rede de seguranca: roda SEMPRE ao sair (sucesso ou falha).
+#  - se paramos o backend e ele nao esta de pe, sobe de novo;
+#  - em caso de falha, imprime instrucoes de rollback.
+# ----------------------------------------------------------------------------
+on_exit() {
+  rc=$?
+  set +e
+  if [ "$BACKEND_STOPPED" = 1 ] && ! backend_running; then
+    echo ">> recuperacao: backend fora do ar, subindo novamente ..."
+    $DC up -d --build backend || $DC up -d backend || $DC start backend
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo ""
+    echo "!! DEPLOY FALHOU (rc=$rc)."
+    echo "!! Restaurar o banco (se o reset tocou nele):"
+    echo "     $DC stop backend && $DC cp \"$BKP\" backend:$DB_IN_CONTAINER && $DC start backend"
+    [ -n "$PREV_COMMIT" ] && echo "!! Voltar o codigo:  git reset --hard $PREV_COMMIT"
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
+
 echo ">> compose ...... $DC"
 echo ">> repo ......... $REPO_DIR"
 echo ">> reset ........ $([ "$DO_RESET" = 1 ] && echo SIM || echo nao)"
-
-BKP="$REPO_DIR/associacao.db.bak-${TS}"
-rollback_hint() {
-  echo ""
-  echo "!! FALHA no deploy."
-  echo "!! Para restaurar o banco (se algo tocou nele):"
-  echo "     $DC stop backend"
-  echo "     $DC cp \"$BKP\" backend:$DB_IN_CONTAINER"
-  echo "     $DC start backend"
-  echo "!! Para voltar o codigo:  git reset --hard \$PREV_COMMIT"
-}
-trap rollback_hint ERR
 
 # ----------------------------------------------------------------------------
 # 1) Atualiza o codigo
@@ -63,13 +83,13 @@ NEW_COMMIT="$(git rev-parse HEAD)"
 echo ">> codigo ....... $PREV_COMMIT -> $NEW_COMMIT"
 
 # ----------------------------------------------------------------------------
-# 2) Backup do banco de producao (se o backend estiver rodando)
+# 2) Backup do banco de producao
 # ----------------------------------------------------------------------------
-if $DC ps 2>/dev/null | grep -Eq 'backend.*(Up|running)'; then
+if backend_running; then
   echo ">> backup ....... $BKP"
   $DC cp "backend:$DB_IN_CONTAINER" "$BKP"
 else
-  echo ">> backup ....... backend parado; tentando backup via volume"
+  echo ">> backup ....... backend parado; backup via container efemero"
   $DC run --rm --no-deps -T -v "$REPO_DIR:/host" backend \
     sh -c "cp $DB_IN_CONTAINER /host/$(basename "$BKP")" || echo "   (sem banco previo - primeira subida?)"
 fi
@@ -80,6 +100,7 @@ fi
 if [ "$DO_RESET" = 1 ]; then
   echo ">> reset ........ parando backend"
   $DC stop backend || true
+  BACKEND_STOPPED=1
 
   echo ">> reset ........ aplicando scripts/reset_recebimento_mensalidades.sql"
   FORCE_RESET="$FORCE_RESET" $DC run --rm --no-deps -T \
@@ -127,28 +148,34 @@ PY
 fi
 
 # ----------------------------------------------------------------------------
-# 4) Rebuild + subida
+# 4) Rebuild + subida (traz o backend de volta se foi parado no passo 3)
 # ----------------------------------------------------------------------------
 echo ">> build ........ $DC up -d --build"
 $DC up -d --build
+BACKEND_STOPPED=0
 $DC ps
 
 # ----------------------------------------------------------------------------
-# 5) Health checks
+# 5) Health check (SO AVISA - nunca derruba o deploy)
 # ----------------------------------------------------------------------------
 echo ">> aguardando backend responder ..."
-OK=0
-for i in $(seq 1 15); do
-  if curl -fsS "$DOMAIN/api/health" >/dev/null 2>&1; then OK=1; break; fi
+HEALTH="(sem resposta)"
+for _ in $(seq 1 20); do
+  if curl -fsS "$DOMAIN/api/health" >/dev/null 2>&1; then
+    HEALTH="$(curl -fsS "$DOMAIN/api/health" 2>/dev/null || echo '(sem resposta)')"
+    break
+  fi
   sleep 3
 done
-[ "$OK" = 1 ] || { echo "!! /api/health nao respondeu apos ~45s"; false; }
-echo -n ">> /api/health .. "
-curl -fsS "$DOMAIN/api/health"; echo
-CODE="$(curl -sS -o /dev/null -w '%{http_code}' "$DOMAIN/api/conciliacao" || true)"
-echo ">> /api/conciliacao -> $CODE  (401/403 = esperado, rota autenticada)"
+echo ">> /api/health .. $HEALTH"
+CODE="$(curl -sS -o /dev/null -w '%{http_code}' "$DOMAIN/api/pagamentos/painel?mes_referencia=$(date +%Y-%m)" || true)"
+echo ">> /api/pagamentos/painel -> $CODE  (200 = ok; 401/403 tambem indica backend no ar)"
 
-trap - ERR
+case "$HEALTH" in
+  *'"status"'*'"ok"'*) : ;;
+  *) echo "!! ATENCAO: /api/health nao confirmou OK. Rode: $DC logs --tail=80 backend" ;;
+esac
+
 echo ""
-echo ">> DEPLOY OK  ($NEW_COMMIT)"
+echo ">> DEPLOY CONCLUIDO  ($NEW_COMMIT)"
 echo ">> backup do banco: $BKP"
