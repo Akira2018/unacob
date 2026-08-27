@@ -1866,6 +1866,67 @@ def _pagamentos_pagos_no_mes(db: Session, mes_referencia: str):
     ]
 
 
+def _pagamentos_recebidos_no_mes(db: Session, mes_referencia: str):
+    """Mensalidades cujo DINHEIRO entrou no mês (regime de CAIXA): filtra por
+    `data_pagamento` dentro do mês, não por `mes_referencia` (competência).
+
+    Um débito bancário bimestral/multimês entra na conta como um único valor num
+    único dia, mas é registrado como vários `pagamentos` (um por competência) só
+    para marcar quais meses ficaram quitados. Para os relatórios de caixa
+    (fluxo de caixa, balancete, livro diário, caixa, consolidado, saldo
+    acumulado) o valor tem que aparecer inteiro no mês em que caiu — este helper
+    soma todas essas parcelas no mês do recebimento.
+
+    Quando `data_pagamento` é nulo (lançamento manual antigo), cai para
+    `mes_referencia`. Dedup defensivo por (membro, competência), mantendo o
+    registro mais recente, para não contar em dobro parcelas duplicadas.
+    Para telas operacionais (quem precisa pagar agora) continue usando
+    `_pagamentos_pagos_membros_ativos_no_mes` / `_pagamentos_pagos_no_mes`."""
+    ano, mes = _parse_mes_referencia_or_400(mes_referencia)
+    primeiro_dia = _primeiro_dia_mes(ano, mes)
+    ultimo_dia = _ultimo_dia_mes(ano, mes)
+
+    rows = db.query(models.Pagamento).filter(
+        models.Pagamento.status_pagamento == "pago",
+        or_(
+            models.Pagamento.data_pagamento.between(primeiro_dia, ultimo_dia),
+            (models.Pagamento.data_pagamento.is_(None))
+            & (models.Pagamento.mes_referencia == mes_referencia),
+        ),
+    ).all()
+
+    melhor_por_chave: dict = {}
+    for pagamento in rows:
+        chave = (pagamento.membro_id, pagamento.mes_referencia)
+        atual = melhor_por_chave.get(chave)
+        if atual is None:
+            melhor_por_chave[chave] = pagamento
+            continue
+        dt_novo = pagamento.updated_at or pagamento.created_at or datetime.min
+        dt_atual = atual.updated_at or atual.created_at or datetime.min
+        if dt_novo >= dt_atual:
+            melhor_por_chave[chave] = pagamento
+    return list(melhor_por_chave.values())
+
+
+def _total_pagamentos_recebidos_antes_do_mes(db: Session, mes_referencia: str) -> float:
+    """Soma (regime de caixa) de todas as mensalidades pagas cujo dinheiro entrou
+    ANTES do primeiro dia de `mes_referencia`. Espelha `_pagamentos_recebidos_no_mes`
+    para o cálculo de saldo acumulado."""
+    ano, mes = _parse_mes_referencia_or_400(mes_referencia)
+    primeiro_dia = _primeiro_dia_mes(ano, mes)
+    total = db.query(sql_func.coalesce(sql_func.sum(models.Pagamento.valor_pago), 0)).filter(
+        models.Pagamento.status_pagamento == "pago",
+        or_(
+            models.Pagamento.data_pagamento < primeiro_dia,
+            (models.Pagamento.data_pagamento.is_(None))
+            & (models.Pagamento.mes_referencia.isnot(None))
+            & (models.Pagamento.mes_referencia < mes_referencia),
+        ),
+    ).scalar()
+    return float(total or 0)
+
+
 def _parse_mes_referencia_or_400(mes_referencia: str) -> tuple[int, int]:
     if not mes_referencia or not re.match(r"^\d{4}-\d{2}$", mes_referencia):
         raise HTTPException(status_code=400, detail="mes_referencia deve estar no formato YYYY-MM")
@@ -3759,7 +3820,7 @@ def _gerar_analise_previsao_orcamentaria(
     previsao_por_conta = {p.conta_id: p for p in previsoes}
 
     realizado_entradas = defaultdict(float)
-    for pagamento in _pagamentos_pagos_no_mes(db, mes_ref):
+    for pagamento in _pagamentos_recebidos_no_mes(db, mes_ref):
         if pagamento.valor_pago:
             realizado_entradas[CODIGO_CONTA_MENSALIDADES] += float(pagamento.valor_pago)
 
@@ -4904,11 +4965,10 @@ def _saldo_anterior_mes(db: Session, mes_ref: str) -> float:
     if saldo_manual:
         return round(float(saldo_manual.valor_saldo_inicial or 0), 2)
 
-    total_pagamentos_anteriores = db.query(sql_func.coalesce(sql_func.sum(models.Pagamento.valor_pago), 0)).filter(
-        models.Pagamento.status_pagamento == "pago",
-        models.Pagamento.mes_referencia.isnot(None),
-        models.Pagamento.mes_referencia < mes_ref
-    ).scalar()
+    # Regime de caixa: soma pelo mês em que o dinheiro entrou (data_pagamento),
+    # não pela competência. Assim o saldo acumulado bate com os relatórios de
+    # caixa mês a mês (um débito bimestral conta inteiro no mês do recebimento).
+    total_pagamentos_anteriores = _total_pagamentos_recebidos_antes_do_mes(db, mes_ref)
 
     total_outras_rendas_anteriores = db.query(sql_func.coalesce(sql_func.sum(models.OutraRenda.valor), 0)).filter(
         models.OutraRenda.mes_referencia.isnot(None),
@@ -5011,7 +5071,7 @@ def fluxo_caixa(
 ):
     today = date.today()
     mes_ref = mes_referencia or today.strftime("%Y-%m")
-    pags_mes = _pagamentos_pagos_no_mes(db, mes_ref)
+    pags_mes = _pagamentos_recebidos_no_mes(db, mes_ref)
     rendas_mes = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all()
     despesas_mes = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all()
 
@@ -5073,7 +5133,7 @@ def fluxo_caixa(
     for i in range(11, -1, -1):
         ref_date = today - timedelta(days=i * 30)
         mes_iter = ref_date.strftime("%Y-%m")
-        pags_i = _pagamentos_pagos_no_mes(db, mes_iter)
+        pags_i = _pagamentos_recebidos_no_mes(db, mes_iter)
         rendas_i = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_iter).all()
         despesas_i = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_iter).all()
         ent = sum(float(p.valor_pago) for p in pags_i if p.valor_pago) + sum(float(r.valor) for r in rendas_i if r.valor)
@@ -5185,10 +5245,8 @@ def dashboard(
     for i in range(5, -1, -1):
         ref_iter = ref_date - timedelta(days=i * 28)
         mes_iter = ref_iter.strftime("%Y-%m")
-        pags_i = db.query(models.Pagamento).filter(
-            models.Pagamento.mes_referencia == mes_iter,
-            models.Pagamento.status_pagamento == 'pago'
-        ).all()
+        # Regime de caixa: entra no mês em que o dinheiro caiu (coerente com Fluxo de Caixa)
+        pags_i = _pagamentos_recebidos_no_mes(db, mes_iter)
         desp_i = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_iter).all()
         rend_i = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_iter).all()
         ent_i = sum(float(p.valor_pago) for p in pags_i if p.valor_pago) + sum(r.valor for r in rend_i if r.valor)
@@ -8138,7 +8196,7 @@ def balancete(
     today = date.today()
     mes_ref = mes_referencia or today.strftime("%Y-%m")
 
-    pags = _pagamentos_pagos_no_mes(db, mes_ref)
+    pags = _pagamentos_recebidos_no_mes(db, mes_ref)
     desp = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all()
     rendas = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all()
 
@@ -9562,7 +9620,7 @@ def exportar_balancete(
 ):
     today = date.today()
     mes_ref = mes_referencia or today.strftime("%Y-%m")
-    pags = _pagamentos_pagos_no_mes(db, mes_ref)
+    pags = _pagamentos_recebidos_no_mes(db, mes_ref)
     desp = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all()
     rendas = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all()
     saldo_anterior = _saldo_anterior_mes(db, mes_ref)
@@ -9775,7 +9833,7 @@ def exportar_balancete_anual(
 
     for mes_num in range(1, 13):
         mes_ref = f"{ano_ref}-{mes_num:02d}"
-        pags = _pagamentos_pagos_no_mes(db, mes_ref)
+        pags = _pagamentos_recebidos_no_mes(db, mes_ref)
         desp = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all()
         rendas = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all()
 
@@ -9916,7 +9974,7 @@ def exportar_livro_diario(
     today = date.today()
     mes_ref = mes_referencia or today.strftime("%Y-%m")
 
-    pags = _pagamentos_pagos_no_mes(db, mes_ref)
+    pags = _pagamentos_recebidos_no_mes(db, mes_ref)
     rendas = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all()
     despesas = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all()
     saldo_anterior = _saldo_anterior_mes(db, mes_ref)
@@ -10543,7 +10601,7 @@ def exportar_consolidado_financeiro(
     for idx, mes_ref in enumerate(meses):
         row = first_data_row + idx
 
-        mensalidades = _pagamentos_pagos_no_mes(db, mes_ref)
+        mensalidades = _pagamentos_recebidos_no_mes(db, mes_ref)
         outras_rendas = db.query(models.OutraRenda).filter(models.OutraRenda.mes_referencia == mes_ref).all()
         despesas = db.query(models.Despesa).filter(models.Despesa.mes_referencia == mes_ref).all()
         aplicacoes = db.query(models.AplicacaoFinanceira).filter(models.AplicacaoFinanceira.mes_referencia == mes_ref).all()
@@ -10817,7 +10875,7 @@ def exportar_orcamento_anual(
     for mes_num in range(1, 13):
         mes_ref = f"{ano_ref}-{mes_num:02d}"
 
-        for pagamento in _pagamentos_pagos_no_mes(db, mes_ref):
+        for pagamento in _pagamentos_recebidos_no_mes(db, mes_ref):
             if pagamento.valor_pago:
                 realizado_entrada[CODIGO_CONTA_MENSALIDADES][mes_num] += float(pagamento.valor_pago)
 
