@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-08-21T14:47:03.963Z",
+  "projectRoot": "D:\\unacob",
+  "structure": {
+    "hasPackageJson": true,
+    "hasTsConfig": false,
+    "hasClaudeConfig": true,
+    "hasClaudeFlow": true
+  },
+  "scannedAt": 1787323623963
+}

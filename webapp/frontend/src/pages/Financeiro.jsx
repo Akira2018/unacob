@@ -6,6 +6,7 @@ import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Toolti
 import { Download } from 'lucide-react';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
+import { formatDateBR } from '../utils/formatters';
 
 const HELP_BY_ROLE = {
   administrador: 'Priorize saldo inicial, integridade do balancete e consistência do ambiente antes de exportar ou ajustar valores manuais.',
@@ -265,7 +266,7 @@ export default function Financeiro() {
                       <tr key={i}>
                         <td>{p.nome || p.membro_nome || p.membro_id}</td>
                         <td><strong style={{ color: '#38a169' }}>{fmt(p.valor_pago)}</strong></td>
-                        <td>{p.data_pagamento || '-'}</td>
+                        <td>{formatDateBR(p.data_pagamento)}</td>
                         <td>{p.forma_pagamento || '-'}</td>
                       </tr>
                     ))}

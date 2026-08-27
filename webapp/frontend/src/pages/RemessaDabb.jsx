@@ -5,6 +5,7 @@ import { BookText, Copy, CreditCard, Download, FileSpreadsheet, Pencil, RefreshC
 import api from '../api';
 import { getApiErrorMessage } from '../utils/apiError';
 import StatusCounter from '../components/StatusCounter';
+import { formatDateBR } from '../utils/formatters';
 
 const getMeses = () => {
   const r = [];
@@ -30,7 +31,7 @@ export default function RemessaDabb() {
   const [filtroAlteradosDabb, setFiltroAlteradosDabb] = useState(false);
   const [filtroHabilitadosDabb, setFiltroHabilitadosDabb] = useState(false);
   const [filtroAtrasoDabb, setFiltroAtrasoDabb] = useState(false);
-  const [configDabb, setConfigDabb] = useState({ valor_mensal_padrao: '35.00', taxa_bancaria_bimestral: '1.00' });
+  const [configDabb, setConfigDabb] = useState({ valor_mensal_padrao: '35.00', taxa_bancaria_bimestral: '1.00', ultimo_sequencial: '0' });
   const [aplicarReajusteTodos, setAplicarReajusteTodos] = useState(false);
   const [somenteHabilitadosReajuste, setSomenteHabilitadosReajuste] = useState(true);
   const [historicoDabbConfig, setHistoricoDabbConfig] = useState([]);
@@ -80,6 +81,7 @@ export default function RemessaDabb() {
       .then((r) => setConfigDabb({
         valor_mensal_padrao: String(r.data?.valor_mensal_padrao ?? '35.00'),
         taxa_bancaria_bimestral: String(r.data?.taxa_bancaria_bimestral ?? '1.00'),
+        ultimo_sequencial: String(r.data?.ultimo_sequencial ?? '0'),
       }))
       .catch(() => {});
     api.get('/configuracoes/dabb/historico')
@@ -106,10 +108,21 @@ export default function RemessaDabb() {
         toast.success('Arquivo disponibilizado.');
       }
     } catch (err) {
-      toast.error(getApiErrorMessage(err, 'Erro ao gerar arquivo'));
+      let msg = getApiErrorMessage(err, 'Erro ao gerar arquivo');
+      if (err?.response?.data instanceof Blob) {
+        try {
+          const text = await err.response.data.text();
+          const json = JSON.parse(text);
+          if (json?.detail && typeof json.detail === 'string') {
+            msg = json.detail;
+          }
+        } catch (e) {}
+      }
+      toast.error(msg);
     } finally {
       setLoading((prev) => ({ ...prev, [key]: false }));
     }
+
   };
 
   const carregarPreviaDabb = async () => {
@@ -180,11 +193,17 @@ export default function RemessaDabb() {
   };
 
   const gerarOuRecuperarRemessa = async () => {
+    await salvarConfiguracoesDabb();
     await download(
       'dabb_remessa_bimestral',
       '/relatorios/dabb-remessa-bimestral',
       `dabb_remessa_${mes}.rem`,
-      { mes_referencia: mes, data_debito: normalizarDataDabb(dataDebitoDabb), incluir_atrasados: incluirAtrasadosDabb },
+      {
+        mes_referencia: mes,
+        data_debito: normalizarDataDabb(dataDebitoDabb),
+        incluir_atrasados: incluirAtrasadosDabb,
+        ultimo_sequencial: Number(configDabb.ultimo_sequencial || 0),
+      },
       async (r) => {
         const recuperada = String(r.headers?.['x-remessa-recuperada'] || '').toLowerCase() === 'true';
         const geradaEm = r.headers?.['x-remessa-gerada-em'];
@@ -250,7 +269,7 @@ export default function RemessaDabb() {
           <h1>Previa da Remessa DABB</h1>
           <div class="meta">
             <div><strong>Periodo:</strong> ${previaDabb.mes_inicio} a ${previaDabb.mes_fim}</div>
-            <div><strong>Data debito:</strong> ${previaDabb.data_debito}</div>
+            <div><strong>Data debito:</strong> ${formatDateBR(previaDabb.data_debito)}</div>
             <div><strong>Associados:</strong> ${previaDabb.quantidade_associados}</div>
             <div><strong>Competencias:</strong> ${previaDabb.quantidade_competencias}</div>
             <div><strong>Valor total:</strong> ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(previaDabb.valor_total || 0)}</div>
@@ -346,11 +365,13 @@ export default function RemessaDabb() {
       await api.put('/configuracoes/dabb', {
         valor_mensal_padrao: Number(configDabb.valor_mensal_padrao),
         taxa_bancaria_bimestral: Number(configDabb.taxa_bancaria_bimestral),
+        ultimo_sequencial: Number(configDabb.ultimo_sequencial || 0),
         aplicar_reajuste_todos: aplicarReajusteTodos,
         somente_habilitados_dabb: somenteHabilitadosReajuste,
       });
       const hist = await api.get('/configuracoes/dabb/historico');
       setHistoricoDabbConfig(Array.isArray(hist.data) ? hist.data : []);
+      await carregarArquivosRemessa();
       toast.success(aplicarReajusteTodos ? 'Configuracao salva e reajuste aplicado.' : 'Configuracao DABB salva.');
       if (previaDabb) await carregarPreviaDabb();
     } catch (err) {
@@ -531,6 +552,31 @@ export default function RemessaDabb() {
                   Somada ao valor das competencias no arquivo REM.
                 </div>
               </div>
+
+              <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 14, background: '#f8fafc' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>Sequencial Remessa BB</div>
+                    <div style={{ fontSize: 24, lineHeight: 1.1, fontWeight: 800, color: '#1e3a5f', marginTop: 4 }}>
+                      {String(Math.max(0, parseInt(configDabb.ultimo_sequencial || '0', 10) || 0) + 1).padStart(6, '0')}
+                    </div>
+                  </div>
+                  <BookText size={20} color="#1e3a5f" />
+                </div>
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label>Ultima remessa enviada ao BB</label>
+                  <input
+                    className="search-input"
+                    type="number"
+                    value={configDabb.ultimo_sequencial}
+                    onChange={(e) => setConfigDabb((prev) => ({ ...prev, ultimo_sequencial: e.target.value }))}
+                    placeholder="Ex.: 4"
+                  />
+                </div>
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 8 }}>
+                  A proxima remessa sera gerada com o sequencial {String(Math.max(0, parseInt(configDabb.ultimo_sequencial || '0', 10) || 0) + 1).padStart(8, '0')}. Clique em "Salvar configuracao" para aplicar.
+                </div>
+              </div>
             </div>
 
             <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, display: 'grid', gap: 10 }}>
@@ -585,7 +631,7 @@ export default function RemessaDabb() {
                 <div style={{ display: 'grid', gap: 4 }}>
                   <div style={{ fontWeight: 700, color: '#1e3a5f' }}>{remessa.arquivo_nome}</div>
                   <div style={{ fontSize: 13, color: '#475569' }}>
-                    Gerado em {remessa.created_at ? new Date(remessa.created_at).toLocaleString('pt-BR') : '-'} · Debito {remessa.data_debito || '-'} · Registros {remessa.quantidade_registros} · Total {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(remessa.valor_total || 0)}
+                    Gerado em {remessa.created_at ? new Date(remessa.created_at).toLocaleString('pt-BR') : '-'} · Debito {formatDateBR(remessa.data_debito)} · Registros {remessa.quantidade_registros} · Total {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(remessa.valor_total || 0)}
                   </div>
                   {index === 0 && (
                     <div style={{ fontSize: 12, color: '#9a3412', fontWeight: 600 }}>
@@ -711,7 +757,7 @@ export default function RemessaDabb() {
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 16 }}>
             <div><strong>Periodo:</strong> {previaDabb.mes_inicio} a {previaDabb.mes_fim}</div>
-            <div><strong>Debito:</strong> {previaDabb.data_debito}</div>
+            <div><strong>Debito:</strong> {formatDateBR(previaDabb.data_debito)}</div>
             <div><strong>Associados:</strong> {previaDabb.quantidade_associados}</div>
             <div><strong>Competencias:</strong> {previaDabb.quantidade_competencias}</div>
             <div><strong>Total:</strong> {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(previaDabb.valor_total || 0)}</div>

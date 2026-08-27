@@ -9,6 +9,7 @@ import FilterBar from '../components/FilterBar';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
 import SummaryCard, { SummaryCardText } from '../components/SummaryCard';
+import { formatDateBR } from '../utils/formatters';
 
 const getMeses = () => {
   const r = [];
@@ -93,17 +94,43 @@ export default function Relatorios() {
     {
       key: 'pagamentos',
       icon: <CreditCard size={24} />,
-      title: 'Recebimento de Mensalidades',
-      desc: 'Situacao de pagamentos dos membros com destaque para inadimplentes',
+      title: 'Recebimento de Mensalidades (Mensal ou Anual)',
+      desc: 'Situacao de pagamentos dos membros (Selecione um mes especifico ou o Ano Completo com os 12 meses)',
       color: '#38a169',
       isFinance: true,
-      action: () => download('pagamentos', '/relatorios/pagamentos', `recebimento_mensalidades_${mes}.xlsx`, { mes_referencia: mes }),
+      action: () => download(
+        'pagamentos',
+        '/relatorios/pagamentos',
+        mes.endsWith('-anual') ? `recebimento_mensalidades_anual_${mes.replace('-anual', '')}.xlsx` : `recebimento_mensalidades_${mes}.xlsx`,
+        { mes_referencia: mes }
+      ),
+      extra: (
+        <select className="search-input" value={mes} onChange={(e) => setMes(e.target.value)} style={{ width: '100%' }}>
+          <optgroup label="Visao Anual (12 Meses no Excel)">
+            <option value={`${new Date().getFullYear()}-anual`}>Ano {new Date().getFullYear()} (Todos os 12 Meses)</option>
+            <option value={`${new Date().getFullYear() - 1}-anual`}>Ano {new Date().getFullYear() - 1} (Todos os 12 Meses)</option>
+          </optgroup>
+          <optgroup label="Visao Mensal Especifica">
+            {getMeses().map((m) => <option key={m} value={m}>{m}</option>)}
+          </optgroup>
+        </select>
+      ),
+    },
+    {
+      key: 'devedores',
+      icon: <Users size={24} />,
+      title: 'Relatório de Devedores (Mensalidades em Aberto)',
+      desc: 'Lista de associados devedores com meses em aberto e valor total acumulado',
+      color: '#e53e3e',
+      isFinance: true,
+      action: () => download('devedores', '/relatorios/devedores', `devedores_${mes}.xlsx`, { mes_referencia: mes, formato: 'excel' }),
       extra: (
         <select className="search-input" value={mes} onChange={(e) => setMes(e.target.value)} style={{ width: '100%' }}>
           {getMeses().map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
       ),
     },
+
     {
       key: 'aniversariantes',
       icon: <Cake size={24} />,
@@ -294,7 +321,7 @@ export default function Relatorios() {
       extra: (
         <select className="search-input" value={festaId} onChange={(e) => setFestaId(e.target.value)} style={{ width: '100%' }}>
           <option value="">Selecione uma festa...</option>
-          {festas.map((f) => <option key={f.id} value={f.id}>{f.nome_festa} - {f.data_festa}</option>)}
+          {festas.map((f) => <option key={f.id} value={f.id}>{f.nome_festa} - {formatDateBR(f.data_festa)}</option>)}
         </select>
       ),
     });

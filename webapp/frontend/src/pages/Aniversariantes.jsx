@@ -3,6 +3,7 @@ import api from '../api';
 import toast from 'react-hot-toast';
 import { Cake, Download, Mail, MessageCircle } from 'lucide-react';
 import { getApiErrorMessage } from '../utils/apiError';
+import { formatDateBR } from '../utils/formatters';
 
 const MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 
@@ -131,7 +132,7 @@ export default function Aniversariantes() {
                         </span>
                       </td>
                       <td><strong>{a.nome}</strong></td>
-                      <td>{a.data_nascimento}</td>
+                      <td>{formatDateBR(a.data_nascimento)}</td>
                       <td>{a.idade} anos</td>
                       <td>{a.email || '-'}</td>
                       <td>{a.celular || '-'}</td>

@@ -6,6 +6,7 @@ import { format, subMonths } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
+import { formatDateBR } from '../utils/formatters';
 
 const HELP_BY_ROLE = {
   administrador: 'Priorize categoria, conta de entrada e consistência dos valores antes de consolidar o mês.',
@@ -169,7 +170,7 @@ export default function OutrasRendas() {
                   </tr>
                 ) : rendasFiltradas.map(r => (
                   <tr key={r.id}>
-                    <td>{r.data_recebimento || '-'}</td>
+                    <td>{formatDateBR(r.data_recebimento)}</td>
                     <td><strong>{r.descricao}</strong></td>
                     <td><span className="badge badge-success">{r.categoria}</span></td>
                     <td>{r.fonte || '-'}</td>

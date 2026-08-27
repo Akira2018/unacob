@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import api from "../api";
-import { Printer } from "lucide-react";
+import { Printer, Download } from "lucide-react";
 import { getApiErrorMessage } from "../utils/apiError";
+
 
 export default function Etiquetas() {
   const [membros, setMembros] = useState([]);
@@ -145,32 +146,66 @@ export default function Etiquetas() {
     const janela = window.open("", "_blank");
 
     janela.document.write(`
+
       <html>
       <head>
-        <title>Etiquetas</title>
+        <title>Etiquetas Postais UNACOB</title>
         <style>
           @page {
-            size: A4;
-            margin: 0.5cm;
+            size: A4 portrait;
+            margin: 0.6cm 0.4cm;
+          }
+
+          * {
+            box-sizing: border-box;
           }
 
           body {
             font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: #fff;
+          }
+
+          .pagina {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: repeat(10, 2.65cm);
+            column-gap: 0.4cm;
+            row-gap: 0.1cm;
+            page-break-after: always;
+            page-break-inside: avoid;
+            width: 100%;
+            height: 27.5cm;
           }
 
           .etiqueta {
-            width: 8.5cm;
-            height: 3.5cm;
-            border: 1px solid #ccc;
-            padding: 10px;
-            margin: 5px;
-            display: inline-block;
-            vertical-align: top;
             box-sizing: border-box;
+            border: 1px dashed #ccc;
+            padding: 6px 10px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            font-size: 9.5pt;
+            line-height: 1.35;
+            overflow: hidden;
+            height: 2.65cm;
           }
 
-          strong {
-            font-size: 12pt;
+          .etiqueta strong {
+            font-size: 10.5pt;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: block;
+            margin-bottom: 2px;
+          }
+
+          .etiqueta-linha {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: block;
           }
 
           @media print {
@@ -181,15 +216,25 @@ export default function Etiquetas() {
         </style>
       </head>
       <body>
-        ${lista.map(m => `
-          <div class="etiqueta">
-            <strong>${m.nome_completo}</strong><br/>
-            ${m.endereco || ""}<br/>
-            ${m.bairro || ""}<br/>
-            ${m.cidade} - ${m.estado || "SP"}<br/>
-            ${m.cep ? "CEP: " + m.cep : ""}
-          </div>
-        `).join("")}
+        ${lista.map((m, idx) => {
+          const isStartPage = idx % 20 === 0;
+          const isEndPage = (idx + 1) % 20 === 0 || idx === lista.length - 1;
+          const endNum = [m.endereco, m.numero].filter(Boolean).join(", ") + (m.complemento ? ` - ${m.complemento}` : "");
+          const linha4 = [m.cep, `${m.cidade || "Bauru"}/${m.estado || "SP"}`].filter(Boolean).join(" - ");
+
+          let html = "";
+          if (isStartPage) html += '<div class="pagina">';
+          html += `
+            <div class="etiqueta">
+              <strong>${m.nome_completo || ""}</strong>
+              <div class="etiqueta-linha">${endNum || "&nbsp;"}</div>
+              <div class="etiqueta-linha">${m.bairro || "&nbsp;"}</div>
+              <div class="etiqueta-linha">${linha4 || "&nbsp;"}</div>
+            </div>
+          `;
+          if (isEndPage) html += '</div>';
+          return html;
+        }).join("")}
       </body>
       </html>
     `);
@@ -198,16 +243,30 @@ export default function Etiquetas() {
     janela.print();
   };
 
+
   return (
   <div>
 
     <div className="section-header">
       <h2>Etiquetas Postais</h2>
-      <button className="btn btn-primary" onClick={imprimirEtiquetas}>
-        <Printer size={16} />
-        Imprimir ({membrosSelecionados.length})
-      </button>
+      <div style={{ display: 'flex', gap: 10 }}>
+        <button className="btn btn-primary" onClick={imprimirEtiquetas}>
+          <Printer size={16} />
+          Imprimir ({membrosSelecionados.length})
+        </button>
+        <button
+          className="btn btn-outline"
+          onClick={() => {
+            const idsParam = membrosSelecionados.length > 0 ? `?ids=${membrosSelecionados.join(',')}` : '';
+            window.open(`/api/etiquetas${idsParam}`, '_blank');
+          }}
+        >
+          <Download size={16} />
+          Baixar PDF (2 colunas)
+        </button>
+      </div>
     </div>
+
 
     <div className="card">
 

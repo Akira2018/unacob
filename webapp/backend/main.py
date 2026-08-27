@@ -8720,6 +8720,157 @@ def exportar_membros(
         headers={"Content-Disposition": "attachment; filename=membros.xlsx"}
     )
 
+def _exportar_pagamentos_anual(db: Session, ano_ref: int):
+    membros = _ordenar_membros_por_nome(
+        db.query(models.Membro).filter(models.Membro.status == "ativo").all()
+    )
+
+    pagamentos_list = db.query(models.Pagamento).filter(
+        models.Pagamento.mes_referencia.like(f"{ano_ref}-%")
+    ).all()
+
+    pagamentos_map = {}
+    for p in pagamentos_list:
+        if p.mes_referencia and p.membro_id:
+            pagamentos_map[(p.membro_id, p.mes_referencia)] = p
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"Mensalidades {ano_ref}"
+
+    ws.merge_cells("A1:R1")
+    ws["A1"] = f"RELATÓRIO ANUAL DE RECEBIMENTO DE MENSALIDADES - ANO {ano_ref}"
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
+    ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    headers = [
+        "Matrícula", "Nome Completo", "Mensalidade (R$)",
+        "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez",
+        "Total Pago (R$)", "Total Pendente (R$)", "Situação no Ano"
+    ]
+
+    header_row = 3
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=header_row, column=col, value=header)
+        _excel_header_style(cell)
+
+    green_fill = PatternFill("solid", fgColor="C6EFCE")
+    red_fill = PatternFill("solid", fgColor="FFC7CE")
+    gray_fill = PatternFill("solid", fgColor="F2F2F2")
+
+    first_data_row = header_row + 1
+    totais_por_mes = [0.0] * 12
+    totais_pendentes_por_mes = [0.0] * 12
+    total_geral_pago = 0.0
+    total_geral_pendente = 0.0
+
+    for idx, m in enumerate(membros, start=first_data_row):
+        val_mens = _valor_mensalidade_dabb_membro(db, m)
+        
+        ws.cell(row=idx, column=1, value=m.matricula or "")
+        ws.cell(row=idx, column=2, value=m.nome_completo or "")
+        
+        cell_vm = ws.cell(row=idx, column=3, value=val_mens)
+        cell_vm.number_format = 'R$ #,##0.00'
+        cell_vm.alignment = Alignment(horizontal="right")
+
+        row_total_pago = 0.0
+        row_total_pendente = 0.0
+        qtd_meses_pendentes = 0
+
+        limite_filiacao = m.data_filiacao.strftime("%Y-%m") if m.data_filiacao else None
+
+        for m_num in range(1, 13):
+            mes_key = f"{ano_ref}-{m_num:02d}"
+            col_idx = 3 + m_num
+            p = pagamentos_map.get((m.id, mes_key))
+            
+            is_pago = (p is not None and p.status_pagamento == "pago")
+            
+            if is_pago:
+                val_pago = float(p.valor_pago or val_mens)
+                cell = ws.cell(row=idx, column=col_idx, value=val_pago)
+                cell.number_format = 'R$ #,##0.00'
+                cell.fill = green_fill
+                cell.alignment = Alignment(horizontal="right")
+                row_total_pago += val_pago
+                totais_por_mes[m_num - 1] += val_pago
+            else:
+                if limite_filiacao and mes_key < limite_filiacao:
+                    cell = ws.cell(row=idx, column=col_idx, value="-")
+                    cell.alignment = Alignment(horizontal="center")
+                    cell.fill = gray_fill
+                else:
+                    val_pend = val_mens
+                    cell = ws.cell(row=idx, column=col_idx, value=0.0)
+                    cell.number_format = 'R$ #,##0.00'
+                    cell.fill = red_fill
+                    cell.alignment = Alignment(horizontal="right")
+                    row_total_pendente += val_pend
+                    totais_pendentes_por_mes[m_num - 1] += val_pend
+                    qtd_meses_pendentes += 1
+
+        cell_tp = ws.cell(row=idx, column=16, value=round(row_total_pago, 2))
+        cell_tp.number_format = 'R$ #,##0.00'
+        cell_tp.alignment = Alignment(horizontal="right")
+        cell_tp.font = Font(bold=True)
+        total_geral_pago += row_total_pago
+
+        cell_tpend = ws.cell(row=idx, column=17, value=round(row_total_pendente, 2))
+        cell_tpend.number_format = 'R$ #,##0.00'
+        cell_tpend.alignment = Alignment(horizontal="right")
+        cell_tpend.font = Font(bold=True, color="9C0006") if row_total_pendente > 0 else Font(bold=True)
+        total_geral_pendente += row_total_pendente
+
+        if qtd_meses_pendentes == 0:
+            situacao = "Quitado"
+        else:
+            situacao = f"Pendente ({qtd_meses_pendentes} { 'mês' if qtd_meses_pendentes == 1 else 'meses' })"
+        cell_sit = ws.cell(row=idx, column=18, value=situacao)
+        cell_sit.alignment = Alignment(horizontal="center")
+        if qtd_meses_pendentes > 0:
+            cell_sit.font = Font(color="9C0006", bold=True)
+
+    last_row = first_data_row + len(membros) - 1
+
+    summary_row = last_row + 1
+    ws.cell(row=summary_row, column=1, value="TOTAL GERAL").font = Font(bold=True)
+    ws.merge_cells(f"A{summary_row}:B{summary_row}")
+    ws.cell(row=summary_row, column=1).alignment = Alignment(horizontal="left")
+
+    for m_num in range(1, 13):
+        col_idx = 3 + m_num
+        c = ws.cell(row=summary_row, column=col_idx, value=round(totais_por_mes[m_num - 1], 2))
+        c.font = Font(bold=True)
+        c.number_format = 'R$ #,##0.00'
+        c.alignment = Alignment(horizontal="right")
+
+    cell_gt_pago = ws.cell(row=summary_row, column=16, value=round(total_geral_pago, 2))
+    cell_gt_pago.font = Font(bold=True)
+    cell_gt_pago.number_format = 'R$ #,##0.00'
+    cell_gt_pago.alignment = Alignment(horizontal="right")
+
+    cell_gt_pend = ws.cell(row=summary_row, column=17, value=round(total_geral_pendente, 2))
+    cell_gt_pend.font = Font(bold=True, color="9C0006")
+    cell_gt_pend.number_format = 'R$ #,##0.00'
+    cell_gt_pend.alignment = Alignment(horizontal="right")
+
+    _excel_apply_borders(ws, header_row, summary_row, 1, 18)
+    ws.freeze_panes = f"D{first_data_row}"
+    ws.auto_filter.ref = f"A{header_row}:R{last_row}"
+    _excel_autofit_columns(ws, min_width=10, max_width=45)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=recebimento_mensalidades_anual_{ano_ref}.xlsx"}
+    )
+
+
 @app.get("/api/relatorios/pagamentos")
 def exportar_pagamentos(
     mes_referencia: Optional[str] = None,
@@ -8727,7 +8878,12 @@ def exportar_pagamentos(
     current_user=Depends(get_current_user)
 ):
     today = date.today()
-    mes_ref = mes_referencia or today.strftime("%Y-%m")
+    mes_ref = (mes_referencia or today.strftime("%Y-%m")).strip()
+
+    if mes_ref.endswith("-anual") or (len(mes_ref) == 4 and mes_ref.isdigit()):
+        ano_str = mes_ref.replace("-anual", "")
+        ano_num = int(ano_str) if ano_str.isdigit() else today.year
+        return _exportar_pagamentos_anual(db, ano_num)
 
     membros = db.query(models.Membro).filter(models.Membro.status == 'ativo').order_by(models.Membro.nome_completo).all()
     pagamentos = {p.membro_id: p for p in db.query(models.Pagamento).filter(models.Pagamento.mes_referencia == mes_ref).all()}
@@ -8813,6 +8969,148 @@ def exportar_pagamentos(
     return StreamingResponse(
         buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=recebimento_mensalidades_{mes_ref}.xlsx"}
+    )
+
+
+def _formatar_mes_referencia_compacto(mes_ref: str) -> str:
+    if not mes_ref or "-" not in mes_ref:
+        return mes_ref or ""
+    try:
+        ano, mes = _parse_mes_referencia_or_400(mes_ref)
+        nomes = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+        return f"{nomes[mes - 1]}/{ano}"
+    except Exception:
+        return mes_ref
+
+
+def _formatar_mes_referencia_extenso(mes_ref: str) -> str:
+    if not mes_ref or "-" not in mes_ref:
+        return mes_ref or ""
+    try:
+        ano, mes = _parse_mes_referencia_or_400(mes_ref)
+        nomes = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
+        return f"{nomes[mes - 1]}/{ano}"
+    except Exception:
+        return mes_ref
+
+
+@app.get("/api/relatorios/devedores")
+def exportar_devedores(
+    mes_referencia: Optional[str] = None,
+    busca: Optional[str] = None,
+    formato: str = "json",
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    mes_ref = (mes_referencia or date.today().strftime("%Y-%m")).strip()
+    
+    q = db.query(models.Membro).filter(models.Membro.status == "ativo")
+    if busca:
+        termo = f"%{busca.strip()}%"
+        q = q.filter(
+            or_(
+                models.Membro.nome_completo.ilike(termo),
+                models.Membro.matricula.ilike(termo),
+                models.Membro.cpf.ilike(termo),
+                models.Membro.codigo_dabb.ilike(termo),
+            )
+        )
+    membros = _ordenar_membros_por_nome(q.all())
+
+    lista_devedores = []
+    for m in membros:
+        competencias = _competencias_em_aberto_ate_mes(db, m, mes_ref)
+        if not competencias:
+            continue
+        
+        valor_mensalidade = _valor_mensalidade_dabb_membro(db, m)
+        quantidade_meses = len(competencias)
+        total_devedor = round(quantidade_meses * valor_mensalidade, 2)
+        
+        competencias_fmt = [_formatar_mes_referencia_compacto(c) for c in competencias]
+        competencias_extenso = ", ".join(competencias_fmt)
+
+        lista_devedores.append({
+            "membro_id": m.id,
+            "nome_completo": m.nome_completo,
+            "matricula": m.matricula or "",
+            "telefone": m.telefone or m.celular or "",
+            "valor_mensalidade": valor_mensalidade,
+            "quantidade_meses": quantidade_meses,
+            "total_devedor": total_devedor,
+            "competencias": competencias,
+            "competencias_extenso": competencias_extenso,
+        })
+
+    if formato != "excel":
+        return {
+            "mes_referencia": mes_ref,
+            "total_devedores": len(lista_devedores),
+            "valor_total_devedor": round(sum(d["total_devedor"] for d in lista_devedores), 2),
+            "devedores": lista_devedores,
+        }
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"Devedores {mes_ref}"
+
+    ws.merge_cells("A1:G1")
+    ws["A1"] = f"RELATÓRIO DE ASSOCIADOS DEVEDORES - {mes_ref}"
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
+    ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    headers = ["Matrícula", "Nome Completo", "Telefone/Contato", "Valor Mensalidade (R$)", "Meses Devedores (Qtd)", "Total Devedor (R$)", "Competências em Aberto"]
+
+    header_row = 3
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=header_row, column=col, value=header)
+        _excel_header_style(cell)
+
+    first_data_row = header_row + 1
+    total_geral_devedor = 0.0
+
+    for idx, dev in enumerate(lista_devedores, start=first_data_row):
+        ws.cell(row=idx, column=1, value=dev["matricula"])
+        ws.cell(row=idx, column=2, value=dev["nome_completo"])
+        ws.cell(row=idx, column=3, value=dev["telefone"])
+        
+        cell_vm = ws.cell(row=idx, column=4, value=dev["valor_mensalidade"])
+        cell_vm.number_format = 'R$ #,##0.00'
+        cell_vm.alignment = Alignment(horizontal="right")
+        
+        cell_qtd = ws.cell(row=idx, column=5, value=dev["quantidade_meses"])
+        cell_qtd.alignment = Alignment(horizontal="center")
+        
+        cell_tot = ws.cell(row=idx, column=6, value=dev["total_devedor"])
+        cell_tot.number_format = 'R$ #,##0.00'
+        cell_tot.alignment = Alignment(horizontal="right")
+        
+        ws.cell(row=idx, column=7, value=dev["competencias_extenso"])
+        total_geral_devedor += dev["total_devedor"]
+
+    last_row = max(first_data_row, first_data_row + len(lista_devedores) - 1)
+
+    summary_row = last_row + 1
+    ws.cell(row=summary_row, column=1, value="TOTAL GERAL").font = Font(bold=True)
+    cell_tot_summary = ws.cell(row=summary_row, column=6, value=total_geral_devedor)
+    cell_tot_summary.font = Font(bold=True)
+    cell_tot_summary.number_format = 'R$ #,##0.00'
+    cell_tot_summary.alignment = Alignment(horizontal="right")
+
+    _excel_apply_zebra(ws, first_data_row, last_row, 1, 7)
+    _excel_apply_borders(ws, header_row, summary_row, 1, 7)
+    ws.freeze_panes = f"A{first_data_row}"
+    ws.auto_filter.ref = f"A{header_row}:G{last_row}"
+    _excel_autofit_columns(ws, min_width=12, max_width=50)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=devedores_{mes_ref}.xlsx"}
     )
 
 

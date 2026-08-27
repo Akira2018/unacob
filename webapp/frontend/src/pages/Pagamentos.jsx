@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState, useMemo } from 'react';
 import api from '../api';
 import toast from 'react-hot-toast';
-import { Download, Upload } from 'lucide-react';
+import { Download, Upload, Search, Users, FileText, FileSpreadsheet } from 'lucide-react';
+
 import { format, subMonths } from 'date-fns';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
+import { formatDateBR } from '../utils/formatters';
 
 const HELP_BY_ROLE = {
   administrador: 'Priorize conferência de importações, diagnóstico DABB, pendências e impacto financeiro antes de confirmar ações em lote.',
@@ -209,6 +211,44 @@ export default function Pagamentos() {
   const [modal, setModal] = useState(false);
   const [selected, setSelected] = useState(null);
   const [showRecibo, setShowRecibo] = useState(false);
+  const [showModalDevedores, setShowModalDevedores] = useState(false);
+  const [buscaDevedores, setBuscaDevedores] = useState('');
+  const [devedoresData, setDevedoresData] = useState([]);
+  const [loadingDevedores, setLoadingDevedores] = useState(false);
+
+  const asArray = (val) => (Array.isArray(val) ? val : []);
+
+  const carregarDevedores = useCallback((termo = '') => {
+    setLoadingDevedores(true);
+    api.get('/relatorios/devedores', { params: { busca: termo, mes_referencia: mes, formato: 'json' } })
+      .then(r => setDevedoresData(asArray(r.data?.devedores)))
+      .catch(err => toast.error(getApiErrorMessage(err, 'Erro ao consultar devedores')))
+      .finally(() => setLoadingDevedores(false));
+  }, [mes]);
+
+  const abrirModalDevedores = () => {
+    setShowModalDevedores(true);
+    carregarDevedores(buscaDevedores);
+  };
+
+  const baixarRelatorio = async (url, filename, params = {}) => {
+    try {
+      const response = await api.get(url, { responseType: 'blob', params });
+      const blob = new Blob([response.data], { type: response.headers?.['content-type'] || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(blobUrl);
+      toast.success('Relatório baixado com sucesso.');
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erro ao baixar relatório'));
+    }
+  };
+
   
   // Estados de Formulario e Processamento
   const [form, setForm] = useState({ 
@@ -516,8 +556,17 @@ export default function Pagamentos() {
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 20, gap: 12, flexWrap: 'wrap' }}>
         <h2>Painel de Pagamentos</h2>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <button className="btn btn-outline btn-sm"><Download size={14} /> Excel</button>
+          <button className="btn btn-outline btn-sm" onClick={abrirModalDevedores} style={{ backgroundColor: '#fff3f3', color: '#c53030', borderColor: '#feb2b2', fontWeight: 600 }}>
+            <Users size={14} /> Consultar Débitos do Associado
+          </button>
+          <button className="btn btn-outline btn-sm" onClick={() => baixarRelatorio('/relatorios/pagamentos', `recebimento_mensalidades_anual_${mes.split('-')[0]}.xlsx`, { mes_referencia: `${mes.split('-')[0]}-anual` })}>
+            <FileSpreadsheet size={14} /> Relatório Anual de Recebimentos (12 Meses)
+          </button>
+          <button className="btn btn-outline btn-sm" onClick={() => baixarRelatorio('/relatorios/devedores', `devedores_${mes}.xlsx`, { mes_referencia: mes, formato: 'excel' })}>
+            <Download size={14} /> Relatório de Devedores (Excel)
+          </button>
         </div>
+
       </div>
 
       <InlineHelpCard
@@ -758,7 +807,7 @@ export default function Pagamentos() {
           <div className="card-title payments-pending-title">Pendências de Conciliação ({pendenciasConcil.length})</div>
           {pendenciasConcil.map(p => (
             <div key={p.conciliacao_id} className="payments-pending-item">
-              <small className="payments-pending-summary">{p.data_extrato} - {fmt(p.valor_extrato)} - {p.descricao_extrato}</small>
+              <small className="payments-pending-summary">{formatDateBR(p.data_extrato)} - {fmt(p.valor_extrato)} - {p.descricao_extrato}</small>
               <div className="payments-pending-actions">
                 {p.candidatos?.map(c => (
                   <button key={c.membro_id} className="btn btn-success btn-xs" onClick={() => confirmarPendenciaManual(p.conciliacao_id, c.membro_id)} disabled={confirmandoPendencia === `${p.conciliacao_id}:${c.membro_id}`}>
@@ -917,8 +966,9 @@ export default function Pagamentos() {
               <div className="payments-receipt-body">
                 <p>
                   Declaramos, para os devidos fins, que recebemos do associado <b>{selected.nome}</b> o valor de <b>R$ {valorPagoFormatado}</b> ({valorPorExtenso(form.valor_pago)}), correspondente à quitação da(s) mensalidade(s) associativa referente{' '}
-                  <b>{referenteMeses.trim() ? `aos meses de ${referenciaReciboTexto}` : `ao mês de ${referenciaReciboTexto}`}</b>
+                  <b>{referenteMeses.trim() ? referenteMeses.trim() : `ao mês de ${referenciaReciboTexto}`}</b>
                   .
+
                 </p>
                 <p>
                   O presente registro confirma a regularidade da contribuição e a adimplência do associado perante a UNACOB.
@@ -953,6 +1003,109 @@ export default function Pagamentos() {
           </div>
         </div>
       )}
+
+      {/* Modal Consulta Rápida de Devedores por Nome/Matrícula */}
+      {showModalDevedores && (
+
+        <div className="modal-overlay" style={{ zIndex: 1050 }}>
+          <div className="modal" style={{ maxWidth: 820, padding: 28, borderRadius: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8, color: '#1e3a5f', fontSize: 18 }}>
+                <Users size={22} color="#e53e3e" /> Consulta de Débitos do Associado (Mensalidades em Aberto)
+              </h3>
+              <button className="btn btn-outline btn-sm" onClick={() => setShowModalDevedores(false)}>✕</button>
+            </div>
+            
+            <p style={{ fontSize: 13, color: '#4a5568', marginBottom: 16, lineHeight: 1.4 }}>
+              Digite o nome ou a matrícula do associado abaixo para verificar em tempo real quantos meses estão devendo, quais são as competências em aberto e o valor total devedor.
+            </p>
+
+            <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
+              <input
+                type="text"
+                className="search-input"
+                placeholder="Digite o nome do associado ou matrícula..."
+                value={buscaDevedores}
+                onChange={e => {
+                  setBuscaDevedores(e.target.value);
+                  carregarDevedores(e.target.value);
+                }}
+                style={{ flex: 1, padding: '10px 14px', fontSize: 14 }}
+              />
+              <button
+                className="btn btn-primary"
+                onClick={() => carregarDevedores(buscaDevedores)}
+                style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                <Search size={16} /> Buscar
+              </button>
+            </div>
+
+            {loadingDevedores ? (
+              <div style={{ padding: 40, textAlign: 'center', color: '#666' }}>Carregando débitos do associado...</div>
+            ) : devedoresData.length === 0 ? (
+              <div style={{ padding: 36, textAlign: 'center', color: '#718096', background: '#f7fafc', borderRadius: 8, border: '1px dashed #cbd5e0' }}>
+                Nenhum associado devedor encontrado para a busca especificada.
+              </div>
+            ) : (
+              <div style={{ maxHeight: 420, overflowY: 'auto', display: 'grid', gap: 14, paddingRight: 4 }}>
+                {devedoresData.map(dev => (
+                  <div key={dev.membro_id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 18, background: '#fff', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                      <div>
+                        <strong style={{ fontSize: 16, color: '#1a202c' }}>{dev.nome_completo}</strong>
+                        <span style={{ fontSize: 13, color: '#718096', marginLeft: 10, background: '#edf2f7', padding: '2px 8px', borderRadius: 6 }}>
+                          Matrícula: {dev.matricula || 'N/I'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: '#c53030', background: '#fff5f5', padding: '4px 12px', borderRadius: 8, border: '1px solid #feb2b2' }}>
+                        Total Devedor: R$ {(dev.total_devedor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                      </div>
+                    </div>
+
+                    <div style={{ fontSize: 13, color: '#4a5568', marginBottom: 10, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                      <span><b>Telefone/Contato:</b> {dev.telefone || 'Não informado'}</span>
+                      <span><b>Valor da Mensalidade:</b> R$ {(dev.valor_mensalidade || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                      <span>
+                        <b>Quantidade de Meses:</b>{' '}
+                        <span style={{ background: '#feebc8', color: '#c05621', padding: '2px 10px', borderRadius: 12, fontWeight: 700, fontSize: 12 }}>
+                          {dev.quantidade_meses} {dev.quantidade_meses === 1 ? 'mês' : 'meses devedores'}
+                        </span>
+                      </span>
+                    </div>
+
+                    <div style={{ fontSize: 13, background: '#fff5f5', borderLeft: '4px solid #e53e3e', padding: '10px 14px', borderRadius: 6 }}>
+                      <strong style={{ color: '#9b2c2c' }}>Meses Devedores:</strong>{' '}
+                      <span style={{ color: '#2d3748' }}>{dev.competencias_extenso}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="modal-footer" style={{ marginTop: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => {
+                  baixarRelatorio('/relatorios/devedores', `devedores_${mes}.xlsx`, { mes_referencia: mes, formato: 'excel', busca: buscaDevedores });
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                <Download size={15} /> Baixar Relatório em Excel (.xlsx)
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => setShowModalDevedores(false)}
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+
 }

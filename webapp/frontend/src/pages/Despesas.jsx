@@ -6,6 +6,7 @@ import { format, subMonths } from 'date-fns';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
+import { formatDateBR } from '../utils/formatters';
 
 const HELP_BY_ROLE = {
   administrador: 'Priorize categoria, conta contábil, forma de pagamento e impacto da despesa no fechamento antes de salvar.',
@@ -203,7 +204,7 @@ export default function Despesas() {
                     <tr><td colSpan={8} style={{ textAlign: 'center', padding: 40, color: '#718096' }}>{searchTerm ? 'Nenhuma despesa encontrada para a busca' : 'Sem despesas neste mês'}</td></tr>
                   ) : despesasFiltradas.map(d => (
                     <tr key={d.id}>
-                      <td>{d.data_despesa || '-'}</td>
+                      <td>{formatDateBR(d.data_despesa)}</td>
                       <td><strong>{d.descricao}</strong></td>
                       <td><span className="badge badge-info">{d.categoria}</span></td>
                       <td>{d.fornecedor || '-'}</td>

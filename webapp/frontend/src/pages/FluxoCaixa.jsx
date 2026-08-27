@@ -10,6 +10,7 @@ import FilterBar from '../components/FilterBar';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
 import TableEmptyRow from '../components/TableEmptyRow';
+import { formatDateBR } from '../utils/formatters';
 
 const HELP_BY_ROLE = {
   administrador: 'Priorize saldo inicial, origem do saldo anterior e consistência das transações antes de ajustar dados manuais.',
@@ -273,7 +274,7 @@ export default function FluxoCaixa() {
                   <TableEmptyRow colSpan={4} message={termoBusca ? 'Nenhuma entrada encontrada para a busca' : 'Sem entradas'} />
                 ) : entradasFiltradas.map(t => (
                   <tr key={t.id}>
-                    <td>{t.data_transacao}</td>
+                    <td>{formatDateBR(t.data_transacao)}</td>
                     <td>{t.descricao}</td>
                     <td><span className="badge badge-success">{t.categoria || t.origem}</span></td>
                     <td><strong className="fluxocaixa-value-entrada">{fmt(t.valor)}</strong></td>
@@ -296,7 +297,7 @@ export default function FluxoCaixa() {
                   <TableEmptyRow colSpan={4} message={termoBusca ? 'Nenhuma saída encontrada para a busca' : 'Sem saídas'} />
                 ) : saidasFiltradas.map(t => (
                   <tr key={t.id}>
-                    <td>{t.data_transacao}</td>
+                    <td>{formatDateBR(t.data_transacao)}</td>
                     <td>{t.descricao}</td>
                     <td><span className="badge badge-danger">{t.categoria || t.origem}</span></td>
                     <td><strong className="fluxocaixa-value-saida">{fmt(t.valor)}</strong></td>

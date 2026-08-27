@@ -57,13 +57,15 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    token: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    if not credentials:
+    raw_token = credentials.credentials if credentials else token
+    if not raw_token:
         raise HTTPException(status_code=401, detail="Não autenticado")
     
     try:
-        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(raw_token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
         if user_id is None:
             raise HTTPException(status_code=401, detail="Token inválido")
