@@ -40,7 +40,13 @@ BACKEND_STOPPED=0
 
 if docker compose version >/dev/null 2>&1; then DC="docker compose"; else DC="docker-compose"; fi
 
-backend_running() { $DC ps 2>/dev/null | grep -Eq 'backend.*(Up|running)'; }
+backend_running() {
+  # Confiavel: pega o(s) container(s) do servico e checa State.Running via docker inspect.
+  local ids
+  ids="$($DC ps -q backend 2>/dev/null)" || return 1
+  [ -n "$ids" ] || return 1
+  docker inspect -f '{{.State.Running}}' $ids 2>/dev/null | grep -qx true
+}
 
 # ----------------------------------------------------------------------------
 # Rede de seguranca: roda SEMPRE ao sair (sucesso ou falha).
@@ -84,12 +90,15 @@ echo ">> codigo ....... $PREV_COMMIT -> $NEW_COMMIT"
 
 # ----------------------------------------------------------------------------
 # 2) Backup do banco de producao
+#    Tenta o cp direto (funciona com o container de pe ou parado); se nao houver
+#    container, cai para um container efemero montando o volume.
 # ----------------------------------------------------------------------------
-if backend_running; then
-  echo ">> backup ....... $BKP"
-  $DC cp "backend:$DB_IN_CONTAINER" "$BKP"
+echo ">> backup ....... $BKP"
+if $DC cp "backend:$DB_IN_CONTAINER" "$BKP" 2>/dev/null && [ -s "$BKP" ]; then
+  echo ">> backup ....... ok (cp direto)"
 else
-  echo ">> backup ....... backend parado; backup via container efemero"
+  rm -f "$BKP"
+  echo ">> backup ....... cp direto indisponivel; via container efemero"
   $DC run --rm --no-deps -T -v "$REPO_DIR:/host" backend \
     sh -c "cp $DB_IN_CONTAINER /host/$(basename "$BKP")" || echo "   (sem banco previo - primeira subida?)"
 fi
