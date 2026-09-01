@@ -7733,6 +7733,7 @@ def _iterar_transacoes_ofx(texto: str):
 async def importar_extrato_arquivo(
     file: UploadFile = File(...),
     banco: str = "Importado",
+    data_lancamento: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
@@ -7760,6 +7761,18 @@ async def importar_extrato_arquivo(
 
         if ext not in {".csv", ".ofx", ".ret", ".rem"} and not is_ofx_content:
             raise HTTPException(status_code=400, detail="Arquivo deve ser CSV, OFX, RET ou REM")
+
+        # Data de lançamento (opcional, só usada no ramo RET/REM abaixo): quando informada,
+        # substitui a data lida do arquivo. Necessário porque um RET de débito em conta pode
+        # trazer datas de competência de meses anteriores (ex.: julho/agosto) mesmo quando o
+        # crédito na conta só ocorre depois (ex.: setembro) - o valor precisa cair no mês em
+        # que o dinheiro realmente entrou, para não distorcer o balancete.
+        data_lancamento_override: Optional[date] = None
+        if data_lancamento:
+            try:
+                data_lancamento_override = datetime.strptime(data_lancamento.strip()[:10], "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Data de lançamento inválida (use AAAA-MM-DD)")
 
         importados = []
         linhas_lidas = 0
@@ -7948,6 +7961,13 @@ async def importar_extrato_arquivo(
                     )
                     db.add(c)
                     db.flush()
+
+                    # A data lida do arquivo (competência do débito) continua valendo para
+                    # localizar a remessa e inferir competências; só a data de caixa
+                    # (data_pagamento, via conciliacao.data_extrato) muda para o mês do
+                    # crédito real, quando informado.
+                    if data_lancamento_override:
+                        c.data_extrato = data_lancamento_override
 
                     remessa_item = _localizar_item_remessa_dabb(db, codigo_dabb, valor, data)
                     if remessa_item:

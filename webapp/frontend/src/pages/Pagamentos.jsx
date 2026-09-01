@@ -3,7 +3,7 @@ import api from '../api';
 import toast from 'react-hot-toast';
 import { Download, Upload, Search, Users, FileText, FileSpreadsheet } from 'lucide-react';
 
-import { format, subMonths } from 'date-fns';
+import { format, subMonths, addMonths } from 'date-fns';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
 import { formatDateBR } from '../utils/formatters';
@@ -54,6 +54,18 @@ function numeroAte999PorExtenso(numero) {
 function getMeses() {
   const result = [];
   for (let i = 0; i < 12; i++) {
+    const d = subMonths(new Date(), i);
+    result.push(format(d, 'yyyy-MM'));
+  }
+  return result;
+}
+
+// Meses selecionáveis para "quais meses estão sendo pagos": inclui passado (atraso)
+// e futuro (adiantamento). Calculado sempre a partir da data atual, então a virada
+// de ano (ex.: dez/2026 -> jan/2027) é automática, sem precisar atualizar nada.
+function getMesesSelecionaveis() {
+  const result = [];
+  for (let i = 12; i >= -3; i--) {
     const d = subMonths(new Date(), i);
     result.push(format(d, 'yyyy-MM'));
   }
@@ -261,6 +273,9 @@ export default function Pagamentos() {
   });
   const [saving, setSaving] = useState(false);
   const [importandoBanco, setImportandoBanco] = useState(false);
+  // Data em que o crédito realmente caiu na conta (pode ser posterior às competências
+  // do arquivo RET/REM); usada para lançar o valor total no mês correto do balancete.
+  const [dataLancamentoRet, setDataLancamentoRet] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [pendenciasConcil, setPendenciasConcil] = useState([]);
   const [carregandoPendencias, setCarregandoPendencias] = useState(false);
   const [confirmandoPendencia, setConfirmandoPendencia] = useState('');
@@ -390,11 +405,13 @@ export default function Pagamentos() {
   const openPagamento = (item) => {
     resetReciboState();
     setSelected(item);
+    const valorExistente = item.valor_pago;
     setForm({
-      valor_pago: item.valor_pago || item.valor_mensalidade || '',
+      // usa ?? em vez de || para não trocar um valor 0 (pagamento zerado) pela mensalidade padrão
+      valor_pago: valorExistente ?? item.valor_mensalidade ?? '',
       data_pagamento: item.data_pagamento || format(new Date(), 'yyyy-MM-dd'),
-      status_pagamento: 'pago',
-            forma_pagamento: 'transferencia',
+      status_pagamento: item.status === 'pago' ? 'pago' : 'pendente',
+      forma_pagamento: 'transferencia',
       observacoes: item.observacoes || '',
       competencias: [mes]
     });
@@ -452,9 +469,15 @@ export default function Pagamentos() {
       toast.error('Selecione ao menos um mês pago.');
       return;
     }
+    // Valor pago só é obrigatório quando o status é "pago"; pendente aceita 0/vazio.
+    if (form.status_pagamento === 'pago' && Number(form.valor_pago) <= 0) {
+      toast.error('Informe o valor pago.');
+      return;
+    }
+    const valorNormalizado = form.valor_pago === '' ? 0 : Number(form.valor_pago) || 0;
     setSaving(true);
     try {
-      await api.post('/pagamentos', { ...form, membro_id: selected.membro_id, mes_referencia: mes });
+      await api.post('/pagamentos', { ...form, valor_pago: valorNormalizado, membro_id: selected.membro_id, mes_referencia: mes });
       toast.success('Pagamento atualizado!');
       closePagamentoModal();
       load();
@@ -518,6 +541,9 @@ export default function Pagamentos() {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('banco', 'DABB');
+    if (dataLancamentoRet) {
+      formData.append('data_lancamento', dataLancamentoRet);
+    }
 
     setImportandoBanco(true);
     try {
@@ -657,6 +683,21 @@ export default function Pagamentos() {
               </div>
 
               <div className="payments-import-option-description">{opcao.descricao}</div>
+
+              {opcao.key === 'ret-rem' && (
+                <div className="form-group" style={{ maxWidth: 220 }}>
+                  <label>Data de lançamento (crédito em conta)</label>
+                  <input
+                    type="date"
+                    className="search-input"
+                    value={dataLancamentoRet}
+                    onChange={e => setDataLancamentoRet(e.target.value)}
+                  />
+                  <small style={{ display: 'block', color: '#666', marginTop: 4 }}>
+                    O arquivo pode trazer competências de meses anteriores (ex.: jul/ago), mas se o crédito só caiu na conta neste mês, informe aqui para o valor total entrar no balancete do mês certo.
+                  </small>
+                </div>
+              )}
 
               <div className="payments-import-option-meta">
                 <div className="payments-import-option-meta-item">
@@ -916,7 +957,7 @@ export default function Pagamentos() {
               <div className="form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div className="form-group">
                   <label>Valor Pago</label>
-                  <input type="number" step="0.01" value={form.valor_pago} onChange={e => setF('valor_pago', e.target.value)} required />
+                  <input type="number" step="0.01" value={form.valor_pago} onChange={e => setF('valor_pago', e.target.value)} placeholder={form.status_pagamento === 'pendente' ? '0,00' : ''} />
                 </div>
                 <div className="form-group">
                   <label>Data</label>
@@ -941,20 +982,27 @@ export default function Pagamentos() {
               <div className="form-group" style={{ marginTop: 10 }}>
                 <label>Meses pagos (competências)</label>
                 <small style={{ display: 'block', color: '#666', marginBottom: 6 }}>
-                  Selecione todos os meses que este valor está quitando (ex.: R$ 71,00 = 2 mensalidades + R$ 1,00 de taxa bancária). O valor total é lançado no mês do pagamento ({mes}) para não distorcer o balancete.
+                  Selecione todos os meses que este valor está quitando (ex.: R$ 71,00 = 2 mensalidades + R$ 1,00 de taxa bancária). O valor total é lançado no mês do pagamento ({mes}) para não distorcer o balancete. A lista inclui meses atrasados e adiantados e vira o ano automaticamente.
                 </small>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 120, overflowY: 'auto', border: '1px solid #ddd', borderRadius: 6, padding: 8 }}>
-                  {getMeses().slice().reverse().map(m => (
-                    <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
-                      <input
-                        type="checkbox"
-                        checked={form.competencias.includes(m)}
-                        onChange={() => toggleCompetencia(m)}
-                      />
-                      {m}
-                    </label>
-                  ))}
-                </div>
+                <details style={{ border: '1px solid #ddd', borderRadius: 6 }}>
+                  <summary style={{ cursor: 'pointer', padding: '8px 10px', fontSize: 13, userSelect: 'none' }}>
+                    {form.competencias.length === 0
+                      ? 'Selecionar meses...'
+                      : `${form.competencias.length} mês(es) selecionado(s): ${form.competencias.slice().sort().join(', ')}`}
+                  </summary>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 160, overflowY: 'auto', padding: 8, borderTop: '1px solid #ddd' }}>
+                    {getMesesSelecionaveis().map(m => (
+                      <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                        <input
+                          type="checkbox"
+                          checked={form.competencias.includes(m)}
+                          onChange={() => toggleCompetencia(m)}
+                        />
+                        {m}
+                      </label>
+                    ))}
+                  </div>
+                </details>
               </div>
               <div className="modal-footer" style={{ marginTop: 20, display: 'flex', gap: 10 }}>
                 <button type="submit" className="btn btn-success" disabled={saving}>{saving ? 'Salvando...' : 'Salvar'}</button>
