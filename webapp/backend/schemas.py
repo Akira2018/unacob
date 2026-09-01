@@ -140,6 +140,11 @@ class PagamentoCreate(BaseModel):
     status_pagamento: str = 'pago'
     forma_pagamento: Optional[str] = None
     observacoes: Optional[str] = None
+    comprovante: Optional[str] = None
+    # Meses (competências, formato YYYY-MM) explicitamente selecionados pelo usuário
+    # para este pagamento. Quando informado, tem prioridade sobre o cálculo
+    # automático de quantidade de meses a partir do valor pago.
+    competencias: Optional[List[str]] = None
 
 class PagamentoUpdate(BaseModel):
     valor_pago: Optional[float] = None

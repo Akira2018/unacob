@@ -256,7 +256,8 @@ export default function Pagamentos() {
     data_pagamento: format(new Date(), 'yyyy-MM-dd'), 
     status_pagamento: 'pago', 
     forma_pagamento: 'dinheiro', 
-    observacoes: '' 
+    observacoes: '',
+    competencias: []
   });
   const [saving, setSaving] = useState(false);
   const [importandoBanco, setImportandoBanco] = useState(false);
@@ -394,23 +395,46 @@ export default function Pagamentos() {
       data_pagamento: item.data_pagamento || format(new Date(), 'yyyy-MM-dd'),
       status_pagamento: 'pago',
             forma_pagamento: 'transferencia',
-      observacoes: item.observacoes || ''
+      observacoes: item.observacoes || '',
+      competencias: [mes]
     });
     setModal(true);
+  };
+
+  const toggleCompetencia = (competencia) => {
+    setForm(prev => {
+      const jaSelecionado = prev.competencias.includes(competencia);
+      const competencias = jaSelecionado
+        ? prev.competencias.filter(c => c !== competencia)
+        : [...prev.competencias, competencia].sort();
+      return { ...prev, competencias };
+    });
   };
 
   const openReciboModal = () => {
     setModal(false);
     if (selected) {
-      const v = Number(form.valor_pago || selected.valor_pago || 0);
-      const valMensal = Number(selected.valor_mensalidade || 35);
-      const qtdMeses = valMensal > 0 ? Math.max(1, Math.round(v / valMensal)) : 1;
-      if (qtdMeses >= 12) {
-        setReferenteMeses(`janeiro a dezembro de ${anoExtenso(mes)} (12 mensalidades)`);
-      } else if (qtdMeses > 1) {
-        setReferenteMeses(`janeiro a ${mesExtenso(mes)} de ${anoExtenso(mes)} (${qtdMeses} mensalidades)`);
+      const competenciasSelecionadas = form.competencias || [];
+      if (competenciasSelecionadas.length > 1) {
+        const nomes = competenciasSelecionadas
+          .slice()
+          .sort()
+          .map(m => `${mesExtenso(m)} de ${anoExtenso(m)}`)
+          .join(', ');
+        setReferenteMeses(`${nomes} (${competenciasSelecionadas.length} mensalidades)`);
+      } else if (competenciasSelecionadas.length === 1) {
+        setReferenteMeses(`${mesExtenso(competenciasSelecionadas[0])} de ${anoExtenso(competenciasSelecionadas[0])}`);
       } else {
-        setReferenteMeses(`${mesExtenso(mes)} de ${anoExtenso(mes)}`);
+        const v = Number(form.valor_pago || selected.valor_pago || 0);
+        const valMensal = Number(selected.valor_mensalidade || 35);
+        const qtdMeses = valMensal > 0 ? Math.max(1, Math.round(v / valMensal)) : 1;
+        if (qtdMeses >= 12) {
+          setReferenteMeses(`janeiro a dezembro de ${anoExtenso(mes)} (12 mensalidades)`);
+        } else if (qtdMeses > 1) {
+          setReferenteMeses(`janeiro a ${mesExtenso(mes)} de ${anoExtenso(mes)} (${qtdMeses} mensalidades)`);
+        } else {
+          setReferenteMeses(`${mesExtenso(mes)} de ${anoExtenso(mes)}`);
+        }
       }
     }
     setShowRecibo(true);
@@ -424,6 +448,10 @@ export default function Pagamentos() {
 
   const handleSave = async (e) => {
     e.preventDefault();
+    if (!form.competencias || form.competencias.length === 0) {
+      toast.error('Selecione ao menos um mês pago.');
+      return;
+    }
     setSaving(true);
     try {
       await api.post('/pagamentos', { ...form, membro_id: selected.membro_id, mes_referencia: mes });
@@ -908,6 +936,24 @@ export default function Pagamentos() {
                     <option value="pago">Pago</option>
                     <option value="pendente">Pendente</option>
                   </select>
+                </div>
+              </div>
+              <div className="form-group" style={{ marginTop: 10 }}>
+                <label>Meses pagos (competências)</label>
+                <small style={{ display: 'block', color: '#666', marginBottom: 6 }}>
+                  Selecione todos os meses que este valor está quitando (ex.: R$ 71,00 = 2 mensalidades + R$ 1,00 de taxa bancária). O valor total é lançado no mês do pagamento ({mes}) para não distorcer o balancete.
+                </small>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 120, overflowY: 'auto', border: '1px solid #ddd', borderRadius: 6, padding: 8 }}>
+                  {getMeses().slice().reverse().map(m => (
+                    <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                      <input
+                        type="checkbox"
+                        checked={form.competencias.includes(m)}
+                        onChange={() => toggleCompetencia(m)}
+                      />
+                      {m}
+                    </label>
+                  ))}
                 </div>
               </div>
               <div className="modal-footer" style={{ marginTop: 20, display: 'flex', gap: 10 }}>

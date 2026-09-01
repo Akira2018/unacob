@@ -3362,11 +3362,20 @@ def create_pagamento(req: schemas.PagamentoCreate, db: Session = Depends(get_db)
 
     valor_pago = round(float(req.valor_pago or 0), 2)
     valor_mensalidade = _valor_mensalidade_dabb_membro(db, membro)
-    qtd_meses = _quantidade_meses_cobertos_pelo_valor(valor_pago, valor_mensalidade)
 
-    if qtd_meses > 1:
-        competencias = _competencias_para_cobrir(db, membro, req.mes_referencia or date.today().strftime("%Y-%m"), qtd_meses)
-        valores_competencias, excedente = _ratear_valor_dabb_por_competencias(
+    # Meses selecionados explicitamente pelo usuário têm prioridade sobre o
+    # cálculo automático (que apenas estima a quantidade a partir do valor).
+    competencias_informadas = sorted({c.strip() for c in (req.competencias or []) if c and c.strip()})
+    if competencias_informadas:
+        competencias = competencias_informadas
+    elif _quantidade_meses_cobertos_pelo_valor(valor_pago, valor_mensalidade) > 1:
+        qtd_meses_auto = _quantidade_meses_cobertos_pelo_valor(valor_pago, valor_mensalidade)
+        competencias = _competencias_para_cobrir(db, membro, req.mes_referencia or date.today().strftime("%Y-%m"), qtd_meses_auto)
+    else:
+        competencias = []
+
+    if competencias:
+        valores_competencias, _excedente = _ratear_valor_dabb_por_competencias(
             valor_total=valor_pago,
             competencias=competencias,
             valor_mensalidade=valor_mensalidade,
@@ -3383,8 +3392,6 @@ def create_pagamento(req: schemas.PagamentoCreate, db: Session = Depends(get_db)
             obs = req.observacoes or ""
             if len(competencias) > 1:
                 obs_multimes = f"Pagamento acumulado de R$ {valor_pago:.2f} referente a {len(competencias)} meses ({', '.join(competencias)})"
-                if excedente > 0:
-                    obs_multimes += f" | Saldo excedente: R$ {excedente:.2f}"
                 obs = f"{obs}\n{obs_multimes}".strip() if obs else obs_multimes
 
 
@@ -3426,7 +3433,7 @@ def create_pagamento(req: schemas.PagamentoCreate, db: Session = Depends(get_db)
         models.Pagamento.mes_referencia == req.mes_referencia
     ).first()
     if existing:
-        for k, v in req.dict(exclude_none=True).items():
+        for k, v in req.dict(exclude_none=True, exclude={"competencias"}).items():
             setattr(existing, k, v)
         existing.updated_at = datetime.utcnow()
         db.commit()
@@ -3438,7 +3445,7 @@ def create_pagamento(req: schemas.PagamentoCreate, db: Session = Depends(get_db)
         id=str(uuid.uuid4()),
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
-        **req.dict()
+        **req.dict(exclude={"competencias"})
     )
     db.add(p)
     db.commit()
@@ -7337,6 +7344,10 @@ def _baixar_pagamento_mensalidade_por_conciliacao(
 
 
 MAX_ANOS_RETROATIVOS_SEM_FILIACAO = 3
+# Início da operação em produção: dados/competências anteriores a este mês são
+# ignorados em relatórios de devedores/atraso (histórico de 2025 e anos
+# anteriores não deve gerar cobrança nem aparecer como pendência).
+MES_INICIO_OPERACAO = "2026-01"
 
 
 def _competencias_em_aberto_ate_mes(
@@ -7348,10 +7359,13 @@ def _competencias_em_aberto_ate_mes(
     anteriores - não apenas do ano civil de `mes_fim`. O início da busca é a data
     de filiação do membro quando conhecida; sem ela, limita-se a um horizonte de
     MAX_ANOS_RETROATIVOS_SEM_FILIACAO anos para não escanear o histórico inteiro.
+    Nunca considera competências anteriores a MES_INICIO_OPERACAO.
     """
     ano_fim, _ = _parse_mes_referencia_or_400(mes_fim)
     limite_filiacao = membro.data_filiacao.strftime("%Y-%m") if membro.data_filiacao else None
     mes_inicio = limite_filiacao or f"{ano_fim - MAX_ANOS_RETROATIVOS_SEM_FILIACAO}-01"
+    if mes_inicio < MES_INICIO_OPERACAO:
+        mes_inicio = MES_INICIO_OPERACAO
     if mes_inicio > mes_fim:
         return []
 
@@ -7450,14 +7464,17 @@ def _ratear_valor_dabb_por_competencias(
 
     if valor_total >= total_esperado:
         valores = [valor_alocado_padrao for _ in competencias]
-        excedente = round(valor_total - total_esperado, 2)
-        return valores, excedente
     else:
         valor_base = round(valor_total / quantidade, 2)
         valores = [valor_base for _ in competencias]
-        diferenca = round(valor_total - sum(valores), 2)
-        valores[-1] = round(valores[-1] + diferenca, 2)
-        return valores, 0.0
+
+    # O valor pago precisa bater exatamente com o total recebido (regime de
+    # caixa) para não distorcer balancete/relatório de entradas do mês:
+    # qualquer diferença de arredondamento ou excedente (ex.: taxa bancária)
+    # é lançada na última competência, nunca descartada.
+    diferenca = round(valor_total - sum(valores), 2)
+    valores[-1] = round(valores[-1] + diferenca, 2)
+    return valores, 0.0
 
 
 def _baixar_pagamentos_dabb_por_competencias_inferidas(

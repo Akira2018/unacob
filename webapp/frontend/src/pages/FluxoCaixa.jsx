@@ -275,7 +275,7 @@ export default function FluxoCaixa() {
                 ) : entradasFiltradas.map(t => (
                   <tr key={t.id}>
                     <td>{formatDateBR(t.data_transacao)}</td>
-                    <td>{t.descricao}</td>
+                    <td className="fluxocaixa-desc-cell" title={t.descricao}>{t.descricao}</td>
                     <td><span className="badge badge-success">{t.categoria || t.origem}</span></td>
                     <td><strong className="fluxocaixa-value-entrada">{fmt(t.valor)}</strong></td>
                   </tr>
@@ -298,7 +298,7 @@ export default function FluxoCaixa() {
                 ) : saidasFiltradas.map(t => (
                   <tr key={t.id}>
                     <td>{formatDateBR(t.data_transacao)}</td>
-                    <td>{t.descricao}</td>
+                    <td className="fluxocaixa-desc-cell" title={t.descricao}>{t.descricao}</td>
                     <td><span className="badge badge-danger">{t.categoria || t.origem}</span></td>
                     <td><strong className="fluxocaixa-value-saida">{fmt(t.valor)}</strong></td>
                   </tr>
