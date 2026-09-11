@@ -137,6 +137,9 @@ class PagamentoCreate(BaseModel):
     valor_pago: float
     mes_referencia: str  # YYYY-MM
     data_pagamento: Optional[date] = None
+    # Data em que o dinheiro entrou na conta bancaria (regime de caixa).
+    # Quando ausente, os relatorios de caixa usam data_pagamento.
+    data_credito_banco: Optional[date] = None
     status_pagamento: str = 'pago'
     forma_pagamento: Optional[str] = None
     observacoes: Optional[str] = None
@@ -150,6 +153,7 @@ class PagamentoUpdate(BaseModel):
     valor_pago: Optional[float] = None
     mes_referencia: Optional[str] = None
     data_pagamento: Optional[date] = None
+    data_credito_banco: Optional[date] = None
     status_pagamento: Optional[str] = None
     forma_pagamento: Optional[str] = None
     observacoes: Optional[str] = None
@@ -160,6 +164,7 @@ class PagamentoResponse(BaseModel):
     valor_pago: Optional[float]
     mes_referencia: Optional[str]
     data_pagamento: Optional[date]
+    data_credito_banco: Optional[date] = None
     status_pagamento: Optional[str]
     forma_pagamento: Optional[str]
     observacoes: Optional[str]

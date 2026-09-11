@@ -359,6 +359,7 @@ def _ensure_financeiro_columns_and_seed_contas():
         _ensure_column("aplicacoes_financeiras", "updated_at", "TIMESTAMP")
         _ensure_column("conciliacoes", "despesa_id", "VARCHAR(36)")
         _ensure_column("conciliacoes", "outra_renda_id", "VARCHAR(36)")
+        _ensure_column("pagamentos", "data_credito_banco", "DATE")
 
     from database import SessionLocal
     db = SessionLocal()
@@ -1886,11 +1887,17 @@ def _pagamentos_recebidos_no_mes(db: Session, mes_referencia: str):
     primeiro_dia = _primeiro_dia_mes(ano, mes)
     ultimo_dia = _ultimo_dia_mes(ano, mes)
 
+    # Regime de caixa: a data que vale e a do credito no banco; se nao informada,
+    # cai para a data em que o associado pagou; e so entao para a competencia.
+    data_caixa = sql_func.coalesce(
+        models.Pagamento.data_credito_banco, models.Pagamento.data_pagamento
+    )
     rows = db.query(models.Pagamento).filter(
         models.Pagamento.status_pagamento == "pago",
         or_(
-            models.Pagamento.data_pagamento.between(primeiro_dia, ultimo_dia),
-            (models.Pagamento.data_pagamento.is_(None))
+            data_caixa.between(primeiro_dia, ultimo_dia),
+            (models.Pagamento.data_credito_banco.is_(None))
+            & (models.Pagamento.data_pagamento.is_(None))
             & (models.Pagamento.mes_referencia == mes_referencia),
         ),
     ).all()
@@ -1915,11 +1922,15 @@ def _total_pagamentos_recebidos_antes_do_mes(db: Session, mes_referencia: str) -
     para o cálculo de saldo acumulado."""
     ano, mes = _parse_mes_referencia_or_400(mes_referencia)
     primeiro_dia = _primeiro_dia_mes(ano, mes)
+    data_caixa = sql_func.coalesce(
+        models.Pagamento.data_credito_banco, models.Pagamento.data_pagamento
+    )
     total = db.query(sql_func.coalesce(sql_func.sum(models.Pagamento.valor_pago), 0)).filter(
         models.Pagamento.status_pagamento == "pago",
         or_(
-            models.Pagamento.data_pagamento < primeiro_dia,
-            (models.Pagamento.data_pagamento.is_(None))
+            data_caixa < primeiro_dia,
+            (models.Pagamento.data_credito_banco.is_(None))
+            & (models.Pagamento.data_pagamento.is_(None))
             & (models.Pagamento.mes_referencia.isnot(None))
             & (models.Pagamento.mes_referencia < mes_referencia),
         ),
@@ -2737,6 +2748,7 @@ def list_pagamentos(
         pd = {
             "id": p.id, "membro_id": p.membro_id, "valor_pago": float(p.valor_pago) if p.valor_pago else 0,
             "mes_referencia": p.mes_referencia, "data_pagamento": str(p.data_pagamento) if p.data_pagamento else None,
+            "data_credito_banco": str(p.data_credito_banco) if p.data_credito_banco else None,
             "status_pagamento": p.status_pagamento, "forma_pagamento": p.forma_pagamento,
             "observacoes": p.observacoes, "created_at": str(p.created_at) if p.created_at else None,
             "membro_nome": None
@@ -2781,6 +2793,7 @@ def painel_pagamentos(
             "pagamento_id": p.id if p else None,
             "valor_pago": float(p.valor_pago) if p and p.valor_pago else 0,
             "data_pagamento": str(p.data_pagamento) if p and p.data_pagamento else None,
+            "data_credito_banco": str(p.data_credito_banco) if p and p.data_credito_banco else None,
             "status": p.status_pagamento if p else "pendente",
             "forma_pagamento": p.forma_pagamento if p else None,
         })
@@ -3366,11 +3379,21 @@ def create_pagamento(req: schemas.PagamentoCreate, db: Session = Depends(get_db)
     # Meses selecionados explicitamente pelo usuário têm prioridade sobre o
     # cálculo automático (que apenas estima a quantidade a partir do valor).
     competencias_informadas = sorted({c.strip() for c in (req.competencias or []) if c and c.strip()})
+    qtd_meses_valor = _quantidade_meses_cobertos_pelo_valor(valor_pago, valor_mensalidade)
     if competencias_informadas:
-        competencias = competencias_informadas
-    elif _quantidade_meses_cobertos_pelo_valor(valor_pago, valor_mensalidade) > 1:
-        qtd_meses_auto = _quantidade_meses_cobertos_pelo_valor(valor_pago, valor_mensalidade)
-        competencias = _competencias_para_cobrir(db, membro, req.mes_referencia or date.today().strftime("%Y-%m"), qtd_meses_auto)
+        competencias = list(competencias_informadas)
+        # A mensalidade é fixa (R$ <valor_mensalidade>). Quando o valor pago cobre
+        # mais meses do que os selecionados, o excedente é distribuído para as
+        # demais competências em aberto (atrasados primeiro, depois meses
+        # futuros) — nunca empilhado num mês só.
+        if qtd_meses_valor > len(competencias):
+            base_mes = competencias[-1] or req.mes_referencia or date.today().strftime("%Y-%m")
+            for c in _competencias_para_cobrir(db, membro, base_mes, qtd_meses_valor):
+                if c not in competencias:
+                    competencias.append(c)
+            competencias = sorted(set(competencias))
+    elif qtd_meses_valor > 1:
+        competencias = _competencias_para_cobrir(db, membro, req.mes_referencia or date.today().strftime("%Y-%m"), qtd_meses_valor)
     else:
         competencias = []
 
@@ -3402,6 +3425,7 @@ def create_pagamento(req: schemas.PagamentoCreate, db: Session = Depends(get_db)
                     valor_pago=valores_competencias[idx],
                     mes_referencia=competencia,
                     data_pagamento=req.data_pagamento or date.today(),
+                    data_credito_banco=req.data_credito_banco,
                     status_pagamento=req.status_pagamento or "pago",
                     forma_pagamento=req.forma_pagamento or "dinheiro",
                     comprovante=req.comprovante,
@@ -3414,6 +3438,8 @@ def create_pagamento(req: schemas.PagamentoCreate, db: Session = Depends(get_db)
             else:
                 pag.valor_pago = valores_competencias[idx]
                 pag.data_pagamento = req.data_pagamento or date.today()
+                if req.data_credito_banco is not None:
+                    pag.data_credito_banco = req.data_credito_banco
                 pag.status_pagamento = req.status_pagamento or "pago"
                 pag.forma_pagamento = req.forma_pagamento or pag.forma_pagamento
                 if req.comprovante:
@@ -3463,6 +3489,9 @@ def _register_transaction(db, pagamento, user_id):
         models.Transacao.membro_id == pagamento.membro_id,
         cast(models.Transacao.categoria, String).ilike(f"%{pagamento.mes_referencia}%")
     ).first()
+    # Regime de caixa: a transação entra na data em que o dinheiro caiu no banco
+    # (data_credito_banco); sem ela, usa a data em que o associado pagou.
+    data_caixa = pagamento.data_credito_banco or pagamento.data_pagamento or date.today()
     if not existing:
         t = models.Transacao(
             id=str(uuid.uuid4()),
@@ -3471,7 +3500,7 @@ def _register_transaction(db, pagamento, user_id):
             valor=pagamento.valor_pago,
             tipo="entrada",
             categoria=f"Mensalidade {pagamento.mes_referencia}",
-            data_transacao=pagamento.data_pagamento or date.today(),
+            data_transacao=data_caixa,
             origem="mensalidade",
             membro_id=pagamento.membro_id,
             created_at=datetime.utcnow()
@@ -3484,7 +3513,7 @@ def _register_transaction(db, pagamento, user_id):
         existing.valor = pagamento.valor_pago
         existing.tipo = "entrada"
         existing.categoria = f"Mensalidade {pagamento.mes_referencia}"
-        existing.data_transacao = pagamento.data_pagamento or date.today()
+        existing.data_transacao = data_caixa
         existing.origem = "mensalidade"
         existing.membro_id = pagamento.membro_id
         existing.updated_at = datetime.utcnow()
@@ -5100,7 +5129,7 @@ def fluxo_caixa(
             "valor": float(p.valor_pago) if p.valor_pago else 0,
             "tipo": "entrada",
             "categoria": f"Mensalidade {mes_ref}",
-            "data_transacao": p.data_pagamento,
+            "data_transacao": p.data_credito_banco or p.data_pagamento,
             "origem": "mensalidade"
         })
 
@@ -7470,10 +7499,21 @@ def _ratear_valor_dabb_por_competencias(
 
     # O valor pago precisa bater exatamente com o total recebido (regime de
     # caixa) para não distorcer balancete/relatório de entradas do mês:
-    # qualquer diferença de arredondamento ou excedente (ex.: taxa bancária)
-    # é lançada na última competência, nunca descartada.
+    # nenhuma diferença é descartada.
     diferenca = round(valor_total - sum(valores), 2)
-    valores[-1] = round(valores[-1] + diferenca, 2)
+
+    # Excedente pequeno (arredondamento, taxa bancária, crédito/débito de poucos
+    # reais) fica na última competência, como antes. Um excedente grande — sinal
+    # de valor pago acima do previsto para a quantidade de meses — NUNCA pode ser
+    # concentrado num único mês (gerava linhas do tipo R$ 980,00): é espalhado por
+    # igual entre todas as competências, mantendo a soma exata.
+    if abs(diferenca) > val_mensal and quantidade > 1:
+        valor_base = round(valor_total / quantidade, 2)
+        valores = [valor_base for _ in competencias]
+        ajuste = round(valor_total - valor_base * quantidade, 2)
+        valores[-1] = round(valores[-1] + ajuste, 2)
+    else:
+        valores[-1] = round(valores[-1] + diferenca, 2)
     return valores, 0.0
 
 
@@ -8337,7 +8377,11 @@ def balancete(
         "total_despesas": total_saidas,
         "saldo": saldo,
         "saldo_final": saldo_final,
-        "qtd_pagantes": len(pags),
+        # qtd_pagantes = associados distintos que pagaram no mes (um associado que
+        # quita varios meses de uma vez conta como 1). qtd_mensalidades = total de
+        # competencias quitadas com o dinheiro que entrou no mes.
+        "qtd_pagantes": len({p.membro_id for p in pags if p.membro_id}),
+        "qtd_mensalidades": len(pags),
         "despesas_por_categoria": dict(desp_por_cat),
         "rendas_por_categoria": dict(renda_por_cat),
         "entradas_por_conta": entradas_ordenadas,
@@ -8345,6 +8389,7 @@ def balancete(
         "pagamentos": [{
             "membro_id": p.membro_id, "valor_pago": float(p.valor_pago) if p.valor_pago else 0,
             "data_pagamento": str(p.data_pagamento) if p.data_pagamento else None,
+            "data_credito_banco": str(p.data_credito_banco) if p.data_credito_banco else None,
             "forma_pagamento": p.forma_pagamento
         } for p in pags],
         "despesas": [{
@@ -8982,6 +9027,19 @@ def _exportar_pagamentos_anual(db: Session, ano_ref: int):
         if p.mes_referencia and p.membro_id:
             pagamentos_map[(p.membro_id, p.mes_referencia)] = p
 
+    # Regime de caixa: quanto entrou no banco em cada mês do calendário
+    # (data_credito_banco, com fallback para data_pagamento), independente da
+    # competência lançada. Um pagamento de Fev creditado em Mar soma no mês 3,
+    # não no mês 2 — mesma regra já usada no balancete/fluxo de caixa.
+    credit_por_mes: dict[str, dict[int, float]] = {}
+    for m_num in range(1, 13):
+        mes_key = f"{ano_ref}-{m_num:02d}"
+        for p in _pagamentos_recebidos_no_mes(db, mes_key):
+            if not p.membro_id:
+                continue
+            por_mes = credit_por_mes.setdefault(p.membro_id, {})
+            por_mes[m_num] = por_mes.get(m_num, 0.0) + float(p.valor_pago or 0)
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = f"Mensalidades {ano_ref}"
@@ -8991,6 +9049,12 @@ def _exportar_pagamentos_anual(db: Session, ano_ref: int):
     ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
     ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    ws.merge_cells("A2:R2")
+    ws["A2"] = ("Valores por mês do crédito bancário (regime de caixa). "
+                "✓ = competência quitada com crédito refletido em outro mês.")
+    ws["A2"].font = Font(italic=True, size=9, color="555555")
+    ws["A2"].alignment = Alignment(horizontal="center")
 
     headers = [
         "Matrícula", "Nome Completo", "Mensalidade (R$)",
@@ -9006,6 +9070,7 @@ def _exportar_pagamentos_anual(db: Session, ano_ref: int):
     green_fill = PatternFill("solid", fgColor="C6EFCE")
     red_fill = PatternFill("solid", fgColor="FFC7CE")
     gray_fill = PatternFill("solid", fgColor="F2F2F2")
+    pale_fill = PatternFill("solid", fgColor="EAF1FB")
 
     first_data_row = header_row + 1
     totais_por_mes = [0.0] * 12
@@ -9028,36 +9093,45 @@ def _exportar_pagamentos_anual(db: Session, ano_ref: int):
         qtd_meses_pendentes = 0
 
         limite_filiacao = m.data_filiacao.strftime("%Y-%m") if m.data_filiacao else None
+        credit_membro = credit_por_mes.get(m.id, {})
 
         for m_num in range(1, 13):
             mes_key = f"{ano_ref}-{m_num:02d}"
             col_idx = 3 + m_num
             p = pagamentos_map.get((m.id, mes_key))
-            
-            is_pago = (p is not None and p.status_pagamento == "pago")
-            
-            if is_pago:
-                val_pago = float(p.valor_pago or val_mens)
-                cell = ws.cell(row=idx, column=col_idx, value=val_pago)
+            is_pago_competencia = (p is not None and p.status_pagamento == "pago")
+            val_creditado = credit_membro.get(m_num, 0.0)
+
+            if val_creditado > 0:
+                # Dinheiro efetivamente creditado no banco neste mês (regime de
+                # caixa), podendo somar mais de uma competência quitada de uma vez.
+                cell = ws.cell(row=idx, column=col_idx, value=round(val_creditado, 2))
                 cell.number_format = 'R$ #,##0.00'
                 cell.fill = green_fill
                 cell.alignment = Alignment(horizontal="right")
-                row_total_pago += val_pago
-                totais_por_mes[m_num - 1] += val_pago
+                row_total_pago += val_creditado
+                totais_por_mes[m_num - 1] += val_creditado
+            elif is_pago_competencia:
+                # Competência quitada, mas o crédito bancário caiu em outro mês
+                # (ou ainda não foi informado) — não é pendência, só não há
+                # dinheiro para mostrar neste mês específico. Checado antes do
+                # "antes da filiação" porque um pagamento real sempre prevalece.
+                cell = ws.cell(row=idx, column=col_idx, value="✓")
+                cell.alignment = Alignment(horizontal="center")
+                cell.fill = pale_fill
+            elif limite_filiacao and mes_key < limite_filiacao:
+                cell = ws.cell(row=idx, column=col_idx, value="-")
+                cell.alignment = Alignment(horizontal="center")
+                cell.fill = gray_fill
             else:
-                if limite_filiacao and mes_key < limite_filiacao:
-                    cell = ws.cell(row=idx, column=col_idx, value="-")
-                    cell.alignment = Alignment(horizontal="center")
-                    cell.fill = gray_fill
-                else:
-                    val_pend = val_mens
-                    cell = ws.cell(row=idx, column=col_idx, value=0.0)
-                    cell.number_format = 'R$ #,##0.00'
-                    cell.fill = red_fill
-                    cell.alignment = Alignment(horizontal="right")
-                    row_total_pendente += val_pend
-                    totais_pendentes_por_mes[m_num - 1] += val_pend
-                    qtd_meses_pendentes += 1
+                val_pend = val_mens
+                cell = ws.cell(row=idx, column=col_idx, value=0.0)
+                cell.number_format = 'R$ #,##0.00'
+                cell.fill = red_fill
+                cell.alignment = Alignment(horizontal="right")
+                row_total_pendente += val_pend
+                totais_pendentes_por_mes[m_num - 1] += val_pend
+                qtd_meses_pendentes += 1
 
         cell_tp = ws.cell(row=idx, column=16, value=round(row_total_pago, 2))
         cell_tp.number_format = 'R$ #,##0.00'
@@ -9134,7 +9208,23 @@ def exportar_pagamentos(
         return _exportar_pagamentos_anual(db, ano_num)
 
     membros = db.query(models.Membro).filter(models.Membro.status == 'ativo').order_by(models.Membro.nome_completo).all()
-    pagamentos = {p.membro_id: p for p in db.query(models.Pagamento).filter(models.Pagamento.mes_referencia == mes_ref).all()}
+
+    # Regime de caixa: o relatório mostra o que efetivamente entrou no banco
+    # neste mês (data_credito_banco, com fallback para data_pagamento), não o
+    # que foi lançado com esta competência — um pagamento de Fev creditado em
+    # Mar aparece no relatório de Mar, não no de Fev.
+    pagamentos = {}
+    for p in _pagamentos_recebidos_no_mes(db, mes_ref):
+        if not p.membro_id:
+            continue
+        agg = pagamentos.setdefault(p.membro_id, {
+            "valor_pago": 0.0, "data_credito": None, "forma_pagamento": None,
+        })
+        agg["valor_pago"] += float(p.valor_pago or 0)
+        data_credito = p.data_credito_banco or p.data_pagamento
+        if data_credito and (agg["data_credito"] is None or data_credito > agg["data_credito"]):
+            agg["data_credito"] = data_credito
+            agg["forma_pagamento"] = p.forma_pagamento
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -9146,7 +9236,7 @@ def exportar_pagamentos(
     ws["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
 
-    headers = ["Matrícula", "Nome", "Valor Mensalidade", "Valor Pago", "Data Pagamento", "Status", "Forma Pagamento"]
+    headers = ["Matrícula", "Nome", "Valor Mensalidade", "Valor Pago", "Data Crédito", "Status", "Forma Pagamento"]
 
     header_row = 3
     for col, header in enumerate(headers, 1):
@@ -9163,16 +9253,16 @@ def exportar_pagamentos(
 
     for row, m in enumerate(membros, first_data_row):
         p = pagamentos.get(m.id)
-        status = p.status_pagamento if p else "pendente"
+        status = "pago" if p else "pendente"
         fill = green_fill if status == "pago" else red_fill
-        
+
         values = [
             m.matricula, m.nome_completo,
             float(m.valor_mensalidade) if m.valor_mensalidade else 0,
-            float(p.valor_pago) if p and p.valor_pago else 0,
-            p.data_pagamento if p and p.data_pagamento else None,
+            float(p["valor_pago"]) if p else 0,
+            p["data_credito"] if p else None,
             status,
-            p.forma_pagamento if p else ""
+            p["forma_pagamento"] if p else ""
         ]
         for col, val in enumerate(values, 1):
             if col == 5:

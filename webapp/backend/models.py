@@ -97,7 +97,10 @@ class Pagamento(Base):
     membro_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("membros.id"), index=True, nullable=True)
     valor_pago: Mapped[Numeric] = mapped_column(Numeric(12, 2), nullable=True)
     mes_referencia: Mapped[str | None] = mapped_column(String(10), index=True, nullable=True)  # YYYY-MM
-    data_pagamento: Mapped[Date | None] = mapped_column(Date, nullable=True)
+    data_pagamento: Mapped[Date | None] = mapped_column(Date, nullable=True)  # data em que o associado efetuou o pagamento
+    # Data em que o dinheiro efetivamente entrou na conta bancaria (regime de caixa).
+    # Quando nula, os relatorios de caixa usam data_pagamento como fallback.
+    data_credito_banco: Mapped[Date | None] = mapped_column(Date, index=True, nullable=True)
     status_pagamento: Mapped[str | None] = mapped_column(String(20), index=True, nullable=True)  # pago, pendente, atrasado
     forma_pagamento: Mapped[str | None] = mapped_column(String(50), nullable=True)  # dinheiro, pix, transferencia, boleto
     comprovante: Mapped[str | None] = mapped_column(String(500), nullable=True)

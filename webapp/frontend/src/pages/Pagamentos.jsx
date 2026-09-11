@@ -263,11 +263,12 @@ export default function Pagamentos() {
 
   
   // Estados de Formulario e Processamento
-  const [form, setForm] = useState({ 
-    valor_pago: '', 
-    data_pagamento: format(new Date(), 'yyyy-MM-dd'), 
-    status_pagamento: 'pago', 
-    forma_pagamento: 'dinheiro', 
+  const [form, setForm] = useState({
+    valor_pago: '',
+    data_pagamento: format(new Date(), 'yyyy-MM-dd'),
+    data_credito_banco: '',
+    status_pagamento: 'pago',
+    forma_pagamento: 'dinheiro',
     observacoes: '',
     competencias: []
   });
@@ -410,6 +411,7 @@ export default function Pagamentos() {
       // usa ?? em vez de || para não trocar um valor 0 (pagamento zerado) pela mensalidade padrão
       valor_pago: valorExistente ?? item.valor_mensalidade ?? '',
       data_pagamento: item.data_pagamento || format(new Date(), 'yyyy-MM-dd'),
+      data_credito_banco: item.data_credito_banco || '',
       status_pagamento: item.status === 'pago' ? 'pago' : 'pendente',
       forma_pagamento: 'transferencia',
       observacoes: item.observacoes || '',
@@ -477,7 +479,14 @@ export default function Pagamentos() {
     const valorNormalizado = form.valor_pago === '' ? 0 : Number(form.valor_pago) || 0;
     setSaving(true);
     try {
-      await api.post('/pagamentos', { ...form, valor_pago: valorNormalizado, membro_id: selected.membro_id, mes_referencia: mes });
+      await api.post('/pagamentos', {
+        ...form,
+        valor_pago: valorNormalizado,
+        // string vazia não é uma data válida para o backend: envia null quando não preenchido
+        data_credito_banco: form.data_credito_banco || null,
+        membro_id: selected.membro_id,
+        mes_referencia: mes,
+      });
       toast.success('Pagamento atualizado!');
       closePagamentoModal();
       load();
@@ -960,8 +969,17 @@ export default function Pagamentos() {
                   <input type="number" step="0.01" value={form.valor_pago} onChange={e => setF('valor_pago', e.target.value)} placeholder={form.status_pagamento === 'pendente' ? '0,00' : ''} />
                 </div>
                 <div className="form-group">
-                  <label>Data</label>
+                  <label>Data do pagamento</label>
                   <input type="date" value={form.data_pagamento} onChange={e => setF('data_pagamento', e.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label>Data do crédito no banco</label>
+                  <input type="date" value={form.data_credito_banco} onChange={e => setF('data_credito_banco', e.target.value)} />
+                  <small style={{ display: 'block', color: '#666', marginTop: 4 }}>
+                    Opcional. Preencha quando o dinheiro caiu na conta em mês diferente do pagamento
+                    (ex.: pago em 28/02, creditado pelo BB em março). O balancete e o fluxo de caixa
+                    usam esta data; sem ela, usam a data do pagamento.
+                  </small>
                 </div>
                 <div className="form-group">
                   <label>Forma</label>

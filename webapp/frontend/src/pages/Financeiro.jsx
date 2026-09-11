@@ -152,7 +152,16 @@ export default function Financeiro() {
               color="#1e3a5f"
               sub={data?.origem_saldo_anterior === 'manual' ? 'Saldo Manual Ativo' : 'Origem calculada'}
             />
-            <SumCard label="Mensalidades" value={fmt(data?.total_mensalidades)} color="#38a169" sub={`${data?.qtd_pagantes} pagantes`} />
+            <SumCard
+              label="Mensalidades"
+              value={fmt(data?.total_mensalidades)}
+              color="#38a169"
+              sub={
+                data?.qtd_mensalidades != null && data?.qtd_mensalidades !== data?.qtd_pagantes
+                  ? `${data?.qtd_pagantes} pagantes · ${data?.qtd_mensalidades} mensalidades`
+                  : `${data?.qtd_pagantes} pagantes`
+              }
+            />
             <SumCard label="Outras Rendas" value={fmt(data?.total_outras_rendas)} color="#805ad5" />
             <SumCard label="Total Entradas" value={fmt(data?.total_entradas)} color="#1e3a5f" bold />
             <SumCard label="Total Despesas" value={fmt(data?.total_despesas)} color="#e53e3e" />
@@ -260,13 +269,13 @@ export default function Financeiro() {
               <div className="card-title">Pagamentos Recebidos</div>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Membro</th><th>Valor</th><th>Data</th><th>Forma</th></tr></thead>
+                  <thead><tr><th>Membro</th><th>Valor</th><th>Data do crédito</th><th>Forma</th></tr></thead>
                   <tbody>
                     {data.pagamentos.map((p, i) => (
                       <tr key={i}>
                         <td>{p.nome || p.membro_nome || p.membro_id}</td>
                         <td><strong style={{ color: '#38a169' }}>{fmt(p.valor_pago)}</strong></td>
-                        <td>{formatDateBR(p.data_pagamento)}</td>
+                        <td>{formatDateBR(p.data_credito_banco || p.data_pagamento)}</td>
                         <td>{p.forma_pagamento || '-'}</td>
                       </tr>
                     ))}
