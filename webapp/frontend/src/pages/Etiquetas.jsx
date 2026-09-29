@@ -2,6 +2,13 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 import api from "../api";
 import { Printer, Download } from "lucide-react";
 import { getApiErrorMessage } from "../utils/apiError";
+import {
+  LAYOUT_PADRAO,
+  carregarLayout,
+  salvarLayout,
+  centralizarLayout,
+  gerarHtmlEtiquetas
+} from "../utils/etiquetasPrint";
 
 
 export default function Etiquetas() {
@@ -18,6 +25,12 @@ export default function Etiquetas() {
     semEmail: false,
     semWhatsapp: false
   });
+  const [layout, setLayout] = useState(carregarLayout);
+  const [mostrarAjuste, setMostrarAjuste] = useState(false);
+
+  useEffect(() => {
+    salvarLayout(layout);
+  }, [layout]);
 
   const buscarMembros = useCallback(async () => {
     setLoading(true);
@@ -144,104 +157,32 @@ export default function Etiquetas() {
     }
 
     const janela = window.open("", "_blank");
+    if (!janela) {
+      alert("O navegador bloqueou a janela de impressão. Permita pop-ups para este site.");
+      return;
+    }
 
-    janela.document.write(`
-
-      <html>
-      <head>
-        <title>Etiquetas Postais UNACOB</title>
-        <style>
-          @page {
-            size: A4 portrait;
-            margin: 0.6cm 0.4cm;
-          }
-
-          * {
-            box-sizing: border-box;
-          }
-
-          body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 0;
-            background: #fff;
-          }
-
-          .pagina {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            grid-template-rows: repeat(10, 2.65cm);
-            column-gap: 0.4cm;
-            row-gap: 0.1cm;
-            page-break-after: always;
-            page-break-inside: avoid;
-            width: 100%;
-            height: 27.5cm;
-          }
-
-          .etiqueta {
-            box-sizing: border-box;
-            border: 1px dashed #ccc;
-            padding: 6px 10px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            font-size: 9.5pt;
-            line-height: 1.35;
-            overflow: hidden;
-            height: 2.65cm;
-          }
-
-          .etiqueta strong {
-            font-size: 10.5pt;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            display: block;
-            margin-bottom: 2px;
-          }
-
-          .etiqueta-linha {
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            display: block;
-          }
-
-          @media print {
-            .etiqueta {
-              border: none;
-            }
-          }
-        </style>
-      </head>
-      <body>
-        ${lista.map((m, idx) => {
-          const isStartPage = idx % 20 === 0;
-          const isEndPage = (idx + 1) % 20 === 0 || idx === lista.length - 1;
-          const endNum = [m.endereco, m.numero].filter(Boolean).join(", ") + (m.complemento ? ` - ${m.complemento}` : "");
-          const linha4 = [m.cep, `${m.cidade || "Bauru"}/${m.estado || "SP"}`].filter(Boolean).join(" - ");
-
-          let html = "";
-          if (isStartPage) html += '<div class="pagina">';
-          html += `
-            <div class="etiqueta">
-              <strong>${m.nome_completo || ""}</strong>
-              <div class="etiqueta-linha">${endNum || "&nbsp;"}</div>
-              <div class="etiqueta-linha">${m.bairro || "&nbsp;"}</div>
-              <div class="etiqueta-linha">${linha4 || "&nbsp;"}</div>
-            </div>
-          `;
-          if (isEndPage) html += '</div>';
-          return html;
-        }).join("")}
-      </body>
-      </html>
-    `);
-
+    janela.document.write(gerarHtmlEtiquetas(lista, layout));
     janela.document.close();
-    janela.print();
+    janela.focus();
+    // aguarda o layout da nova janela antes de abrir o diálogo de impressão
+    setTimeout(() => janela.print(), 300);
   };
+
+  const alterarLayout = (campo, valor) => {
+    const numero = parseFloat(String(valor).replace(",", "."));
+    setLayout((prev) => ({ ...prev, [campo]: Number.isFinite(numero) ? numero : 0 }));
+  };
+
+  const camposLayout = [
+    ["margemSuperior", "Margem superior"],
+    ["margemEsquerda", "Margem esquerda"],
+    ["largura", "Largura etiqueta"],
+    ["altura", "Altura etiqueta"],
+    ["espacoColunas", "Espaço entre colunas"],
+    ["espacoLinhas", "Espaço entre linhas"],
+    ["recuoTexto", "Recuo do texto"]
+  ];
 
 
   return (
@@ -253,6 +194,9 @@ export default function Etiquetas() {
         <button className="btn btn-primary" onClick={imprimirEtiquetas}>
           <Printer size={16} />
           Imprimir ({membrosSelecionados.length})
+        </button>
+        <button className="btn btn-outline" onClick={() => setMostrarAjuste((v) => !v)}>
+          Ajuste de impressão
         </button>
         <button
           className="btn btn-outline"
@@ -267,6 +211,38 @@ export default function Etiquetas() {
       </div>
     </div>
 
+
+    {mostrarAjuste && (
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 13, color: "var(--text-light)", marginBottom: 10 }}>
+          Medidas em milímetros, a partir da borda da folha A4. No diálogo de impressão use
+          <strong> Margens: Nenhuma</strong> e <strong>Escala: 100% (Padrão)</strong> — não use
+          "Ajustar à página". Se a impressora deslocar a impressão, corrija aqui as margens
+          superior/esquerda (valores salvos neste navegador).
+        </div>
+        <div className="filters" style={{ marginTop: 0 }}>
+          {camposLayout.map(([campo, rotulo]) => (
+            <div className="form-group" style={{ margin: 0, width: 130 }} key={campo}>
+              <label>{rotulo}</label>
+              <input
+                type="number"
+                step="0.5"
+                className="search-input"
+                style={{ width: "100%", minHeight: 36, maxHeight: 36 }}
+                value={layout[campo]}
+                onChange={(e) => alterarLayout(campo, e.target.value)}
+              />
+            </div>
+          ))}
+          <button className="btn btn-outline btn-sm" onClick={() => setLayout((l) => centralizarLayout(l))}>
+            Centralizar na folha
+          </button>
+          <button className="btn btn-outline btn-sm" onClick={() => setLayout({ ...LAYOUT_PADRAO })}>
+            Restaurar padrão
+          </button>
+        </div>
+      </div>
+    )}
 
     <div className="card">
 
