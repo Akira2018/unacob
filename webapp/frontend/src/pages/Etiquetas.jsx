@@ -4,6 +4,7 @@ import { Printer, Download } from "lucide-react";
 import { getApiErrorMessage } from "../utils/apiError";
 import {
   LAYOUT_PADRAO,
+  FOLHAS,
   carregarLayout,
   salvarLayout,
   centralizarLayout,
@@ -215,12 +216,25 @@ export default function Etiquetas() {
     {mostrarAjuste && (
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 13, color: "var(--text-light)", marginBottom: 10 }}>
-          Medidas em milímetros, a partir da borda da folha A4. No diálogo de impressão use
-          <strong> Margens: Nenhuma</strong> e <strong>Escala: 100% (Padrão)</strong> — não use
-          "Ajustar à página". Se a impressora deslocar a impressão, corrija aqui as margens
+          Padrão: Pimaco 6181 (folha Carta, etiquetas 25,4 x 101,6 mm). Medidas em milímetros,
+          a partir da borda da folha. No diálogo de impressão escolha o
+          <strong> Tamanho do papel: Carta (Letter)</strong>, <strong>Margens: Nenhuma</strong> e
+          <strong> Escala: 100% (Padrão)</strong> — não use "Ajustar à página". Se a impressora deslocar a impressão, corrija aqui as margens
           superior/esquerda (valores salvos neste navegador).
         </div>
         <div className="filters" style={{ marginTop: 0 }}>
+          <div className="form-group" style={{ margin: 0, width: 130 }}>
+            <label>Folha</label>
+            <select
+              className="search-input"
+              value={layout.folha}
+              onChange={(e) => setLayout((prev) => ({ ...prev, folha: e.target.value }))}
+            >
+              {Object.keys(FOLHAS).map((f) => (
+                <option key={f} value={f}>{f}</option>
+              ))}
+            </select>
+          </div>
           {camposLayout.map(([campo, rotulo]) => (
             <div className="form-group" style={{ margin: 0, width: 130 }} key={campo}>
               <label>{rotulo}</label>
