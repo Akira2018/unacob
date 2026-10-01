@@ -560,13 +560,19 @@ def _get_dabb_valor_mensal_padrao_para_mes(db: Session, mes_referencia: Optional
     if mes_norm < "2026-01":
         return 33.00
 
-    reajuste = db.query(models.HistoricoConfiguracaoDabb).filter(
-        models.HistoricoConfiguracaoDabb.valor_mensal_novo.isnot(None)
-    ).order_by(models.HistoricoConfiguracaoDabb.created_at.desc()).first()
+    # Cada reajuste vale a partir do mês em que foi salvo. Para uma competência
+    # anterior a um reajuste vale o "valor anterior" do primeiro reajuste feito
+    # depois dela (suporta vários reajustes ao longo do tempo).
+    reajustes = db.query(models.HistoricoConfiguracaoDabb).filter(
+        models.HistoricoConfiguracaoDabb.valor_mensal_novo.isnot(None),
+        models.HistoricoConfiguracaoDabb.valor_mensal_anterior.isnot(None),
+        models.HistoricoConfiguracaoDabb.created_at.isnot(None),
+    ).order_by(models.HistoricoConfiguracaoDabb.created_at.asc()).all()
 
-    if reajuste and reajuste.created_at:
-        mes_reajuste = reajuste.created_at.strftime("%Y-%m")
-        if mes_norm < mes_reajuste and reajuste.valor_mensal_anterior is not None:
+    for reajuste in reajustes:
+        if round(float(reajuste.valor_mensal_anterior), 2) == round(float(reajuste.valor_mensal_novo), 2):
+            continue  # só mudou a taxa bancária
+        if mes_norm < reajuste.created_at.strftime("%Y-%m"):
             return round(float(reajuste.valor_mensal_anterior), 2)
 
     return _get_dabb_valor_mensal_padrao(db)
@@ -2760,6 +2766,14 @@ def list_pagamentos(
         result.append(pd)
     return result
 
+def _mascarar_cpf(cpf: Optional[str]) -> Optional[str]:
+    """Mostra só o miolo do CPF (***.456.789-**) - suficiente para distinguir homônimos."""
+    digitos = re.sub(r"\D", "", cpf or "")
+    if len(digitos) != 11:
+        return None
+    return f"***.{digitos[3:6]}.{digitos[6:9]}-**"
+
+
 @app.get("/api/pagamentos/painel")
 def painel_pagamentos(
     mes_referencia: str,
@@ -2782,6 +2796,9 @@ def painel_pagamentos(
 
     membros = q.all()
     pagamentos = _pagamentos_por_membro_no_mes(db, mes_referencia)
+    # Mensalidade base = valor configurado na tela Remessa DABB ("Valor mensal por
+    # associado"), respeitando o histórico de reajustes para a competência.
+    valor_mensalidade_mes = _get_dabb_valor_mensal_padrao_para_mes(db, mes_referencia)
     result = []
     for m in membros:
         p = pagamentos.get(m.id)
@@ -2789,7 +2806,8 @@ def painel_pagamentos(
             "membro_id": m.id,
             "nome": m.nome_completo,
             "matricula": m.matricula,
-            "valor_mensalidade": float(m.valor_mensalidade) if m.valor_mensalidade else 0,
+            "cpf_mascarado": _mascarar_cpf(m.cpf),
+            "valor_mensalidade": valor_mensalidade_mes,
             "pagamento_id": p.id if p else None,
             "valor_pago": float(p.valor_pago) if p and p.valor_pago else 0,
             "data_pagamento": str(p.data_pagamento) if p and p.data_pagamento else None,
@@ -2798,6 +2816,29 @@ def painel_pagamentos(
             "forma_pagamento": p.forma_pagamento if p else None,
         })
     return result
+
+
+@app.get("/api/pagamentos/valores-mensalidade")
+def valores_mensalidade_por_competencia(
+    mes_referencia: str,
+    meses_antes: int = 12,
+    meses_depois: int = 12,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """Valor da mensalidade (configuração DABB + histórico de reajustes) para cada
+    competência da janela selecionável do modal de pagamento."""
+    if not re.match(r"^\d{4}-\d{2}$", mes_referencia or ""):
+        raise HTTPException(status_code=400, detail="mes_referencia deve estar no formato YYYY-MM")
+    meses_antes = max(0, min(meses_antes, 36))
+    meses_depois = max(0, min(meses_depois, 36))
+    ano, mes = map(int, mes_referencia.split("-"))
+    base = ano * 12 + (mes - 1)
+    valores = {}
+    for indice in range(base - meses_antes, base + meses_depois + 1):
+        competencia = f"{indice // 12:04d}-{indice % 12 + 1:02d}"
+        valores[competencia] = _get_dabb_valor_mensal_padrao_para_mes(db, competencia)
+    return valores
 
 
 @app.post("/api/pagamentos/baixa-automatica-banco")
@@ -3382,10 +3423,15 @@ def create_pagamento(req: schemas.PagamentoCreate, db: Session = Depends(get_db)
     qtd_meses_valor = _quantidade_meses_cobertos_pelo_valor(valor_pago, valor_mensalidade)
     if competencias_informadas:
         competencias = list(competencias_informadas)
-        # A mensalidade é fixa (R$ <valor_mensalidade>). Quando o valor pago cobre
-        # mais meses do que os selecionados, o excedente é distribuído para as
-        # demais competências em aberto (atrasados primeiro, depois meses
-        # futuros) — nunca empilhado num mês só.
+        # Cada competência vale a mensalidade da sua época (antes/depois de um
+        # reajuste). Quando o valor pago cobre mais meses do que os selecionados,
+        # o excedente é distribuído para as demais competências em aberto
+        # (atrasados primeiro, depois meses futuros) — nunca empilhado num mês só.
+        total_informado = sum(_get_dabb_valor_mensal_padrao_para_mes(db, c) for c in competencias)
+        meses_extras = _quantidade_meses_cobertos_pelo_valor(
+            round(valor_pago - total_informado, 2), valor_mensalidade
+        ) if valor_pago - total_informado >= valor_mensalidade - 2.00 else 0
+        qtd_meses_valor = len(competencias) + meses_extras
         if qtd_meses_valor > len(competencias):
             base_mes = competencias[-1] or req.mes_referencia or date.today().strftime("%Y-%m")
             for c in _competencias_para_cobrir(db, membro, base_mes, qtd_meses_valor):
@@ -3402,7 +3448,8 @@ def create_pagamento(req: schemas.PagamentoCreate, db: Session = Depends(get_db)
             valor_total=valor_pago,
             competencias=competencias,
             valor_mensalidade=valor_mensalidade,
-            taxa_bancaria=0.0
+            taxa_bancaria=0.0,
+            valores_mensalidade=[_get_dabb_valor_mensal_padrao_para_mes(db, c) for c in competencias],
         )
         pagamentos_processados = []
 
@@ -7470,15 +7517,46 @@ def _conciliacao_dabb_representa_bimestre_fechado(
     return abs(float(pagamento_mes_atual.valor_pago or 0) - valor_extrato) <= 0.05
 
 
+def _ratear_valor_por_mensalidades_do_mes(valor_total: float, mensalidades: list[float]) -> list[float]:
+    """Rateia o valor pago respeitando a mensalidade de cada competência.
+
+    Valor completo: cada mês recebe sua mensalidade e a sobra pequena (taxa,
+    centavos) fica no último. Valor menor ou sobra grande: divide proporcional às
+    mensalidades. A soma sempre bate exatamente com o valor recebido.
+    """
+    valor_total = round(float(valor_total or 0), 2)
+    esperados = [round(float(v or 0), 2) for v in mensalidades]
+    total_esperado = round(sum(esperados), 2)
+    if total_esperado <= 0:
+        base = round(valor_total / len(esperados), 2)
+        valores = [base for _ in esperados]
+    else:
+        diferenca = round(valor_total - total_esperado, 2)
+        if 0 <= diferenca <= min(esperados):
+            valores = list(esperados)
+        else:
+            valores = [round(valor_total * e / total_esperado, 2) for e in esperados]
+    valores[-1] = round(valores[-1] + round(valor_total - sum(valores), 2), 2)
+    return valores
+
+
 def _ratear_valor_dabb_por_competencias(
     valor_total: float,
     competencias: list[str],
     valor_mensalidade: float = 35.0,
     taxa_bancaria: float = 0.0,
+    valores_mensalidade: Optional[list[float]] = None,
 ) -> tuple[list[float], float]:
-    """Retorna a lista de valores por competência (usando o valor padrão R$ 35,00 / R$ 36,00 por mês) e eventual saldo excedente."""
+    """Retorna a lista de valores por competência (usando o valor padrão R$ 35,00 / R$ 36,00 por mês) e eventual saldo excedente.
+
+    Com `valores_mensalidade` (um valor por competência, ex.: meses antes e depois
+    de um reajuste), cada mês recebe a mensalidade da sua época.
+    """
     if not competencias:
         return [], 0.0
+
+    if valores_mensalidade and len(valores_mensalidade) == len(competencias):
+        return _ratear_valor_por_mensalidades_do_mes(valor_total, valores_mensalidade), 0.0
 
     valor_total = round(float(valor_total or 0), 2)
     val_mensal = round(float(valor_mensalidade or 0), 2)

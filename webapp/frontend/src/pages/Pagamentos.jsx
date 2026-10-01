@@ -60,16 +60,29 @@ function getMeses() {
   return result;
 }
 
-// Meses selecionáveis para "quais meses estão sendo pagos": inclui passado (atraso)
-// e futuro (adiantamento). Calculado sempre a partir da data atual, então a virada
-// de ano (ex.: dez/2026 -> jan/2027) é automática, sem precisar atualizar nada.
-function getMesesSelecionaveis() {
+const MESES_RETROATIVOS = 12;
+const MESES_ADIANTADOS = 12;
+
+// Meses selecionáveis para "quais meses estão sendo pagos": 12 meses atrasados e
+// 12 adiantados em torno do mês vigente do painel (o mês em que o pagamento está
+// sendo lançado). Contar a partir do painel, e não de hoje, permite lançar depois
+// um pagamento antigo (ex.: painel jan/2026 -> jan/2025 a jan/2027).
+// A virada de ano é automática.
+function getMesesSelecionaveis(mesReferencia) {
+  const ref = /^\d{4}-\d{2}$/.test(mesReferencia || '') ? mesReferencia : format(new Date(), 'yyyy-MM');
+  const centro = new Date(`${ref}-01T12:00:00`);
   const result = [];
-  for (let i = 12; i >= -3; i--) {
-    const d = subMonths(new Date(), i);
-    result.push(format(d, 'yyyy-MM'));
+  for (let i = -MESES_RETROATIVOS; i <= MESES_ADIANTADOS; i++) {
+    result.push(format(addMonths(centro, i), 'yyyy-MM'));
   }
   return result;
+}
+
+// Diferença em meses entre duas competências 'YYYY-MM' (b - a).
+function diffMeses(a, b) {
+  const [ay, am] = a.split('-').map(Number);
+  const [by, bm] = b.split('-').map(Number);
+  return (by - ay) * 12 + (bm - am);
 }
 
 function valorPorExtenso(valor) {
@@ -221,6 +234,8 @@ export default function Pagamentos() {
   // Estados de UI e Modais
   const [viewMode, setViewMode] = useState('cards');
   const [modal, setModal] = useState(false);
+  // Valor da mensalidade por competência (configuração da Remessa DABB + reajustes).
+  const [valoresMensalidade, setValoresMensalidade] = useState({});
   const [selected, setSelected] = useState(null);
   const [showRecibo, setShowRecibo] = useState(false);
   const [showModalDevedores, setShowModalDevedores] = useState(false);
@@ -409,7 +424,7 @@ export default function Pagamentos() {
     const valorExistente = item.valor_pago;
     setForm({
       // usa ?? em vez de || para não trocar um valor 0 (pagamento zerado) pela mensalidade padrão
-      valor_pago: valorExistente ?? item.valor_mensalidade ?? '',
+      valor_pago: item.pagamento_id ? (valorExistente ?? '') : (item.valor_mensalidade || ''),
       data_pagamento: item.data_pagamento || format(new Date(), 'yyyy-MM-dd'),
       data_credito_banco: item.data_credito_banco || '',
       status_pagamento: item.status === 'pago' ? 'pago' : 'pendente',
@@ -420,15 +435,78 @@ export default function Pagamentos() {
     setModal(true);
   };
 
+  useEffect(() => {
+    if (!mes) return;
+    api.get('/pagamentos/valores-mensalidade', {
+      params: { mes_referencia: mes, meses_antes: MESES_RETROATIVOS, meses_depois: MESES_ADIANTADOS },
+    })
+      .then(({ data }) => setValoresMensalidade(data || {}))
+      .catch(() => setValoresMensalidade({}));
+  }, [mes]);
+
+  // Soma da mensalidade de cada mês marcado (ex.: 2025 a R$ 33,00 + 2026 a R$ 35,00).
+  const valorEsperado = useCallback((competencias) => competencias.reduce(
+    (total, c) => total + Number(valoresMensalidade[c] ?? selected?.valor_mensalidade ?? 0),
+    0,
+  ), [valoresMensalidade, selected]);
+
   const toggleCompetencia = (competencia) => {
     setForm(prev => {
       const jaSelecionado = prev.competencias.includes(competencia);
       const competencias = jaSelecionado
         ? prev.competencias.filter(c => c !== competencia)
         : [...prev.competencias, competencia].sort();
-      return { ...prev, competencias };
+      // Cálculo automático: se o valor ainda é o sugerido (soma das mensalidades) ou
+      // está vazio, acompanha os meses marcados. Valor digitado à mão (ex.: com taxa
+      // bancária) não é sobrescrito.
+      const atual = Number(prev.valor_pago || 0);
+      const eraSugerido = atual <= 0 || Math.abs(atual - valorEsperado(prev.competencias)) < 0.01;
+      const novoEsperado = valorEsperado(competencias);
+      const valor_pago = novoEsperado > 0 && eraSugerido && competencias.length > 0
+        ? novoEsperado.toFixed(2)
+        : prev.valor_pago;
+      return { ...prev, competencias, valor_pago };
     });
   };
+
+  // Alertas exibidos no modal e confirmados ao salvar (valor x meses marcados, datas).
+  const alertasPagamento = useMemo(() => {
+    if (!modal || !selected) return [];
+    const alertas = [];
+    const hoje = format(new Date(), 'yyyy-MM-dd');
+    const base = Number(selected.valor_mensalidade || 0);
+    const qtd = form.competencias.length;
+    const valor = Number(form.valor_pago || 0);
+    const esperado = valorEsperado(form.competencias);
+    if (form.status_pagamento === 'pago' && base > 0 && qtd > 0 && valor > 0) {
+      if (valor < esperado - 0.01) {
+        alertas.push(`Valor pago (${fmt(valor)}) é menor que a soma das ${qtd} mensalidade(s) marcada(s) (${fmt(esperado)}). Informe o valor TOTAL creditado no extrato.`);
+      } else if (valor >= esperado + base - 2) {
+        alertas.push(`Valor pago (${fmt(valor)}) cobre mais meses do que os ${qtd} marcado(s). Marque todas as competências quitadas; senão o sistema distribui o excedente nos meses em aberto.`);
+      }
+    }
+    if (form.data_pagamento && form.data_pagamento > hoje) {
+      alertas.push(`A data do pagamento (${formatDateBR(form.data_pagamento)}) está no futuro.`);
+    }
+    if (form.data_credito_banco && form.data_credito_banco > hoje) {
+      alertas.push(`A data do crédito no banco (${formatDateBR(form.data_credito_banco)}) está no futuro.`);
+    }
+    if (form.data_credito_banco && form.data_pagamento && form.data_credito_banco < form.data_pagamento) {
+      alertas.push('A data do crédito no banco é anterior à data do pagamento.');
+    }
+    const dataCaixa = form.data_credito_banco || form.data_pagamento;
+    if (form.status_pagamento === 'pago' && dataCaixa) {
+      const mesCaixa = dataCaixa.slice(0, 7);
+      if (mesCaixa !== mes) {
+        alertas.push(`O valor vai entrar no balancete de ${mesExtenso(mesCaixa)}/${mesCaixa.slice(0, 4)} (mês da data ${form.data_credito_banco ? 'do crédito' : 'do pagamento'}), e não no mês do painel (${mesExtenso(mes)}/${mes.slice(0, 4)}). Confira a data.`);
+      }
+      const distante = qtd > 0 && form.competencias.every(c => Math.abs(diffMeses(c, mesCaixa)) > 6);
+      if (distante) {
+        alertas.push(`A data ${formatDateBR(dataCaixa)} está a mais de 6 meses de todas as competências marcadas.`);
+      }
+    }
+    return alertas;
+  }, [modal, selected, form, mes, valorEsperado]);
 
   const openReciboModal = () => {
     setModal(false);
@@ -474,6 +552,10 @@ export default function Pagamentos() {
     // Valor pago só é obrigatório quando o status é "pago"; pendente aceita 0/vazio.
     if (form.status_pagamento === 'pago' && Number(form.valor_pago) <= 0) {
       toast.error('Informe o valor pago.');
+      return;
+    }
+    if (alertasPagamento.length > 0
+      && !window.confirm(`Atenção, confira antes de salvar:\n\n- ${alertasPagamento.join('\n- ')}\n\nDeseja salvar mesmo assim?`)) {
       return;
     }
     const valorNormalizado = form.valor_pago === '' ? 0 : Number(form.valor_pago) || 0;
@@ -914,7 +996,7 @@ export default function Pagamentos() {
             {painel.map(item => (
               <div key={item.membro_id} className={`payment-card ${item.status === 'pago' ? 'paid' : 'pending'}`} onClick={() => openPagamento(item)}>
                 <div className="member-name">{item.nome}</div>
-                <div style={{ fontSize: 12 }}>Matrícula: {item.matricula || '-'}</div>
+                <div style={{ fontSize: 12 }}>Matrícula: {item.matricula || '-'}{item.cpf_mascarado ? ` · CPF: ${item.cpf_mascarado}` : ''}</div>
                 <div style={{ marginTop: 10, display: 'flex', justifyContent: 'space-between' }}>
                   <span>{item.status === 'pago' ? fmt(item.valor_pago) : fmt(item.valor_mensalidade)}</span>
                   <span className={`badge ${item.status === 'pago' ? 'badge-success' : 'badge-danger'}`}>{item.status}</span>
@@ -928,6 +1010,7 @@ export default function Pagamentos() {
               <thead>
                 <tr>
                   <th>Nome</th>
+                  <th>Matrícula / CPF</th>
                   <th>Mensalidade</th>
                   <th>Pago</th>
                   <th>Status</th>
@@ -938,6 +1021,7 @@ export default function Pagamentos() {
                 {painel.map(item => (
                   <tr key={item.membro_id}>
                     <td>{item.nome}</td>
+                    <td>{item.matricula || '-'}{item.cpf_mascarado ? <><br/><small>{item.cpf_mascarado}</small></> : null}</td>
                     <td>{fmt(item.valor_mensalidade)}</td>
                     <td>{item.valor_pago ? fmt(item.valor_pago) : '-'}</td>
                     <td><span className={`badge ${item.status === 'pago' ? 'badge-success' : 'badge-danger'}`}>{item.status}</span></td>
@@ -961,7 +1045,11 @@ export default function Pagamentos() {
             <form onSubmit={handleSave} style={{ padding: 20 }}>
               <div style={{ marginBottom: 15, background: '#f9f9f9', padding: 10 }}>
                 <strong>{selected.nome}</strong><br/>
-                <small>Mensalidade base: {fmt(selected.valor_mensalidade)}</small>
+                <small>
+                  Matrícula: {selected.matricula || '-'}
+                  {selected.cpf_mascarado ? ` · CPF: ${selected.cpf_mascarado}` : ''}
+                  {' · '}Mensalidade base: {fmt(selected.valor_mensalidade)}
+                </small>
               </div>
               <div className="form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div className="form-group">
@@ -1000,7 +1088,7 @@ export default function Pagamentos() {
               <div className="form-group" style={{ marginTop: 10 }}>
                 <label>Meses pagos (competências)</label>
                 <small style={{ display: 'block', color: '#666', marginBottom: 6 }}>
-                  Selecione todos os meses que este valor está quitando (ex.: R$ 71,00 = 2 mensalidades + R$ 1,00 de taxa bancária). O valor total é lançado no mês do pagamento ({mes}) para não distorcer o balancete. A lista inclui meses atrasados e adiantados e vira o ano automaticamente.
+                  Selecione todos os meses que este valor está quitando (ex.: R$ 71,00 = 2 mensalidades + R$ 1,00 de taxa bancária). O Valor Pago deve ser o TOTAL creditado no extrato; ao marcar os meses, o valor é sugerido automaticamente (meses x mensalidade). O balancete usa a data do crédito no banco (ou, sem ela, a data do pagamento). A lista mostra {MESES_RETROATIVOS} meses atrasados e {MESES_ADIANTADOS} adiantados a partir do mês do painel ({mes}).
                 </small>
                 <details style={{ border: '1px solid #ddd', borderRadius: 6 }}>
                   <summary style={{ cursor: 'pointer', padding: '8px 10px', fontSize: 13, userSelect: 'none' }}>
@@ -1008,20 +1096,60 @@ export default function Pagamentos() {
                       ? 'Selecionar meses...'
                       : `${form.competencias.length} mês(es) selecionado(s): ${form.competencias.slice().sort().join(', ')}`}
                   </summary>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 160, overflowY: 'auto', padding: 8, borderTop: '1px solid #ddd' }}>
-                    {getMesesSelecionaveis().map(m => (
-                      <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
-                        <input
-                          type="checkbox"
-                          checked={form.competencias.includes(m)}
-                          onChange={() => toggleCompetencia(m)}
-                        />
-                        {m}
-                      </label>
+                  <div style={{ maxHeight: 220, overflowY: 'auto', padding: 8, borderTop: '1px solid #ddd' }}>
+                    {Object.entries(
+                      getMesesSelecionaveis(mes).reduce((anos, m) => {
+                        (anos[m.slice(0, 4)] ||= []).push(m);
+                        return anos;
+                      }, {})
+                    ).map(([ano, meses]) => (
+                      <div key={ano} style={{ marginBottom: 6 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: '#555' }}>{ano}</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                          {meses.map(m => (
+                            <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                              <input
+                                type="checkbox"
+                                checked={form.competencias.includes(m)}
+                                onChange={() => toggleCompetencia(m)}
+                              />
+                              {m}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
                     ))}
                   </div>
                 </details>
+                {valorEsperado(form.competencias) > 0 && (
+                  <small style={{ display: 'block', marginTop: 6 }}>
+                    Esperado para {form.competencias.length} mês(es): <b>{fmt(valorEsperado(form.competencias))}</b>
+                    {' '}({Object.entries(form.competencias.reduce((grupos, c) => {
+                      const v = Number(valoresMensalidade[c] ?? selected.valor_mensalidade ?? 0);
+                      grupos[v] = (grupos[v] || 0) + 1;
+                      return grupos;
+                    }, {})).map(([v, n]) => `${n} x ${fmt(Number(v))}`).join(' + ')})
+                    {Math.abs(Number(form.valor_pago || 0) - valorEsperado(form.competencias)) >= 0.01 && (
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-xs"
+                        style={{ marginLeft: 8 }}
+                        onClick={() => setF('valor_pago', valorEsperado(form.competencias).toFixed(2))}
+                      >
+                        Usar este valor
+                      </button>
+                    )}
+                  </small>
+                )}
               </div>
+              {alertasPagamento.length > 0 && (
+                <div style={{ marginTop: 10, padding: 10, background: '#fff8e1', border: '1px solid #f0c36d', borderRadius: 6, fontSize: 13 }}>
+                  <strong>Confira antes de salvar:</strong>
+                  <ul style={{ margin: '4px 0 0 18px', padding: 0 }}>
+                    {alertasPagamento.map(a => <li key={a}>{a}</li>)}
+                  </ul>
+                </div>
+              )}
               <div className="modal-footer" style={{ marginTop: 20, display: 'flex', gap: 10 }}>
                 <button type="submit" className="btn btn-success" disabled={saving}>{saving ? 'Salvando...' : 'Salvar'}</button>
                 {form.status_pagamento === 'pago' && (
