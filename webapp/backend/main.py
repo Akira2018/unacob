@@ -2150,7 +2150,10 @@ def _renderizar_arquivo_remessa_dabb_recalculada(db: Session, remessa: models.Da
         except Exception:
             competencias = []
         valor_mensalidade = _valor_mensalidade_dabb_membro(db, membro) if membro else round(float(item.valor_competencias or 0) / max(1, len(competencias)), 2)
-        valor_competencias = round(len(competencias) * valor_mensalidade, 2)
+        valor_competencias = round(
+            sum(_mensalidades_dabb_por_competencia(db, membro, competencias)) if membro
+            else len(competencias) * valor_mensalidade, 2
+        )
         taxa_bancaria = _get_dabb_taxa_bimestral(db)
         valor_total = round(valor_competencias + taxa_bancaria, 2)
         valor_total_geral += valor_total
@@ -2209,6 +2212,16 @@ def _garantir_pagamento_pendente(db: Session, membro: models.Membro, mes_referen
     return pagamento
 
 
+def _mensalidades_dabb_por_competencia(db: Session, membro: models.Membro, competencias: list[str]) -> list[float]:
+    """Mensalidade de cada competência: valor DABB personalizado do associado, se
+    houver; senão o valor configurado na Remessa DABB vigente naquele mês (meses
+    antes de um reajuste ficam com o valor antigo)."""
+    if membro.dabb_valor_mensalidade is not None and float(membro.dabb_valor_mensalidade or 0) > 0:
+        valor = round(float(membro.dabb_valor_mensalidade), 2)
+        return [valor for _ in competencias]
+    return [_get_dabb_valor_mensal_padrao_para_mes(db, c) for c in competencias]
+
+
 def _competencias_em_aberto_para_remessa(
     db: Session,
     membro: models.Membro,
@@ -2216,12 +2229,16 @@ def _competencias_em_aberto_para_remessa(
     mes_fim_bimestre: str,
     incluir_atrasados: bool,
 ) -> list[str]:
+    if incluir_atrasados:
+        # Atrasados de qualquer ano (ex.: nov/dez não debitados por falta de saldo
+        # entram na remessa de jan/fev do ano seguinte), respeitando filiação e
+        # MES_INICIO_OPERACAO.
+        return _competencias_em_aberto_ate_mes(db, membro, mes_fim_bimestre)
+
     ano, _ = _parse_mes_referencia_or_400(mes_inicio_bimestre)
-    todas_ate_fim = _meses_entre(f"{ano}-01", mes_fim_bimestre)
     somente_bimestre = _meses_entre(mes_inicio_bimestre, mes_fim_bimestre)
-    meses_considerados = todas_ate_fim if incluir_atrasados else somente_bimestre
     pagas = _competencias_pagamento_pagas_no_ano(db, membro.id, ano)
-    em_aberto = [mes for mes in meses_considerados if mes not in pagas]
+    em_aberto = [mes for mes in somente_bimestre if mes not in pagas]
 
     if membro.data_filiacao:
         limite_filiacao = membro.data_filiacao.strftime("%Y-%m")
@@ -2325,7 +2342,7 @@ def _registrar_remessa_dabb(
         for competencia in competencias:
             _garantir_pagamento_pendente(db, membro, competencia)
 
-        valor_competencias = round(len(competencias) * valor_mensalidade, 2)
+        valor_competencias = round(sum(_mensalidades_dabb_por_competencia(db, membro, competencias)), 2)
         taxa_bancaria = _get_dabb_taxa_bimestral(db)
         valor_total_item = round(valor_competencias + taxa_bancaria, 2)
         numero_documento = _gerar_numero_documento_dabb(data_debito, sequencial_arquivo, sequencial_item)
@@ -2449,7 +2466,10 @@ def _preview_remessa_dabb(
         if not competencias:
             continue
 
-        valor_competencias = round(len(competencias) * valor_mensalidade, 2)
+        valor_competencias = round(
+            sum(_mensalidades_dabb_por_competencia(db, membro, competencias)) if membro
+            else len(competencias) * valor_mensalidade, 2
+        )
         taxa_bancaria = _get_dabb_taxa_bimestral(db)
         valor_total = round(valor_competencias + taxa_bancaria, 2)
         total_geral += valor_total
@@ -2501,7 +2521,7 @@ def _preview_remessa_dabb_salva(db: Session, remessa: models.DabbRemessa, recalc
         total_competencias += len(competencias)
         if recalcular and membro:
             valor_mensalidade = _valor_mensalidade_dabb_membro(db, membro)
-            valor_competencias = round(len(competencias) * valor_mensalidade, 2)
+            valor_competencias = round(sum(_mensalidades_dabb_por_competencia(db, membro, competencias)), 2)
             taxa_bancaria = _get_dabb_taxa_bimestral(db)
             valor_total = round(valor_competencias + taxa_bancaria, 2)
         else:
@@ -2563,7 +2583,16 @@ def _baixar_pagamentos_por_remessa_item(
         raise ValueError("Item da remessa sem competências vinculadas")
 
     valor_competencias = round(float(remessa_item.valor_competencias or 0), 2)
-    valor_por_competencia = round(valor_competencias / max(1, len(competencias)), 2)
+    membro_item = db.query(models.Membro).filter(models.Membro.id == remessa_item.membro_id).first()
+    if membro_item:
+        # Cada mês recebe a mensalidade da sua época (meses antes/depois de reajuste).
+        valores_rateio = _ratear_valor_por_mensalidades_do_mes(
+            valor_competencias, _mensalidades_dabb_por_competencia(db, membro_item, competencias)
+        )
+    else:
+        base = round(valor_competencias / max(1, len(competencias)), 2)
+        valores_rateio = [base for _ in competencias]
+        valores_rateio[-1] = round(valor_competencias - base * (len(competencias) - 1), 2)
 
     pagamentos_processados = []
     for idx, competencia in enumerate(competencias):
@@ -2576,7 +2605,7 @@ def _baixar_pagamentos_por_remessa_item(
             pagamento = models.Pagamento(
                 id=str(uuid.uuid4()),
                 membro_id=remessa_item.membro_id,
-                valor_pago=valor_por_competencia,
+                valor_pago=valores_rateio[idx],
                 mes_referencia=competencia,
                 data_pagamento=conciliacao.data_extrato,
                 status_pagamento="pago",
@@ -2588,10 +2617,7 @@ def _baixar_pagamentos_por_remessa_item(
             db.add(pagamento)
             db.flush()
         else:
-            if idx == len(competencias) - 1:
-                pagamento.valor_pago = round(valor_competencias - (valor_por_competencia * (len(competencias) - 1)), 2)
-            else:
-                pagamento.valor_pago = valor_por_competencia
+            pagamento.valor_pago = valores_rateio[idx]
             pagamento.data_pagamento = conciliacao.data_extrato
             pagamento.status_pagamento = "pago"
             pagamento.forma_pagamento = "debito_automatico_bimestral"
@@ -7617,7 +7643,8 @@ def _baixar_pagamentos_dabb_por_competencias_inferidas(
         valor_total=valor_total_competencias,
         competencias=competencias,
         valor_mensalidade=valor_mensalidade,
-        taxa_bancaria=0.0
+        taxa_bancaria=0.0,
+        valores_mensalidade=_mensalidades_dabb_por_competencia(db, membro, competencias),
     )
     rateio_confiavel = bool(valores_competencias) and all(valor > 0 for valor in valores_competencias)
     if not rateio_confiavel:
