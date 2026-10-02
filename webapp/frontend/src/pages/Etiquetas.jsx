@@ -174,15 +174,13 @@ export default function Etiquetas() {
   // as margens do "Ajuste de impressão" também valem para o PDF.
   const baixarPdf = async () => {
     try {
-      const r = await api.get("/etiquetas", {
-        params: {
-          ids: membrosSelecionados.length > 0 ? membrosSelecionados.join(",") : undefined,
-          margem_superior: layout.margemSuperior,
-          margem_esquerda: layout.margemEsquerda,
-          espaco_colunas: layout.espacoColunas
-        },
-        responseType: "blob"
-      });
+      // POST: centenas de ids na URL de um GET estouram o limite do nginx (414)
+      const r = await api.post("/etiquetas/pdf", {
+        ids: membrosSelecionados,
+        margem_superior: layout.margemSuperior,
+        margem_esquerda: layout.margemEsquerda,
+        espaco_colunas: layout.espacoColunas
+      }, { responseType: "blob" });
       const url = URL.createObjectURL(r.data);
       const a = document.createElement("a");
       a.href = url;
@@ -190,7 +188,16 @@ export default function Etiquetas() {
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (error) {
-      alert(getApiErrorMessage(error, "Erro ao gerar o PDF das etiquetas."));
+      // com responseType blob o corpo do erro chega como Blob; converte para ler o detail
+      let detalhe = "";
+      try {
+        const corpo = await error.response?.data?.text?.();
+        detalhe = corpo ? (JSON.parse(corpo).detail || "") : "";
+      } catch {
+        // corpo não é JSON
+      }
+      const status = error.response?.status ? ` (HTTP ${error.response.status})` : "";
+      alert(`Erro ao gerar o PDF das etiquetas${status}. ${typeof detalhe === "string" ? detalhe : ""}`.trim());
     }
   };
 

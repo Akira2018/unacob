@@ -11482,6 +11482,38 @@ def gerar_etiquetas(
         headers={"Content-Disposition": "attachment; filename=etiquetas.pdf"}
     )
 
+@app.post("/api/etiquetas/pdf")
+def gerar_etiquetas_post(
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    # Mesma geração do GET, mas com os ids no corpo: com centenas de membros
+    # selecionados a URL do GET passa do limite do nginx (414).
+    ids = payload.get("ids") or []
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        raise HTTPException(status_code=422, detail="ids deve ser uma lista de textos")
+
+    def medida(campo, padrao, maximo):
+        try:
+            valor = float(payload.get(campo, padrao))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail=f"{campo} inválido")
+        if not 0 <= valor <= maximo:
+            raise HTTPException(status_code=422, detail=f"{campo} deve estar entre 0 e {maximo} mm")
+        return valor
+
+    return gerar_etiquetas(
+        status="ativo",
+        ids=",".join(ids) or None,
+        categoria=None,
+        margem_superior=medida("margem_superior", 12.7, 60),
+        margem_esquerda=medida("margem_esquerda", 3.97, 40),
+        espaco_colunas=medida("espaco_colunas", 4.76, 20),
+        db=db,
+        current_user=current_user,
+    )
+
 # ════════════════════════════════════════════════════════════════════════════════
 # SERVE FRONTEND STATIC FILES
 # ════════════════════════════════════════════════════════════════════════════════
