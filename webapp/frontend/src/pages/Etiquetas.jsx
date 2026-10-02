@@ -170,6 +170,30 @@ export default function Etiquetas() {
     setTimeout(() => janela.print(), 300);
   };
 
+  // PDF gerado no servidor em folha Carta com as medidas da Pimaco 6281;
+  // as margens do "Ajuste de impressão" também valem para o PDF.
+  const baixarPdf = async () => {
+    try {
+      const r = await api.get("/etiquetas", {
+        params: {
+          ids: membrosSelecionados.length > 0 ? membrosSelecionados.join(",") : undefined,
+          margem_superior: layout.margemSuperior,
+          margem_esquerda: layout.margemEsquerda,
+          espaco_colunas: layout.espacoColunas
+        },
+        responseType: "blob"
+      });
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "etiquetas_pimaco_6281.pdf";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      alert(getApiErrorMessage(error, "Erro ao gerar o PDF das etiquetas."));
+    }
+  };
+
   const alterarLayout = (campo, valor) => {
     const numero = parseFloat(String(valor).replace(",", "."));
     setLayout((prev) => ({ ...prev, [campo]: Number.isFinite(numero) ? numero : 0 }));
@@ -199,15 +223,9 @@ export default function Etiquetas() {
         <button className="btn btn-outline" onClick={() => setMostrarAjuste((v) => !v)}>
           Ajuste de impressão
         </button>
-        <button
-          className="btn btn-outline"
-          onClick={() => {
-            const idsParam = membrosSelecionados.length > 0 ? `?ids=${membrosSelecionados.join(',')}` : '';
-            window.open(`/api/etiquetas${idsParam}`, '_blank');
-          }}
-        >
+        <button className="btn btn-outline" onClick={baixarPdf}>
           <Download size={16} />
-          Baixar PDF (2 colunas)
+          Baixar PDF (Pimaco 6281)
         </button>
       </div>
     </div>
@@ -216,11 +234,12 @@ export default function Etiquetas() {
     {mostrarAjuste && (
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 13, color: "var(--text-light)", marginBottom: 10 }}>
-          Padrão: Pimaco 6181 (folha Carta, etiquetas 25,4 x 101,6 mm). Medidas em milímetros,
+          Padrão: Pimaco 6281 (folha Carta, etiquetas 25,4 x 101,6 mm). Medidas em milímetros,
           a partir da borda da folha. No diálogo de impressão escolha o
           <strong> Tamanho do papel: Carta (Letter)</strong>, <strong>Margens: Nenhuma</strong> e
-          <strong> Escala: 100% (Padrão)</strong> — não use "Ajustar à página". Se a impressora deslocar a impressão, corrija aqui as margens
-          superior/esquerda (valores salvos neste navegador).
+          <strong> Escala: 100% (Padrão)</strong> — não use "Ajustar à página". Para o resultado mais preciso use
+          <strong> Baixar PDF</strong> e imprima o PDF em <strong>Tamanho real</strong>. Se a impressora deslocar a impressão, corrija aqui as margens
+          superior/esquerda (valores salvos neste navegador e usados também no PDF).
         </div>
         <div className="filters" style={{ marginTop: 0 }}>
           <div className="form-group" style={{ margin: 0, width: 130 }}>

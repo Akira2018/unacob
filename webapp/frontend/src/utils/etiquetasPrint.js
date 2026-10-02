@@ -1,5 +1,5 @@
 // Geração da folha de etiquetas para impressão (2 colunas x 10 linhas).
-// Padrão: Pimaco 6181 / Avery 5161 — folha Carta, etiquetas 25,4 x 101,6 mm,
+// Padrão: Pimaco 6281 / 6181 (Avery 5161) — folha Carta, etiquetas 25,4 x 101,6 mm,
 // sem espaço entre linhas. Todas as medidas são absolutas em mm a partir da
 // borda da folha, com @page margin 0, para que a posição impressa não dependa
 // das margens do diálogo de impressão nem da área não imprimível da impressora.

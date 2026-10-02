@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Body, Request
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Body, Request, Query
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -11392,13 +11392,19 @@ def gerar_etiquetas(
     status: Optional[str] = "ativo",
     ids: Optional[str] = None,
     categoria: Optional[str] = None,
+    margem_superior: float = Query(12.7, ge=0, le=60),
+    margem_esquerda: float = Query(3.97, ge=0, le=40),
+    espaco_colunas: float = Query(4.76, ge=0, le=20),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import cm
+    # Pimaco 6281 / 6181 (Avery 5161): folha Carta, 2 colunas x 10 linhas,
+    # etiquetas 25,4 x 101,6 mm, sem espaço entre linhas. Medidas absolutas a
+    # partir da borda da folha; imprimir em "Tamanho real" (escala 100%).
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import mm
     from reportlab.pdfgen import canvas
-    from reportlab.lib import colors
+    from reportlab.pdfbase.pdfmetrics import stringWidth
 
     q = db.query(models.Membro)
     if ids:
@@ -11421,47 +11427,53 @@ def gerar_etiquetas(
     membros = q.order_by(models.Membro.nome_completo).all()
 
     buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
-    width, height = A4
+    c = canvas.Canvas(buf, pagesize=letter)
+    c.setTitle("Etiquetas Postais UNACOB")
+    _, height = letter
 
-    # 3x8 labels per page
-    label_w = width / 3
-    label_h = height / 8
-    cols, rows_per_page = 3, 8
+    cols, rows_per_page = 2, 10
+    label_w, label_h = 101.6 * mm, 25.4 * mm
+    passo_x = (101.6 + espaco_colunas) * mm
+    margem_x, margem_y = margem_esquerda * mm, margem_superior * mm
+    recuo = 5 * mm
+    largura_texto = label_w - 2 * recuo
 
-    x, y = 0, height - label_h
-    count = 0
+    def caber(texto, fonte, tamanho):
+        texto = (texto or "").strip()
+        if stringWidth(texto, fonte, tamanho) <= largura_texto:
+            return texto
+        while texto and stringWidth(texto + "...", fonte, tamanho) > largura_texto:
+            texto = texto[:-1]
+        return texto.rstrip() + "..."
 
-    for m in membros:
+    for count, m in enumerate(membros):
         if count > 0 and count % (cols * rows_per_page) == 0:
             c.showPage()
-            x, y = 0, height - label_h
 
-        col = count % cols
-        row = (count % (cols * rows_per_page)) // cols
+        pos = count % (cols * rows_per_page)
+        col, row = pos % cols, pos // cols
+        lx = margem_x + col * passo_x
+        topo = height - margem_y - row * label_h
 
-        lx = col * label_w
-        ly = height - (row + 1) * label_h
-
-        # Draw label border
-        c.setStrokeColor(colors.grey)
-        c.rect(lx + 2, ly + 2, label_w - 4, label_h - 4)
-
-        # Write content
-        c.setFont("Helvetica-Bold", 9)
-        c.drawString(lx + 8, ly + label_h - 20, (m.nome_completo or "")[:40])
-        c.setFont("Helvetica", 8)
-        endereco = f"{m.endereco or ''}, {m.numero or ''}"
+        endereco = ", ".join(v for v in [m.endereco, m.numero] if v)
         if m.complemento:
             endereco += f" - {m.complemento}"
-        c.drawString(lx + 8, ly + label_h - 35, endereco[:45])
-        c.drawString(lx + 8, ly + label_h - 48, f"{m.bairro or ''}")
-        c.drawString(lx + 8, ly + label_h - 61, f"{m.cidade or ''} - {m.estado or ''}")
-        c.drawString(lx + 8, ly + label_h - 74, f"CEP: {m.cep or ''}")
-        if m.matricula:
-            c.drawString(lx + 8, ly + label_h - 87, f"Matrícula: {m.matricula}")
+        cidade_uf = f"{m.cidade or 'Bauru'}/{m.estado or 'SP'}"
+        linha4 = " - ".join(v for v in [m.cep, cidade_uf] if v)
 
-        count += 1
+        linhas = [
+            ("Helvetica-Bold", 10, m.nome_completo),
+            ("Helvetica", 9, endereco),
+            ("Helvetica", 9, m.bairro),
+            ("Helvetica", 9, linha4),
+        ]
+        entrelinha = 11.5  # pt
+        # bloco de 4 linhas centralizado verticalmente na etiqueta
+        y = topo - (label_h - entrelinha * len(linhas)) / 2 - 10.5
+        for fonte, tamanho, texto in linhas:
+            c.setFont(fonte, tamanho)
+            c.drawString(lx + recuo, y, caber(texto, fonte, tamanho))
+            y -= entrelinha
 
     c.save()
     buf.seek(0)
