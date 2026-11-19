@@ -26,7 +26,18 @@ const fmtCompact = (v) => {
     maximumFractionDigits: semCentavos ? 0 : 2,
   }).format(valor);
 };
-const fmtMes = m => { if (!m) return ''; const [y, mo] = m.split('-'); const months = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; return `${months[parseInt(mo)-1]}/${y.slice(2)}`; };
+const fmtMes = (m, curto = false) => {
+  if (!m) return '';
+  const [y, mo] = m.split('-');
+  const idx = parseInt(mo, 10) - 1;
+  if (idx < 0 || idx > 11) return m;
+  if (curto) {
+    const months = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+    return `${months[idx]}/${y.slice(2)}`;
+  }
+  const monthsFull = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+  return `${monthsFull[idx]}/${y}`;
+};
 const getMeses = () => {
   const result = [];
   const base = new Date();
@@ -88,10 +99,11 @@ export default function Dashboard() {
       <div className="topbar">
         <h2>Painel Geral</h2>
         <div className="topbar-right">
-          <div className="form-group dashboard-month-picker">
+          <div className="form-group dashboard-month-picker notranslate" translate="no">
             <label>Mês</label>
             <select
-              className="dashboard-month-picker-select"
+              className="dashboard-month-picker-select notranslate"
+              translate="no"
               value={mesSelecionado || data.mes_atual || ''}
               onChange={(e) => setMesSelecionado(e.target.value)}
             >
@@ -100,7 +112,7 @@ export default function Dashboard() {
                 <option key={mes} value={mes}>{fmtMes(mes)}</option>
               ))}
             </select>
-            <span className="dashboard-month-picker-caption">
+            <span className="dashboard-month-picker-caption notranslate" translate="no">
               Exibindo dados de {fmtMes(data.mes_atual)}
             </span>
           </div>
@@ -154,7 +166,7 @@ export default function Dashboard() {
         <div className="card">
           <div className="card-title"><TrendingUp size={16} /> Evolução Financeira (6 meses)</div>
           <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={data.evolucao_mensal?.map(d => ({ ...d, mes: fmtMes(d.mes) }))}>
+            <BarChart data={data.evolucao_mensal?.map(d => ({ ...d, mes: fmtMes(d.mes, true) }))}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="mes" tick={{ fontSize: 11 }} />
               <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `R$${(v/1000).toFixed(0)}k`} />
@@ -169,7 +181,7 @@ export default function Dashboard() {
         <div className="card">
           <div className="card-title"><TrendingUp size={16} /> Saldo Mensal</div>
           <ResponsiveContainer width="100%" height={240}>
-            <LineChart data={data.evolucao_mensal?.map(d => ({ ...d, mes: fmtMes(d.mes) }))}>
+            <LineChart data={data.evolucao_mensal?.map(d => ({ ...d, mes: fmtMes(d.mes, true) }))}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="mes" tick={{ fontSize: 11 }} />
               <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `R$${(v/1000).toFixed(0)}k`} />

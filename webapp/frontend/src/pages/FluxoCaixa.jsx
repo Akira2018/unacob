@@ -25,7 +25,18 @@ const HELP_LINKS = [
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
 const getMeses = () => { const r = []; for (let i = 0; i < 13; i++) r.push(format(subMonths(new Date(), i), 'yyyy-MM')); return r; };
-const fmtMes = m => { if (!m) return ''; const [y, mo] = m.split('-'); const months = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; return `${months[parseInt(mo)-1]}/${y.slice(2)}`; };
+const fmtMes = (m, curto = false) => {
+  if (!m) return '';
+  const [y, mo] = m.split('-');
+  const idx = parseInt(mo, 10) - 1;
+  if (idx < 0 || idx > 11) return m;
+  if (curto) {
+    const months = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+    return `${months[idx]}/${y.slice(2)}`;
+  }
+  const monthsFull = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+  return `${monthsFull[idx]}/${y}`;
+};
 
 export default function FluxoCaixa() {
   const [mes, setMes] = useState(format(new Date(), 'yyyy-MM'));
@@ -147,8 +158,8 @@ export default function FluxoCaixa() {
       <FilterBar style={{ marginBottom: 16 }}>
         <div className="form-group" style={{ margin: 0 }}>
           <label>Mês</label>
-          <select className="search-input" value={mes} onChange={e => setMes(e.target.value)}>
-            {getMeses().map(m => <option key={m} value={m}>{m}</option>)}
+          <select className="search-input notranslate" translate="no" value={mes} onChange={e => setMes(e.target.value)}>
+            {getMeses().map(m => <option key={m} value={m}>{fmtMes(m)}</option>)}
           </select>
         </div>
         <div className="form-group" style={{ margin: 0, minWidth: 260, flex: 1 }}>
@@ -238,7 +249,7 @@ export default function FluxoCaixa() {
       <div className="card fluxoCaixa-chart-card fluxocaixa-chart-card">
         <div className="card-title">Evolução dos Últimos 12 Meses</div>
         <ResponsiveContainer width="100%" height={280}>
-          <AreaChart data={data?.evolucao_mensal?.map(d => ({ ...d, mes: fmtMes(d.mes) }))}>
+          <AreaChart data={data?.evolucao_mensal?.map(d => ({ ...d, mes: fmtMes(d.mes, true) }))}>
             <defs>
               <linearGradient id="green" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#38a169" stopOpacity={0.3} />

@@ -6,7 +6,7 @@ import { Download, Upload, Search, Users, FileText, FileSpreadsheet } from 'luci
 import { format, subMonths, addMonths } from 'date-fns';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
-import { formatDateBR } from '../utils/formatters';
+import { formatDateBR, parseMoedaBR, formatMoedaBR } from '../utils/formatters';
 
 const HELP_BY_ROLE = {
   administrador: 'Priorize conferência de importações, diagnóstico DABB, pendências e impacto financeiro antes de confirmar ações em lote.',
@@ -86,7 +86,7 @@ function diffMeses(a, b) {
 }
 
 function valorPorExtenso(valor) {
-  const numero = Number(valor);
+  const numero = parseMoedaBR(valor);
   if (!Number.isFinite(numero) || numero <= 0) return '';
 
   const valorArredondado = Number(numero.toFixed(2));
@@ -298,7 +298,7 @@ export default function Pagamentos() {
   const [ultimoDiagnosticoDabb, setUltimoDiagnosticoDabb] = useState(null);
   const [historicoDabb, setHistoricoDabb] = useState([]);
   const [reparandoDabb, setReparandoDabb] = useState(false);
-  const valorPagoFormatado = Number(form.valor_pago || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+  const valorPagoFormatado = formatMoedaBR(form.valor_pago);
   const referenciaReciboTexto = referenteMeses.trim() || `${mesExtenso(mes)} de ${anoExtenso(mes)}`;
 
   useEffect(() => {
@@ -307,6 +307,39 @@ export default function Pagamentos() {
 
   // Helper para atualizar campos do form
   const setF = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+
+  const handleValorPagoChange = (e) => {
+    let val = e.target.value;
+    if (!val || val.trim() === '') {
+      setF('valor_pago', '');
+      return;
+    }
+    // Converte '.' em ',' automaticamente
+    val = val.replace(/\./g, ',');
+    // Permite apenas dígitos e vírgula
+    val = val.replace(/[^0-9,]/g, '');
+    // Permite no máximo uma vírgula
+    const parts = val.split(',');
+    if (parts.length > 2) {
+      val = parts[0] + ',' + parts.slice(1).join('');
+    }
+    // Permite no máximo 2 casas decimais após a vírgula
+    if (parts.length === 2 && parts[1].length > 2) {
+      val = parts[0] + ',' + parts[1].slice(0, 2);
+    }
+    setF('valor_pago', val);
+  };
+
+  const handleValorPagoBlur = () => {
+    if (!form.valor_pago || form.valor_pago.trim() === '') {
+      if (form.status_pagamento === 'pago') {
+        setF('valor_pago', '0,00');
+      }
+      return;
+    }
+    const num = parseMoedaBR(form.valor_pago);
+    setF('valor_pago', formatMoedaBR(num));
+  };
 
   // Lógica de Separação de Dados (Pagos vs Pendentes)
   const { pagos, pendentes, totalArrecadado } = useMemo(() => {
@@ -422,9 +455,10 @@ export default function Pagamentos() {
     resetReciboState();
     setSelected(item);
     const valorExistente = item.valor_pago;
+    const valorPadrao = item.pagamento_id ? (valorExistente ?? '') : (item.valor_mensalidade || '');
     setForm({
       // usa ?? em vez de || para não trocar um valor 0 (pagamento zerado) pela mensalidade padrão
-      valor_pago: item.pagamento_id ? (valorExistente ?? '') : (item.valor_mensalidade || ''),
+      valor_pago: valorPadrao !== '' && valorPadrao !== null && valorPadrao !== undefined ? formatMoedaBR(valorPadrao) : '',
       data_pagamento: item.data_pagamento || format(new Date(), 'yyyy-MM-dd'),
       data_credito_banco: item.data_credito_banco || '',
       status_pagamento: item.status === 'pago' ? 'pago' : 'pendente',
@@ -459,11 +493,11 @@ export default function Pagamentos() {
       // Cálculo automático: se o valor ainda é o sugerido (soma das mensalidades) ou
       // está vazio, acompanha os meses marcados. Valor digitado à mão (ex.: com taxa
       // bancária) não é sobrescrito.
-      const atual = Number(prev.valor_pago || 0);
+      const atual = parseMoedaBR(prev.valor_pago);
       const eraSugerido = atual <= 0 || Math.abs(atual - valorEsperado(prev.competencias)) < 0.01;
       const novoEsperado = valorEsperado(competencias);
       const valor_pago = novoEsperado > 0 && eraSugerido && competencias.length > 0
-        ? novoEsperado.toFixed(2)
+        ? formatMoedaBR(novoEsperado)
         : prev.valor_pago;
       return { ...prev, competencias, valor_pago };
     });
@@ -476,7 +510,7 @@ export default function Pagamentos() {
     const hoje = format(new Date(), 'yyyy-MM-dd');
     const base = Number(selected.valor_mensalidade || 0);
     const qtd = form.competencias.length;
-    const valor = Number(form.valor_pago || 0);
+    const valor = parseMoedaBR(form.valor_pago);
     const esperado = valorEsperado(form.competencias);
     if (form.status_pagamento === 'pago' && base > 0 && qtd > 0 && valor > 0) {
       if (valor < esperado - 0.01) {
@@ -522,7 +556,7 @@ export default function Pagamentos() {
       } else if (competenciasSelecionadas.length === 1) {
         setReferenteMeses(`${mesExtenso(competenciasSelecionadas[0])} de ${anoExtenso(competenciasSelecionadas[0])}`);
       } else {
-        const v = Number(form.valor_pago || selected.valor_pago || 0);
+        const v = parseMoedaBR(form.valor_pago || selected.valor_pago || 0);
         const valMensal = Number(selected.valor_mensalidade || 35);
         const qtdMeses = valMensal > 0 ? Math.max(1, Math.round(v / valMensal)) : 1;
         if (qtdMeses >= 12) {
@@ -549,8 +583,9 @@ export default function Pagamentos() {
       toast.error('Selecione ao menos um mês pago.');
       return;
     }
+    const valorNormalizado = parseMoedaBR(form.valor_pago);
     // Valor pago só é obrigatório quando o status é "pago"; pendente aceita 0/vazio.
-    if (form.status_pagamento === 'pago' && Number(form.valor_pago) <= 0) {
+    if (form.status_pagamento === 'pago' && valorNormalizado <= 0) {
       toast.error('Informe o valor pago.');
       return;
     }
@@ -558,7 +593,6 @@ export default function Pagamentos() {
       && !window.confirm(`Atenção, confira antes de salvar:\n\n- ${alertasPagamento.join('\n- ')}\n\nDeseja salvar mesmo assim?`)) {
       return;
     }
-    const valorNormalizado = form.valor_pago === '' ? 0 : Number(form.valor_pago) || 0;
     setSaving(true);
     try {
       await api.post('/pagamentos', {
@@ -818,7 +852,7 @@ export default function Pagamentos() {
       <div className="filters-row" style={{ display: 'flex', gap: 15, marginBottom: 20, flexWrap: 'wrap' }}>
         <div className="form-group">
           <label>Mês</label>
-          <select className="search-input" value={mes} onChange={e => setMes(e.target.value)}>
+          <select className="search-input notranslate" translate="no" value={mes} onChange={e => setMes(e.target.value)}>
             {getMeses().map(m => <option key={m} value={m}>{m}</option>)}
           </select>
         </div>
@@ -1037,7 +1071,7 @@ export default function Pagamentos() {
       {/* Modal de Pagamento */}
       {modal && selected && (
         <div className="modal-overlay" key={`pagamento-${selected.membro_id}`}>
-          <div className="modal" style={{ maxWidth: 500 }}>
+          <div className="modal notranslate" translate="no" style={{ maxWidth: 500 }}>
             <div className="modal-header">
               <div className="modal-title">Registrar Pagamento</div>
               <button onClick={closePagamentoModal}>✕</button>
@@ -1054,7 +1088,32 @@ export default function Pagamentos() {
               <div className="form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div className="form-group">
                   <label>Valor Pago</label>
-                  <input type="number" step="0.01" value={form.valor_pago} onChange={e => setF('valor_pago', e.target.value)} placeholder={form.status_pagamento === 'pendente' ? '0,00' : ''} />
+                  <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                    <span style={{
+                      position: 'absolute',
+                      left: 10,
+                      color: '#666',
+                      fontWeight: 600,
+                      fontSize: 14,
+                      pointerEvents: 'none',
+                      userSelect: 'none'
+                    }}>
+                      R$
+                    </span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      style={{ paddingLeft: 36, fontWeight: 600 }}
+                      value={form.valor_pago}
+                      onChange={handleValorPagoChange}
+                      onBlur={handleValorPagoBlur}
+                      onFocus={(e) => e.target.select()}
+                      placeholder={form.status_pagamento === 'pendente' ? '0,00' : '0,00'}
+                    />
+                  </div>
+                  <small style={{ display: 'block', color: '#666', marginTop: 4 }}>
+                    Duas casas decimais separadas por vírgula (ex.: 35,00 ou 35,50).
+                  </small>
                 </div>
                 <div className="form-group">
                   <label>Data do pagamento</label>
@@ -1129,12 +1188,12 @@ export default function Pagamentos() {
                       grupos[v] = (grupos[v] || 0) + 1;
                       return grupos;
                     }, {})).map(([v, n]) => `${n} x ${fmt(Number(v))}`).join(' + ')})
-                    {Math.abs(Number(form.valor_pago || 0) - valorEsperado(form.competencias)) >= 0.01 && (
+                    {Math.abs(parseMoedaBR(form.valor_pago) - valorEsperado(form.competencias)) >= 0.01 && (
                       <button
                         type="button"
                         className="btn btn-outline btn-xs"
                         style={{ marginLeft: 8 }}
-                        onClick={() => setF('valor_pago', valorEsperado(form.competencias).toFixed(2))}
+                        onClick={() => setF('valor_pago', formatMoedaBR(valorEsperado(form.competencias)))}
                       >
                         Usar este valor
                       </button>
