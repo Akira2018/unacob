@@ -5,6 +5,8 @@ import { Plus, Edit, Trash2, CheckCircle, XCircle, Upload } from 'lucide-react';
 import { format, subMonths } from 'date-fns';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
+import MoedaInput from '../components/MoedaInput';
+import { formatMoedaBR, parseMoedaBR } from '../utils/formatters';
 
 const HELP_BY_ROLE = {
   administrador: 'Confira saúde do ambiente, importação do arquivo e diferenças antes de agir em lote ou restaurar dados.',
@@ -119,7 +121,7 @@ export default function Conciliacao() {
 
   const openModal = (item = null) => {
     setEditing(item);
-    setForm(item ? { ...emptyForm, ...item, valor_extrato: item.valor_extrato || '' } : emptyForm);
+    setForm(item ? { ...emptyForm, ...item, valor_extrato: item.valor_extrato != null ? formatMoedaBR(item.valor_extrato) : '' } : emptyForm);
     setSugestoes([]);
     setMembroSelecionado(null);
     setMembroSearchTerm('');
@@ -207,7 +209,13 @@ export default function Conciliacao() {
     e.preventDefault();
     setSaving(true);
     try {
-      const payload = { ...form, valor_extrato: parseFloat(form.valor_extrato) };
+      const valor = parseMoedaBR(form.valor_extrato);
+      if (!valor || valor <= 0) {
+        toast.error('Informe um valor válido');
+        setSaving(false);
+        return;
+      }
+      const payload = { ...form, valor_extrato: valor };
       if (editing) {
         await api.put(`/conciliacao/${editing.id}`, payload);
         toast.success('Atualizado!');
@@ -380,14 +388,14 @@ export default function Conciliacao() {
       toast('Selecione um mes especifico para editar o saldo inicial.');
       return;
     }
-    setSaldoInput(String(saldoAnterior ?? 0));
+    setSaldoInput(formatMoedaBR(saldoAnterior ?? 0));
     setSaldoObsInput(saldoObservacoes || '');
     setSaldoModal(true);
   };
 
   const salvarSaldoInicial = async (e) => {
     e.preventDefault();
-    const valor = parseFloat(saldoInput);
+    const valor = parseMoedaBR(saldoInput);
     if (!Number.isFinite(valor)) {
       toast.error('Informe um valor válido para o saldo inicial');
       return;
@@ -615,10 +623,8 @@ export default function Conciliacao() {
             <form onSubmit={salvarSaldoInicial}>
               <div className="form-grid">
                 <div className="form-group form-full">
-                  <label>Saldo Inicial / Saldo Anterior (R$)</label>
-                  <input
-                    type="number"
-                    step="0.01"
+                  <label>Saldo Inicial / Saldo Anterior</label>
+                  <MoedaInput
                     value={saldoInput}
                     onChange={e => setSaldoInput(e.target.value)}
                     required
@@ -669,7 +675,11 @@ export default function Conciliacao() {
                 </div>
                 <div className="form-group">
                   <label>Valor *</label>
-                  <input type="number" step="0.01" required value={form.valor_extrato} onChange={e => setF('valor_extrato', e.target.value)} />
+                  <MoedaInput
+                    required
+                    value={form.valor_extrato}
+                    onChange={e => setF('valor_extrato', e.target.value)}
+                  />
                 </div>
                 <div className="form-group">
                   <label>Banco</label>

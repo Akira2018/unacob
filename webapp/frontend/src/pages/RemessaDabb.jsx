@@ -5,7 +5,8 @@ import { BookText, Copy, CreditCard, Download, FileSpreadsheet, Pencil, RefreshC
 import api from '../api';
 import { getApiErrorMessage } from '../utils/apiError';
 import StatusCounter from '../components/StatusCounter';
-import { formatDateBR } from '../utils/formatters';
+import MoedaInput from '../components/MoedaInput';
+import { formatDateBR, formatMoedaBR, parseMoedaBR } from '../utils/formatters';
 
 const getMeses = () => {
   const r = [];
@@ -31,7 +32,7 @@ export default function RemessaDabb() {
   const [filtroAlteradosDabb, setFiltroAlteradosDabb] = useState(false);
   const [filtroHabilitadosDabb, setFiltroHabilitadosDabb] = useState(false);
   const [filtroAtrasoDabb, setFiltroAtrasoDabb] = useState(false);
-  const [configDabb, setConfigDabb] = useState({ valor_mensal_padrao: '35.00', taxa_bancaria_bimestral: '1.00', ultimo_sequencial: '0' });
+  const [configDabb, setConfigDabb] = useState({ valor_mensal_padrao: '35,00', taxa_bancaria_bimestral: '1,00', ultimo_sequencial: '0' });
   const [aplicarReajusteTodos, setAplicarReajusteTodos] = useState(false);
   const [somenteHabilitadosReajuste, setSomenteHabilitadosReajuste] = useState(true);
   const [historicoDabbConfig, setHistoricoDabbConfig] = useState([]);
@@ -79,8 +80,8 @@ export default function RemessaDabb() {
   useEffect(() => {
     api.get('/configuracoes/dabb')
       .then((r) => setConfigDabb({
-        valor_mensal_padrao: String(r.data?.valor_mensal_padrao ?? '35.00'),
-        taxa_bancaria_bimestral: String(r.data?.taxa_bancaria_bimestral ?? '1.00'),
+        valor_mensal_padrao: formatMoedaBR(r.data?.valor_mensal_padrao ?? 35),
+        taxa_bancaria_bimestral: formatMoedaBR(r.data?.taxa_bancaria_bimestral ?? 1),
         ultimo_sequencial: String(r.data?.ultimo_sequencial ?? '0'),
       }))
       .catch(() => {});
@@ -313,7 +314,7 @@ export default function RemessaDabb() {
         dabb_habilitado: draft.dabb_habilitado !== false,
         dabb_valor_mensalidade: draft.dabb_valor_mensalidade === '' || draft.dabb_valor_mensalidade == null
           ? null
-          : Number(draft.dabb_valor_mensalidade),
+          : parseMoedaBR(draft.dabb_valor_mensalidade),
       });
       toast.success(`Configuracao DABB salva para ${item.nome}.`);
       if (origemPreviaDabb === 'remessa_salva' && remessaSelecionadaId) {
@@ -343,7 +344,7 @@ export default function RemessaDabb() {
           dabb_habilitado: draft.dabb_habilitado !== false,
           dabb_valor_mensalidade: draft.dabb_valor_mensalidade === '' || draft.dabb_valor_mensalidade == null
             ? null
-            : Number(draft.dabb_valor_mensalidade),
+            : parseMoedaBR(draft.dabb_valor_mensalidade),
         });
         sucesso += 1;
       }
@@ -363,8 +364,8 @@ export default function RemessaDabb() {
   const salvarConfiguracoesDabb = async () => {
     try {
       await api.put('/configuracoes/dabb', {
-        valor_mensal_padrao: Number(configDabb.valor_mensal_padrao),
-        taxa_bancaria_bimestral: Number(configDabb.taxa_bancaria_bimestral),
+        valor_mensal_padrao: parseMoedaBR(configDabb.valor_mensal_padrao),
+        taxa_bancaria_bimestral: parseMoedaBR(configDabb.taxa_bancaria_bimestral),
         ultimo_sequencial: Number(configDabb.ultimo_sequencial || 0),
         aplicar_reajuste_todos: aplicarReajusteTodos,
         somente_habilitados_dabb: somenteHabilitadosReajuste,
@@ -475,8 +476,8 @@ export default function RemessaDabb() {
     () => [...remessasDabb].sort((a, b) => (b.quantidade_registros || 0) - (a.quantidade_registros || 0) || String(b.created_at || '').localeCompare(String(a.created_at || ''))),
     [remessasDabb],
   );
-  const valorMensalidadePreview = formatCurrency(configDabb.valor_mensal_padrao);
-  const valorTaxaPreview = formatCurrency(configDabb.taxa_bancaria_bimestral);
+  const valorMensalidadePreview = formatCurrency(parseMoedaBR(configDabb.valor_mensal_padrao));
+  const valorTaxaPreview = formatCurrency(parseMoedaBR(configDabb.taxa_bancaria_bimestral));
 
   return (
     <div>
@@ -515,13 +516,12 @@ export default function RemessaDabb() {
                 </div>
                 <div className="form-group" style={{ margin: 0 }}>
                   <label>Valor mensal por associado</label>
-                  <input
+                  <MoedaInput
                     className="search-input"
-                    type="number"
-                    step="0.01"
+                    showHelpText={false}
                     value={configDabb.valor_mensal_padrao}
                     onChange={(e) => setConfigDabb((prev) => ({ ...prev, valor_mensal_padrao: e.target.value }))}
-                    placeholder="Ex.: 35.00"
+                    placeholder="35,00"
                   />
                 </div>
                 <div style={{ fontSize: 12, color: '#64748b', marginTop: 8 }}>
@@ -539,13 +539,12 @@ export default function RemessaDabb() {
                 </div>
                 <div className="form-group" style={{ margin: 0 }}>
                   <label>Taxa cobrada no bimestre</label>
-                  <input
+                  <MoedaInput
                     className="search-input"
-                    type="number"
-                    step="0.01"
+                    showHelpText={false}
                     value={configDabb.taxa_bancaria_bimestral}
                     onChange={(e) => setConfigDabb((prev) => ({ ...prev, taxa_bancaria_bimestral: e.target.value }))}
-                    placeholder="Ex.: 1.00"
+                    placeholder="1,00"
                   />
                 </div>
                 <div style={{ fontSize: 12, color: '#92400e', marginTop: 8 }}>
@@ -798,10 +797,10 @@ export default function RemessaDabb() {
                           <option value="true">Habilitado</option>
                           <option value="false">Desabilitado</option>
                         </select>
-                        <input
+                        <MoedaInput
                           className="search-input"
-                          type="number"
-                          step="0.01"
+                          showHelpText={false}
+                          style={{ minWidth: 120 }}
                           value={edicoesDabb[item.membro_id]?.dabb_valor_mensalidade ?? ''}
                           onChange={(e) => atualizarEdicaoDabb(item.membro_id, 'dabb_valor_mensalidade', e.target.value)}
                           placeholder="Usar valor padrao"

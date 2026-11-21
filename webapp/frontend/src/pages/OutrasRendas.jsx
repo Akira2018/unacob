@@ -6,7 +6,8 @@ import { format, subMonths } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
-import { formatDateBR } from '../utils/formatters';
+import MoedaInput from '../components/MoedaInput';
+import { formatDateBR, formatMoedaBR, parseMoedaBR } from '../utils/formatters';
 
 const HELP_BY_ROLE = {
   administrador: 'Priorize categoria, conta de entrada e consistência dos valores antes de consolidar o mês.',
@@ -59,7 +60,7 @@ export default function OutrasRendas() {
 
   const openModal = (r = null) => {
     setEditing(r);
-    setForm(r ? { ...emptyForm, ...r, valor: r.valor || '' } : { ...emptyForm, conta_id: contas[0]?.id || '' });
+    setForm(r ? { ...emptyForm, ...r, valor: r.valor != null ? formatMoedaBR(r.valor) : '' } : { ...emptyForm, conta_id: contas[0]?.id || '' });
     setModal(true);
   };
 
@@ -72,7 +73,13 @@ export default function OutrasRendas() {
         setSaving(false);
         return;
       }
-      const payload = { ...form, valor: parseFloat(form.valor) };
+      const valor = parseMoedaBR(form.valor);
+      if (!valor || valor <= 0) {
+        toast.error('Informe um valor válido');
+        setSaving(false);
+        return;
+      }
+      const payload = { ...form, valor };
       if (editing) {
         await api.put(`/outras-rendas/${editing.id}`, payload);
         toast.success('Atualizado!');
@@ -238,8 +245,8 @@ export default function OutrasRendas() {
                   </select>
                 </div>
                 <div className="form-group">
-                  <label>Valor (R$) *</label>
-                  <input type="number" step="0.01" required value={form.valor} onChange={e => setF('valor', e.target.value)} />
+                  <label>Valor *</label>
+                  <MoedaInput required value={form.valor} onChange={e => setF('valor', e.target.value)} />
                 </div>
                 <div className="form-group">
                   <label>Data *</label>

@@ -6,7 +6,8 @@ import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Toolti
 import { Download } from 'lucide-react';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
-import { formatDateBR } from '../utils/formatters';
+import MoedaInput from '../components/MoedaInput';
+import { formatDateBR, formatMoedaBR, parseMoedaBR } from '../utils/formatters';
 
 const HELP_BY_ROLE = {
   administrador: 'Priorize saldo inicial, integridade do balancete e consistência do ambiente antes de exportar ou ajustar valores manuais.',
@@ -62,10 +63,10 @@ export default function Financeiro() {
   const openSaldoModal = async () => {
     try {
       const resp = await api.get('/saldo-inicial', { params: { mes_referencia: mes } });
-      setSaldoInput(String(resp.data?.valor_saldo_inicial ?? 0));
+      setSaldoInput(formatMoedaBR(resp.data?.valor_saldo_inicial ?? 0));
       setSaldoObsInput(resp.data?.observacoes || '');
     } catch {
-      setSaldoInput(String(data?.saldo_anterior ?? 0));
+      setSaldoInput(formatMoedaBR(data?.saldo_anterior ?? 0));
       setSaldoObsInput('');
     }
     setSaldoModal(true);
@@ -73,7 +74,7 @@ export default function Financeiro() {
 
   const salvarSaldoInicial = async (e) => {
     e.preventDefault();
-    const valor = parseFloat(saldoInput);
+    const valor = parseMoedaBR(saldoInput);
     if (!Number.isFinite(valor)) {
       toast.error('Informe um valor válido para o saldo inicial');
       return;
@@ -295,10 +296,8 @@ export default function Financeiro() {
                 <form onSubmit={salvarSaldoInicial}>
                   <div className="form-grid">
                     <div className="form-group form-full">
-                      <label>Saldo Inicial / Saldo Anterior (R$)</label>
-                      <input
-                        type="number"
-                        step="0.01"
+                      <label>Saldo Inicial / Saldo Anterior</label>
+                      <MoedaInput
                         value={saldoInput}
                         onChange={e => setSaldoInput(e.target.value)}
                         required

@@ -7,6 +7,8 @@ import FilterBar from '../components/FilterBar';
 import InlineHelpCard from '../components/InlineHelpCard';
 import StatusCounter from '../components/StatusCounter';
 import TableEmptyRow from '../components/TableEmptyRow';
+import MoedaInput from '../components/MoedaInput';
+import { formatMoedaBR, parseMoedaBR } from '../utils/formatters';
 
 const HELP_BY_ROLE = {
   administrador: 'Use esta tela para manter cadastros consistentes e revisar dados que impactam permissões, cobranças e importações.',
@@ -73,7 +75,7 @@ export default function Membros() {
       estado,
       data_nascimento: m.data_nascimento || '',
       data_filiacao: m.data_filiacao || '',
-      valor_mensalidade: m.valor_mensalidade || '',
+      valor_mensalidade: m.valor_mensalidade != null && m.valor_mensalidade !== '' ? formatMoedaBR(m.valor_mensalidade) : '',
       codigo_dabb: m.codigo_dabb || '',
       cpf2: m.cpf2 || ''
     } : emptyForm);
@@ -89,7 +91,7 @@ export default function Membros() {
       if (!ESTADOS.includes(payload.estado)) payload.estado = '';
       if (!payload.data_nascimento) delete payload.data_nascimento;
       if (!payload.data_filiacao) delete payload.data_filiacao;
-      if (payload.valor_mensalidade === '') payload.valor_mensalidade = 0;
+      payload.valor_mensalidade = payload.valor_mensalidade === '' ? 0 : parseMoedaBR(payload.valor_mensalidade);
       if (editing) {
         await api.put(`/membros/${editing.id}`, payload);
         toast.success('Membro atualizado!');
@@ -278,8 +280,8 @@ export default function Membros() {
                   <input value={form.beneficio} onChange={e => setF('beneficio', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>Valor Mensalidade (R$)</label>
-                  <input type="number" step="0.01" value={form.valor_mensalidade} onChange={e => setF('valor_mensalidade', e.target.value)} />
+                  <label>Valor Mensalidade</label>
+                  <MoedaInput value={form.valor_mensalidade} onChange={e => setF('valor_mensalidade', e.target.value)} />
                 </div>
                 <div className="form-group">
                   <label>ECT</label>

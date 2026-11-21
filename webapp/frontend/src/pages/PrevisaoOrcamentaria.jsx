@@ -3,6 +3,8 @@ import api from '../api';
 import toast from 'react-hot-toast';
 import { ArrowLeft, ArrowRight, Download, Save, Search, Trash2 } from 'lucide-react';
 import { getApiErrorMessage } from '../utils/apiError';
+import MoedaInput from '../components/MoedaInput';
+import { formatMoedaBR, parseMoedaBR } from '../utils/formatters';
 
 const MESES = [
   { num: 1, label: 'Jan' }, { num: 2, label: 'Fev' }, { num: 3, label: 'Mar' }, { num: 4, label: 'Abr' },
@@ -17,14 +19,13 @@ const toCurrency = (value) => {
 
 const normalizeNumber = (value) => {
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
-  const parsed = Number(String(value || '').replace(',', '.'));
-  return Number.isFinite(parsed) ? parsed : 0;
+  return parseMoedaBR(value);
 };
 
 const createEmptyCell = () => ({
   id: null,
-  value: '0',
-  originalValue: '0',
+  value: '0,00',
+  originalValue: '0,00',
 });
 
 const isCellDirty = (cell) => normalizeNumber(cell?.value) !== normalizeNumber(cell?.originalValue);
@@ -102,8 +103,8 @@ export default function PrevisaoOrcamentaria() {
         if (!nextGrid[p.conta_id]) return;
         nextGrid[p.conta_id][p.mes] = {
           id: p.id,
-          value: String(Number(p.valor_previsto || 0)),
-          originalValue: String(Number(p.valor_previsto || 0)),
+          value: formatMoedaBR(p.valor_previsto || 0),
+          originalValue: formatMoedaBR(p.valor_previsto || 0),
         };
       });
 
@@ -111,8 +112,8 @@ export default function PrevisaoOrcamentaria() {
         if (!nextAnnualGrid[p.conta_id]) return;
         nextAnnualGrid[p.conta_id] = {
           id: p.id,
-          value: String(Number(p.valor_previsto_anual || 0)),
-          originalValue: String(Number(p.valor_previsto_anual || 0)),
+          value: formatMoedaBR(p.valor_previsto_anual || 0),
+          originalValue: formatMoedaBR(p.valor_previsto_anual || 0),
         };
       });
 
@@ -551,21 +552,21 @@ export default function PrevisaoOrcamentaria() {
                     <tr key={conta.id}>
                       <td><strong>{conta.codigo}</strong> - {conta.nome}</td>
                       <td style={{ textAlign: 'center' }}>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={annualCell.value ?? '0'}
+                        <MoedaInput
+                          showHelpText={false}
+                          style={{ width: 130, margin: '0 auto' }}
+                          inputStyle={{ textAlign: 'right', paddingLeft: 30, borderColor: annualDirty ? '#d69e2e' : undefined, background: annualDirty ? '#fffaf0' : undefined }}
+                          value={annualCell.value ?? '0,00'}
                           onChange={(e) => setValorAnual(conta.id, e.target.value)}
-                          style={{ width: 130, textAlign: 'center', borderColor: annualDirty ? '#d69e2e' : undefined, background: annualDirty ? '#fffaf0' : undefined }}
                         />
                       </td>
                       <td style={{ textAlign: 'center' }}>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={cell.value ?? '0'}
+                        <MoedaInput
+                          showHelpText={false}
+                          style={{ width: 130, margin: '0 auto' }}
+                          inputStyle={{ textAlign: 'right', paddingLeft: 30, borderColor: monthlyDirty ? '#d69e2e' : undefined, background: monthlyDirty ? '#fffaf0' : undefined }}
+                          value={cell.value ?? '0,00'}
                           onChange={(e) => setValor(conta.id, mesSelecionado, e.target.value)}
-                          style={{ width: 130, textAlign: 'center', borderColor: monthlyDirty ? '#d69e2e' : undefined, background: monthlyDirty ? '#fffaf0' : undefined }}
                         />
                       </td>
                       <td>{toCurrency(itemAnalise?.valor_realizado || 0)}</td>

@@ -6,6 +6,8 @@ import api from '../api';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
 import SummaryCard, { SummaryCardText } from '../components/SummaryCard';
+import MoedaInput from '../components/MoedaInput';
+import { formatMoedaBR, parseMoedaBR } from '../utils/formatters';
 
 const HELP_BY_ROLE = {
   administrador: 'Priorize integridade dos extratos importados, conferência dos impostos e impacto de alterações manuais nos saldos.',
@@ -51,10 +53,7 @@ const emptyForm = {
   observacoes: ''
 };
 
-const toNumber = value => {
-  const parsed = parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-};
+const toNumber = value => parseMoedaBR(value);
 
 const toMesReferencia = value => {
   if (!value || typeof value !== 'string') return null;
@@ -105,14 +104,14 @@ export default function AplicacoesFinanceiras() {
       data_aplicacao: item.data_aplicacao || (item.mes_referencia ? `${item.mes_referencia}-01` : format(new Date(), 'yyyy-MM-dd')),
       instituicao: item.instituicao || '',
       produto: item.produto || '',
-      saldo_anterior: item.saldo_anterior ?? '',
-      aplicacoes: item.aplicacoes ?? '',
-      rendimento_bruto: item.rendimento_bruto ?? '',
-      imposto_renda: item.imposto_renda ?? '',
-      iof: item.iof ?? '',
-      impostos: item.impostos ?? '',
-      rendimento_liquido: item.rendimento_liquido ?? '',
-      resgate: item.resgate ?? '',
+      saldo_anterior: item.saldo_anterior != null && item.saldo_anterior !== '' ? formatMoedaBR(item.saldo_anterior) : '',
+      aplicacoes: item.aplicacoes != null && item.aplicacoes !== '' ? formatMoedaBR(item.aplicacoes) : '',
+      rendimento_bruto: item.rendimento_bruto != null && item.rendimento_bruto !== '' ? formatMoedaBR(item.rendimento_bruto) : '',
+      imposto_renda: item.imposto_renda != null && item.imposto_renda !== '' ? formatMoedaBR(item.imposto_renda) : '',
+      iof: item.iof != null && item.iof !== '' ? formatMoedaBR(item.iof) : '',
+      impostos: item.impostos != null && item.impostos !== '' ? formatMoedaBR(item.impostos) : '',
+      rendimento_liquido: item.rendimento_liquido != null && item.rendimento_liquido !== '' ? formatMoedaBR(item.rendimento_liquido) : '',
+      resgate: item.resgate != null && item.resgate !== '' ? formatMoedaBR(item.resgate) : '',
       observacoes: item.observacoes || ''
     } : emptyForm);
     setModal(true);
@@ -435,32 +434,32 @@ export default function AplicacoesFinanceiras() {
                   <input required value={form.produto} onChange={e => setF('produto', e.target.value)} placeholder="Ex: CDB DI" />
                 </div>
                 <div className="form-group">
-                  <label>SALDO ANTERIOR (R$)</label>
-                  <input type="number" step="0.01" value={form.saldo_anterior} onChange={e => setF('saldo_anterior', e.target.value)} />
+                  <label>SALDO ANTERIOR</label>
+                  <MoedaInput value={form.saldo_anterior} onChange={e => setF('saldo_anterior', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>APLICAÇÕES (+) (R$)</label>
-                  <input type="number" step="0.01" value={form.aplicacoes} onChange={e => setF('aplicacoes', e.target.value)} />
+                  <label>APLICAÇÕES (+)</label>
+                  <MoedaInput value={form.aplicacoes} onChange={e => setF('aplicacoes', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>RENDIMENTO BRUTO (+) (R$)</label>
-                  <input type="number" step="0.01" value={form.rendimento_bruto} onChange={e => setF('rendimento_bruto', e.target.value)} />
+                  <label>RENDIMENTO BRUTO (+)</label>
+                  <MoedaInput value={form.rendimento_bruto} onChange={e => setF('rendimento_bruto', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>IMPOSTO DE RENDA (-) (R$)</label>
-                  <input type="number" step="0.01" value={form.imposto_renda} onChange={e => setF('imposto_renda', e.target.value)} />
+                  <label>IMPOSTO DE RENDA (-)</label>
+                  <MoedaInput value={form.imposto_renda} onChange={e => setF('imposto_renda', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>IOF (-) (R$)</label>
-                  <input type="number" step="0.01" value={form.iof} onChange={e => setF('iof', e.target.value)} />
+                  <label>IOF (-)</label>
+                  <MoedaInput value={form.iof} onChange={e => setF('iof', e.target.value)} />
                 </div>
                 <div className="form-group">
                   <label>RENDIMENTO LÍQUIDO (calculado)</label>
                   <input value={fmt(rendimentoLiquidoCalculado)} readOnly style={{ fontWeight: 700, color: '#276749' }} />
                 </div>
                 <div className="form-group">
-                  <label>RESGATES (-) (R$)</label>
-                  <input type="number" step="0.01" value={form.resgate} onChange={e => setF('resgate', e.target.value)} />
+                  <label>RESGATES (-)</label>
+                  <MoedaInput value={form.resgate} onChange={e => setF('resgate', e.target.value)} />
                 </div>
                 <div className="form-group">
                   <label>SALDO ATUAL (calculado)</label>

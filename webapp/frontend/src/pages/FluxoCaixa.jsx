@@ -10,7 +10,8 @@ import FilterBar from '../components/FilterBar';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
 import TableEmptyRow from '../components/TableEmptyRow';
-import { formatDateBR } from '../utils/formatters';
+import MoedaInput from '../components/MoedaInput';
+import { formatDateBR, formatMoedaBR, parseMoedaBR } from '../utils/formatters';
 
 const HELP_BY_ROLE = {
   administrador: 'Priorize saldo inicial, origem do saldo anterior e consistência das transações antes de ajustar dados manuais.',
@@ -78,14 +79,14 @@ export default function FluxoCaixa() {
   }, [load]);
 
   const openSaldoModal = () => {
-    setSaldoInput(String(data?.saldo_anterior ?? 0));
+    setSaldoInput(formatMoedaBR(data?.saldo_anterior ?? 0));
     setSaldoObs(data?.observacoes_saldo_inicial || '');
     setModalSaldo(true);
   };
 
   const salvarSaldoInicial = async e => {
     e.preventDefault();
-    const valor = parseFloat(saldoInput);
+    const valor = parseMoedaBR(saldoInput);
     if (!Number.isFinite(valor)) {
       toast.error('Informe um valor válido para o saldo inicial');
       return;
@@ -217,10 +218,8 @@ export default function FluxoCaixa() {
             <form onSubmit={salvarSaldoInicial}>
               <div className="form-grid">
                 <div className="form-group form-full">
-                  <label>Saldo Inicial / Saldo Anterior (R$)</label>
-                  <input
-                    type="number"
-                    step="0.01"
+                  <label>Saldo Inicial / Saldo Anterior</label>
+                  <MoedaInput
                     value={saldoInput}
                     onChange={e => setSaldoInput(e.target.value)}
                     required

@@ -6,6 +6,7 @@ import { Download, Upload, Search, Users, FileText, FileSpreadsheet } from 'luci
 import { format, subMonths, addMonths } from 'date-fns';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
+import MoedaInput from '../components/MoedaInput';
 import { formatDateBR, parseMoedaBR, formatMoedaBR } from '../utils/formatters';
 
 const HELP_BY_ROLE = {
@@ -1088,32 +1089,12 @@ export default function Pagamentos() {
               <div className="form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div className="form-group">
                   <label>Valor Pago</label>
-                  <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-                    <span style={{
-                      position: 'absolute',
-                      left: 10,
-                      color: '#666',
-                      fontWeight: 600,
-                      fontSize: 14,
-                      pointerEvents: 'none',
-                      userSelect: 'none'
-                    }}>
-                      R$
-                    </span>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      style={{ paddingLeft: 36, fontWeight: 600 }}
-                      value={form.valor_pago}
-                      onChange={handleValorPagoChange}
-                      onBlur={handleValorPagoBlur}
-                      onFocus={(e) => e.target.select()}
-                      placeholder={form.status_pagamento === 'pendente' ? '0,00' : '0,00'}
-                    />
-                  </div>
-                  <small style={{ display: 'block', color: '#666', marginTop: 4 }}>
-                    Duas casas decimais separadas por vírgula (ex.: 35,00 ou 35,50).
-                  </small>
+                  <MoedaInput
+                    value={form.valor_pago}
+                    onChange={handleValorPagoChange}
+                    onBlur={handleValorPagoBlur}
+                    placeholder={form.status_pagamento === 'pendente' ? '0,00' : '0,00'}
+                  />
                 </div>
                 <div className="form-group">
                   <label>Data do pagamento</label>

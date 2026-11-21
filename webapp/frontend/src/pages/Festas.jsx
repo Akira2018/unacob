@@ -8,6 +8,8 @@ import FestaLinkBar from '../components/FestaLinkBar';
 import FestaSummaryStrip, { FestaSummaryItem } from '../components/FestaSummaryStrip';
 import StatusCounter from '../components/StatusCounter';
 import TableEmptyRow from '../components/TableEmptyRow';
+import MoedaInput from '../components/MoedaInput';
+import { formatMoedaBR, parseMoedaBR } from '../utils/formatters';
 
 const fmt = v => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
 const fmtDataBR = (valor) => {
@@ -124,8 +126,8 @@ export default function Festas() {
     setFormFesta({
       ...emptyFesta,
       ...f,
-      valor_convite: f.valor_convite || '',
-      valor_convite_dependente: f.valor_convite_dependente || '',
+      valor_convite: f.valor_convite != null && f.valor_convite !== '' ? formatMoedaBR(f.valor_convite) : '',
+      valor_convite_dependente: f.valor_convite_dependente != null && f.valor_convite_dependente !== '' ? formatMoedaBR(f.valor_convite_dependente) : '',
       capacidade: f.capacidade || '',
       cortesia_acompanhantes: String(regras.cortesia_acompanhantes),
       idade_gratis_ate: String(regras.idade_gratis_ate),
@@ -160,8 +162,8 @@ export default function Festas() {
 
       const payload = {
         ...formFesta,
-        valor_convite: parseFloat(formFesta.valor_convite) || 0,
-        valor_convite_dependente: parseFloat(formFesta.valor_convite_dependente) || 0,
+        valor_convite: parseMoedaBR(formFesta.valor_convite),
+        valor_convite_dependente: parseMoedaBR(formFesta.valor_convite_dependente),
         capacidade: formFesta.capacidade ? parseInt(formFesta.capacidade) : null,
         politica_precos: JSON.stringify({
           pricing_rules: pricingRules,
@@ -204,7 +206,7 @@ export default function Festas() {
   const openModalPart = (p = null) => {
     setEditingPart(p);
     const festaValor = festaSel?.valor_convite || 0;
-    setFormPart(p ? { ...emptyPart, ...p } : { ...emptyPart, custo_convite: festaValor });
+    setFormPart(p ? { ...emptyPart, ...p, custo_convite: p.custo_convite != null && p.custo_convite !== '' ? formatMoedaBR(p.custo_convite) : '' } : { ...emptyPart, custo_convite: formatMoedaBR(festaValor) });
     setModalPart(true);
   };
 
@@ -212,7 +214,7 @@ export default function Festas() {
     e.preventDefault();
     setSaving(true);
     try {
-      const payload = { ...formPart, festa_id: festaSel.id, custo_convite: parseFloat(formPart.custo_convite) || 0 };
+      const payload = { ...formPart, festa_id: festaSel.id, custo_convite: parseMoedaBR(formPart.custo_convite) };
       if (editingPart) {
         await api.put(`/participantes/${editingPart.id}`, payload);
         toast.success('Atualizado!');
@@ -472,12 +474,12 @@ export default function Festas() {
                   <input value={formFesta.local_festa} onChange={e => setFF('local_festa', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>Valor Convite (R$)</label>
-                  <input type="number" step="0.01" value={formFesta.valor_convite} onChange={e => setFF('valor_convite', e.target.value)} />
+                  <label>Valor Convite</label>
+                  <MoedaInput value={formFesta.valor_convite} onChange={e => setFF('valor_convite', e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label>Valor Dependente (R$)</label>
-                  <input type="number" step="0.01" value={formFesta.valor_convite_dependente} onChange={e => setFF('valor_convite_dependente', e.target.value)} />
+                  <label>Valor Dependente</label>
+                  <MoedaInput value={formFesta.valor_convite_dependente} onChange={e => setFF('valor_convite_dependente', e.target.value)} />
                 </div>
                 <div className="form-group">
                   <label>Capacidade</label>
@@ -711,8 +713,8 @@ export default function Festas() {
                   </select>
                 </div>
                 <div className="form-group">
-                  <label>Custo do Convite (R$)</label>
-                  <input type="number" step="0.01" value={formPart.custo_convite} onChange={e => setFP('custo_convite', e.target.value)} />
+                  <label>Custo do Convite</label>
+                  <MoedaInput value={formPart.custo_convite} onChange={e => setFP('custo_convite', e.target.value)} />
                 </div>
                 <div className="form-group">
                   <label>Nome do Dependente</label>

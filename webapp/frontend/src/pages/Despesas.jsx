@@ -6,7 +6,8 @@ import { format, subMonths } from 'date-fns';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { getApiErrorMessage } from '../utils/apiError';
 import InlineHelpCard from '../components/InlineHelpCard';
-import { formatDateBR } from '../utils/formatters';
+import MoedaInput from '../components/MoedaInput';
+import { formatDateBR, formatMoedaBR, parseMoedaBR } from '../utils/formatters';
 
 const HELP_BY_ROLE = {
   administrador: 'Priorize categoria, conta contábil, forma de pagamento e impacto da despesa no fechamento antes de salvar.',
@@ -73,7 +74,7 @@ export default function Despesas() {
     setEditing(d);
     if (d) {
       const normalized = normalizeDespesa(d);
-      setForm({ ...emptyForm, ...normalized, valor: normalized.valor || '' });
+      setForm({ ...emptyForm, ...normalized, valor: normalized.valor != null ? formatMoedaBR(normalized.valor) : '' });
     } else {
       setForm({ ...emptyForm, conta_id: contas[0]?.id || '' });
     }
@@ -89,7 +90,13 @@ export default function Despesas() {
         setSaving(false);
         return;
       }
-      const payload = { ...form, valor: parseFloat(form.valor) };
+      const valor = parseMoedaBR(form.valor);
+      if (!valor || valor <= 0) {
+        toast.error('Informe um valor válido');
+        setSaving(false);
+        return;
+      }
+      const payload = { ...form, valor };
       if (editing) {
         await api.put(`/despesas/${editing.id}`, payload);
         toast.success('Despesa atualizada!');
@@ -308,8 +315,8 @@ export default function Despesas() {
                   </select>
                 </div>
                 <div className="form-group">
-                  <label>Valor (R$) *</label>
-                  <input type="number" step="0.01" required value={form.valor} onChange={e => setF('valor', e.target.value)} />
+                  <label>Valor *</label>
+                  <MoedaInput required value={form.valor} onChange={e => setF('valor', e.target.value)} />
                 </div>
                 <div className="form-group">
                   <label>Data *</label>
